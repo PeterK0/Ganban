@@ -1,0 +1,81 @@
+[package]
+name = "ganban-server"
+version = "1.0.4"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "Headless HTTP daemon exposing the Ganban core over the trusted tailnet"
+
+[lib]
+name = "ganban_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ganban-server"
+path = "src/main.rs"
+
+[dependencies]
+ganban-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+# Structured logging: leveled events to a rolling file (app_log_dir) + stdout, so
+# the embedded desktop server (which has no console) keeps a real diagnostic log.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tokio-util = { version = "0.7", features = ["io"] }
+# ServiceExt::oneshot on tower-http's ServeFile: the client-update downloads (Range).
+tower = { version = "0.5", features = ["util"] }
+dirs = "5"
+# Outbound HTTP to the ragrat RAG sidecar + Ollama (rustls; stream for chat SSE).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sqlx = { workspace = true }
+# Host health sampling (/system/stats): CPU, memory, disks. Cross-platform,
+# ready for the Linux host move.
+sysinfo = "0.33"
+futures-util = "0.3"
+async-stream = "0.3"
+# PDF manipulation for the PDF tab's agent tools (feature `tab-pdf`).
+lopdf = { version = "0.36", optional = true }
+# Email tab (feature `tab-email`): IMAP client + MIME parsing + draft building.
+# Deliberately NO SMTP anywhere — drafts are APPENDed to the mailbox's Drafts
+# folder; sending only ever happens in the user's real mail client.
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"], optional = true }
+async-native-tls = { version = "0.5", default-features = false, features = ["runtime-tokio"], optional = true }
+mail-parser = { version = "0.11", optional = true }
+mail-builder = { version = "0.4", optional = true }
+base64 = "0.22"
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+# Share links (ADR 0006): link passwords are argon2id; the zip's CRC-32s.
+argon2 = "0.5"
+crc32fast = "1"
+# Embed the built web UI (dist/) into the binary (feature `embed-web`), so a
+# shipped daemon serves the touch UI anywhere — not just on the build checkout.
+include_dir = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# In-process HTTP tests: drive `router()` with `ServiceExt::oneshot` (no socket).
+tower = { version = "0.5", features = ["util"] }
+# Reads the share door's zips back in tests.
+zip = { version = "2", default-features = false }
+
+# Stash tabs are compiled-in Rust modules behind feature flags — no dynamic
+# loading, ever. Dropping a tab from `default` removes its panel registration,
+# its tools, and its dependencies from the binary.
+[features]
+default = ["tab-nato", "tab-pdf", "tab-email", "tab-atlas", "tab-kanban", "tab-models", "tab-quiz"]
+# Compile the built frontend (../../dist) into the binary. Off by default so
+# `cargo test` works on a checkout that never ran `npm run build`; the desktop
+# shell enables it (tauri's beforeBuildCommand guarantees dist/ exists first).
+embed-web = ["dep:include_dir"]
+tab-nato = []
+tab-atlas = []
+tab-kanban = []
+tab-models = []
+tab-quiz = []
+tab-pdf = ["dep:lopdf"]
+tab-email = ["dep:async-imap", "dep:async-native-tls", "dep:mail-parser", "dep:mail-builder"]

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Ganban host server, as a LaunchAgent on this Mac: always on, at login and
+     after a crash. Tailnet only: it listens on @ADDR@ itself; never funnel that port. The share door
+     (GANBAN_SHARE_ADDR, when set) is the one part published with tailscale funnel (ADR 0006).
+     Rendered by ops/install.sh (the @…@ fields) into ~/Library/LaunchAgents; don't edit the
+     rendered copy. It runs the build in live/ (ops/update.sh swaps a new one in). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ganban.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@REPO@/live/ganban-server</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@REPO@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GANBAN_ADDR</key>
+    <string>@ADDR@</string>
+    <key>GANBAN_DB</key>
+    <string>@APP_DIR@/gansty.db</string>
+    <key>GANBAN_STORAGE</key>
+    <string>@APP_DIR@/shared</string>
+    <key>GANBAN_WEB_DIR</key>
+    <string>@REPO@/live/dist</string>
+    <!-- Where ops/update.sh keeps the client builds, update-status.json and update.log (ADR 0007). -->
+    <key>GANBAN_APP_DIR</key>
+    <string>@APP_DIR@</string>
+    <key>GANBAN_LOGS</key>
+    <string>@LOGS@</string>
+@SHARE_ENV@
+    <!-- launchd's own PATH is /usr/bin:/bin:/usr/sbin:/sbin: member agents need pi and node. -->
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- After a crash, wait 10 s before starting again (launchd's default, said outright). -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <!-- The server's full log is its daily file in @APP_DIR@/logs/; these catch stdout
+       (ops/update.sh rotates server.log at each restart) and early crashes. -->
+  <key>StandardOutPath</key>
+  <string>@LOGS@/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOGS@/server.err.log</string>
+</dict>
+</plist>

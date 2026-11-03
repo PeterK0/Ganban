@@ -1,0 +1,6 @@
+/* App-level styles. The Vite/Tauri template shipped a default stylesheet with
+   hardcoded light-mode colors (#f6f6f6 body, #ffffff buttons) that bled through
+   transparent surfaces — including scrollbar tracks, which read as white-on-dark
+   in every dark theme. Those are stripped here; the theme system (ThemeProvider
+   → CSS variables on :root) + Tailwind utilities own all colors now.
+   Keep this file empty of color rules. */

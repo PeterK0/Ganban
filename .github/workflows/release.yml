@@ -1,0 +1,414 @@
+name: Release
+
+# Build native installers for every desktop OS, an Android APK, and an iOS .ipa,
+# and attach them to a GitHub Release. Triggered by pushing a version tag
+# (e.g. `git tag v1.0.0 && git push origin v1.0.0`) or run manually.
+#   Desktop: Windows .msi/.exe · macOS .dmg (arm64 + Intel) · Linux .AppImage/.deb (unsigned)
+#   Android: signed release .apk when ANDROID_* secrets are set, else unsigned.
+#   iOS:     signed .ipa when the IOS_*/APPLE_DEVELOPMENT_TEAM secrets are set,
+#            else a simulator compile-check (no Apple Developer account needed).
+#
+# These builds are on the `github` update channel (ADR 0008): the apps update themselves from
+# this repo's latest release. A tag push makes a draft release, every build uploads to it, then
+# `publish` adds latest.json (the desktop updater's manifest) and publishes it, so `latest`
+# never points at a half-uploaded release. A failed build leaves the draft unpublished.
+#
+# Repo secrets (Settings → Secrets → Actions), all optional:
+#   Updates: TAURI_SIGNING_PRIVATE_KEY (the private key matching src-tauri/updater/github.pub),
+#            TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Without them the desktop apps can't update
+#            themselves (no signed bundles, no latest.json); everything else still builds.
+#   Android: ANDROID_KEY_BASE64 (base64 of the .jks keystore), ANDROID_KEY_ALIAS,
+#            ANDROID_KEY_PASSWORD. Keep the same keystore for every release: Android only
+#            installs an update signed by the key the app was installed with.
+#   iOS:     IOS_CERTIFICATE (base64 .p12), IOS_CERTIFICATE_PASSWORD,
+#            IOS_MOBILE_PROVISION (base64 .mobileprovision), APPLE_DEVELOPMENT_TEAM
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow a manual run from the Actions tab.
+  workflow_dispatch:
+
+# The update channel, read by the frontend (import.meta.env) and by src-tauri (option_env!). The repo
+# is this one, so a fork's apps update from the fork's releases.
+env:
+  VITE_UPDATE_CHANNEL: github
+  VITE_UPDATE_REPO: ${{ github.repository }}
+
+jobs:
+  # ───────────────────── The version, and the draft release ─────────────────────
+  prepare:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The apps' version is package.json's (scripts/release.sh bumps it and tauri.conf.json together),
+      # and a tag must name it: the updater compares it with latest.json's.
+      - name: Check the version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          t="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          [ "$v" = "$t" ] || { echo "::error::package.json ($v) and src-tauri/tauri.conf.json ($t) disagree"; exit 1; }
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$v" ]; then
+            echo "::error::tag $REF_NAME doesn't match the version v$v"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # One draft per tag (a re-run reuses it), made before the builds so they never race to make it.
+      - name: Make the draft release
+        id: draft
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\")) | .[0].id // empty")"
+          if [ -z "$id" ]; then
+            id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="Ganban $TAG" \
+              -f body='Download the installer for your OS below. Builds are not notarised, so your OS asks once. On a Mac, if it says Ganban is damaged or can'\''t be opened, run xattr -cr /Applications/Ganban.app in Terminal and open it again. Ganban downloaded from here updates itself from new releases (Settings → Updates).' \
+              -F draft=true -F prerelease=false --jq .id)"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────── Desktop ─────────────────────────
+  release:
+    needs: prepare
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both Mac builds run on Apple Silicon; the Intel one cross-compiles (GitHub retired the
+          # Intel macos-13 runner).
+          - name: macos-arm64 # Apple Silicon .dmg
+            platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+          - name: macos-x64 # Intel .dmg
+            platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+          # The oldest supported Ubuntu, so the AppImage and .deb run on older glibc too.
+          - name: linux
+            platform: 'ubuntu-22.04'
+            args: ''
+          - name: windows
+            platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ${{ matrix.name }}
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # With the signing key, the build makes signed updater bundles (.app.tar.gz, the .msi/.exe,
+      # the .AppImage, each with a .sig) and trusts only the GitHub channel's public key,
+      # src-tauri/updater/github.pub. Without it, no updater: the app says it can't update itself.
+      - name: Updater config (GitHub channel)
+        id: updater
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            mkdir -p target
+            node ops/json.mjs new target/github-updater.conf.json 'bundle.createUpdaterArtifacts:=true' \
+              "plugins.updater.pubkey=$(tr -d '\r\n' < src-tauri/updater/github.pub)"
+            echo "args=--config target/github-updater.conf.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: these apps won't update themselves."
+          fi
+
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RUST_BACKTRACE: 1
+        with:
+          # The draft `prepare` made, on a tag push; on a manual run none, so this only builds.
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          # `publish` writes latest.json once every build is up: per-job ones would race.
+          includeUpdaterJson: false
+          args: ${{ matrix.args }} ${{ steps.updater.outputs.args }}
+
+      # Manual (non-tag) runs: keep the installers as workflow artifacts instead.
+      - name: Upload installers as workflow artifacts (manual run)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          # target/release/bundle, or target/<triple>/release/bundle for the Mac builds.
+          path: |
+            target/**/release/bundle/**/*.dmg
+            target/**/release/bundle/**/*.exe
+            target/**/release/bundle/**/*.msi
+            target/**/release/bundle/**/*.AppImage
+            target/**/release/bundle/**/*.deb
+          if-no-files-found: warn
+
+  # ───────────────────────── Android ─────────────────────────
+  android:
+    needs: prepare
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image already has the SDK; only platform-tools is needed. The action's default
+      # also asks for the long-removed 'tools' package, which fails with cmdline-tools 16.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Set up Rust (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # secrets aren't allowed in `if:` — map presence to a step output first.
+      - name: Detect signing secrets
+        id: signing
+        env:
+          KEY_B64: ${{ secrets.ANDROID_KEY_BASE64 }}
+        run: |
+          if [ -n "$KEY_B64" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Configure signing
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_B64: ${{ secrets.ANDROID_KEY_BASE64 }}
+        run: |
+          cd src-tauri/gen/android
+          {
+            echo "keyAlias=$ALIAS"
+            echo "password=$PASSWORD"
+          } > keystore.properties
+          echo "$KEY_B64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+
+      # The version code grows with the version (Tauri's formula, set explicitly): Android refuses
+      # an update whose code isn't larger. The app compares versions by the release's tag.
+      - name: Build APK
+        env:
+          NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          RUST_BACKTRACE: 1
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          code="$(node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); console.log(a * 1e6 + b * 1e3 + c)' "$VERSION")"
+          npx tauri android build --apk --config "{\"bundle\":{\"android\":{\"versionCode\":$code}}}"
+
+      # One APK named for the release; the phone app takes the release's signed .apk asset.
+      - name: Upload APK to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | sort | head -n 1)"
+          [ -n "$apk" ] || { echo "::error::no APK built"; exit 1; }
+          case "$apk" in *unsigned*) name="Ganban_${VERSION}_universal-unsigned.apk" ;; *) name="Ganban_${VERSION}_universal.apk" ;; esac
+          cp "$apk" "$RUNNER_TEMP/$name"
+          gh release upload "$TAG" "$RUNNER_TEMP/$name" --clobber
+
+      - name: Upload APK as workflow artifact (manual run)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+  # ──────────────── latest.json, then publish the release ────────────────
+  # Only after every desktop build and the APK are up: the updater manifest lists all four desktop
+  # platforms, and publishing makes this release GitHub's `latest`, which the apps ask.
+  publish:
+    needs: [prepare, release, android]
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write latest.json and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          if [ "$HAS_KEY" = true ]; then
+            mkdir -p "$RUNNER_TEMP/sigs"
+            # Draft assets download through the API (their browser URLs need a session).
+            node -e 'for (const a of require(process.argv[1])) if (a.name.endsWith(".sig")) console.log(a.id + " " + a.name)' "$RUNNER_TEMP/assets.json" |
+              while read -r id name; do
+                gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$RUNNER_TEMP/sigs/$name"
+              done
+            node scripts/updater-json.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --assets "$RUNNER_TEMP/assets.json" \
+              --sigs "$RUNNER_TEMP/sigs" --out "$RUNNER_TEMP/latest.json" \
+              --require darwin-aarch64,darwin-x86_64,linux-x86_64,windows-x86_64
+            gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber
+          else
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: no latest.json, so desktop apps won't see this release."
+          fi
+          # The phone app only takes a signed APK (an unsigned one can't be installed over the last).
+          node -e 'process.exit(require(process.argv[1]).some((a) => /\.apk$/.test(a.name) && !/unsigned/.test(a.name)) ? 0 : 1)' "$RUNNER_TEMP/assets.json" ||
+            echo "::warning::No signed APK on this release (ANDROID_* secrets): phones won't be offered it."
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -f make_latest=true > /dev/null
+
+  # ─────────────────────────── iOS ───────────────────────────
+  # iOS isn't a supported platform yet: build it only when asked (Actions → Release → Run workflow).
+  ios:
+    if: github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    permissions:
+      contents: write
+    runs-on: macos-latest # ships Xcode + CocoaPods
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Set up Rust (iOS targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Detect signing secrets
+        id: signing
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE }}
+        run: |
+          if [ -n "$CERT" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+
+      # gen/apple isn't committed — generate the Xcode project each run.
+      - name: Initialize iOS project
+        run: npx tauri ios init --ci
+
+      # --- Signed build (Apple Developer secrets present) → distributable .ipa ---
+      - name: Build signed .ipa
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          RUST_BACKTRACE: 1
+        run: npx tauri ios build --export-method release-testing
+
+      - name: Upload .ipa to the release
+        if: steps.signing.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: src-tauri/gen/apple/build/**/*.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- No Apple account → verify the iOS app compiles (simulator, unsigned) ---
+      - name: Verify iOS build compiles (simulator, unsigned)
+        if: steps.signing.outputs.enabled != 'true'
+        run: |
+          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
+          echo "Xcode project: $PROJ"
+          xcodebuild -list -project "$PROJ"
+          # gen/apple is regenerated from productName each run — parse the
+          # scheme instead of hardcoding it.
+          SCHEME=$(xcodebuild -list -project "$PROJ" | sed -n 's/^[[:space:]]*\(.*_iOS\)$/\1/p' | head -1)
+          echo "Scheme: $SCHEME"
+          xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

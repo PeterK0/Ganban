@@ -1,0 +1,91 @@
+/* Gilt on the phone (lane mobile, docs/dev/GILT.md): touch sizes and helpers on top
+   of the shared g- classes (src/styles/gilt.css). Plain CSS like g-field,
+   prefixed gm- so nothing collides. Like g-field,
+   give these elements no utilities that set the same properties (padding,
+   font-size, min-height, colours): use the variants below instead. */
+
+/* Muted and secondary text: the prototype's --mut / --fg2. */
+.gm-mut { color: var(--g-mut); }
+.gm-fg2 { color: var(--g-fg2); }
+
+/* A field at touch size. 16px keeps iOS from zooming in on focus. */
+.g-field.gm-field {
+  min-height: 44px;
+  font-size: 16px;
+}
+textarea.g-field.gm-field { min-height: 88px; }
+
+/* A list row like the prototype's task rows (.arow): a gilt hairline under it,
+   a quiet press state. */
+.gm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-gilt-b);
+}
+.gm-row:active { background: var(--color-surface-0); }
+
+/* A chip (the prototype's .chip) at touch size; aria-pressed or .on marks it. */
+.gm-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 3px;
+  background: var(--color-surface-0);
+  color: var(--g-fg2);
+  font-size: 14px;
+  font-weight: 500;
+}
+.gm-chip:active { background: var(--color-surface-1); }
+.gm-chip.on,
+.gm-chip[aria-pressed='true'] {
+  background: var(--color-gilt-b);
+  color: var(--color-gold);
+  box-shadow: inset 0 0 0 1px var(--color-gilt-a);
+}
+/* A small chip (tool toggles, @-tags, report ranges); still 44px tall. */
+.gm-chip.gm-chip-sm {
+  padding: 0 10px;
+  font-size: 12px;
+}
+/* A chip that reads as a card: left-aligned, two lines (the theme picker). */
+.gm-chip.gm-chip-card {
+  justify-content: flex-start;
+  text-align: left;
+  min-height: 52px;
+  padding: 8px 12px;
+}
+
+/* A one-line composer that grows as you type (rows=1). */
+textarea.g-field.gm-field.gm-composer {
+  min-height: 44px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  line-height: 1.4;
+}
+
+/* Shared desktop Modals opened from the phone (GifPicker, EmojiPicker): touch
+   targets, and 16px fields so iOS doesn't zoom. Scoped to the mobile shell (Shell
+   sets html.gm-mobile; a body:has(.gm-app) here cost every page a :has check). */
+html.gm-mobile .g-modal .g-field {
+  min-height: 44px;
+  font-size: 16px;
+}
+html.gm-mobile .g-modal .g-iconbtn {
+  width: 44px;
+  height: 44px;
+}
+html.gm-mobile .g-modal .g-btn { min-height: 44px; }
+
+/* A narrow numeric cell (six ability scores across a phone). */
+.g-field.gm-field.gm-field-tight {
+  padding: 0 4px;
+  text-align: center;
+}

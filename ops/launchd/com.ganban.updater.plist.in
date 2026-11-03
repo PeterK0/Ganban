@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Ganban host's update (ops/update.sh) as its own launchd job, so the server's restart
+     doesn't kill it (ADR 0007). Nothing starts it on its own: the server kickstarts it for the
+     owner's "Update the server" button (start_host_update). launchd runs one instance at a time.
+     It gets the server's environment plus what the client builds need (the Android toolchain).
+     Rendered by ops/install.sh (the @…@ fields); don't edit the rendered copy. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ganban.updater</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@REPO@/ops/update.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@REPO@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GANBAN_ADDR</key>
+    <string>@ADDR@</string>
+    <key>GANBAN_DB</key>
+    <string>@APP_DIR@/gansty.db</string>
+    <key>GANBAN_STORAGE</key>
+    <string>@APP_DIR@/shared</string>
+    <key>GANBAN_WEB_DIR</key>
+    <string>@REPO@/live/dist</string>
+    <key>GANBAN_APP_DIR</key>
+    <string>@APP_DIR@</string>
+    <key>GANBAN_LOGS</key>
+    <string>@LOGS@</string>
+@SHARE_ENV@
+@BUILD_ENV@
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <!-- update.sh appends everything to @LOGS@/update.log itself; these catch what comes before. -->
+  <key>StandardOutPath</key>
+  <string>@LOGS@/updater.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOGS@/updater.out.log</string>
+</dict>
+</plist>

@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Rust / Cargo workspace build output
+/target
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Scratch project tree dump (kept on disk, never tracked)
+gabgantree.txt
+test_nested
+
+# Remembered ragrat clone path for build:release (per-machine)
+.ragrat-dir
+
+# pdf.js WASM decoders — copied from node_modules by the pdfjsWasmCopy Vite
+# plugin on dev start / build. Regenerated, never committed.
+public/pdfjs-wasm/
+.test-build/
+
+# Host service builds (ops/build.sh, ops/update.sh): the live one, the staged one, the previous one
+/live/
+/live.next/
+/live.prev/
+/live.bad/

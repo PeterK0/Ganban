@@ -1,0 +1,80 @@
+/* @import form (not @tailwind) so Gilt's classes can sit in their own file:
+   Vite inlines the imports, and gilt.css's @layer components lands in
+   Tailwind's components layer, under the utilities. */
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+@import "./styles/gilt.css";
+
+:root {
+  /* Gilt's body face, bundled through @fontsource (main.tsx). */
+  font-family: Figtree, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Native <select> chrome: WKWebView paints the macOS aqua gradient over any
+   background utility unless appearance is stripped — every select in the app
+   was rendering silver (Settings > Sync, Oracle node params). Themed here
+   once; :not(.appearance-auto) keeps an escape hatch AND outranks padding
+   utilities for the chevron gutter. */
+select:not(.appearance-auto) {
+  -webkit-appearance: none;
+  appearance: none;
+  max-width: 100%; /* native intrinsic width forced sideways scrolling */
+  padding-right: 1.6rem;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888da0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+}
+
+html, body, #root {
+  margin: 0;
+  min-height: 100vh;
+  /* Gilt's app background (the theme's mantle), so transparent scrollbar
+     tracks and any flash before the app root mounts read as the theme, not
+     the browser default white. --color-mantle is set by ThemeProvider on
+     :root. WKWebView paints the scrollbar track against the html element, so
+     all three must carry it. */
+  background-color: var(--color-mantle, #181825);
+  color: var(--color-text, #e0def4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* HIDE all native scrollbars — WKWebView's ::-webkit-scrollbar-track is
+   fundamentally broken (renders white regardless of CSS, whether via var()
+   or hardcoded hex). A custom ScrollArea component renders themed scrollbars
+   via JS-driven track/thumb on the surfaces that need them. Native scroll is
+   hidden everywhere; the scroll still works (trackpad/wheel/keyboard), just
+   without the broken white native indicator. */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+*::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/WKWebView */
+}
+/* .scrollbar-none kept for explicit opt-out surfaces (already covered by the
+   global rule, but harmless). */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* While the native barcode scanner is active the webview must be transparent so
+   the camera preview behind it is visible. */
+html.qr-scanning,
+html.qr-scanning body,
+html.qr-scanning #root {
+  background: transparent !important;
+}

@@ -1,0 +1,124 @@
+name: CI
+
+# Checks every push and pull request: the TypeScript build, the Rust core and server tests, and the
+# node test suites. Three jobs run in parallel:
+#   web    (Linux)  npm ci, tsc, vite build, the headless node suites
+#   rust   (Linux)  cargo test for ganban-core and ganban-server
+#   macos  (macOS)  test:ops (the host scripts in ops/ target macOS and launchd) and a cargo check
+#                   of the desktop shell (gansty). The shell needs WebKitGTK and friends on Linux,
+#                   so it is checked on macOS only; release.yml builds it on every OS.
+
+# Pushes to main, and pull requests (a PR branch's pushes run once, through its pull request).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit -p .
+
+      - name: Build the web UI
+        run: npx vite build
+
+      # Pure-module suites: esbuild bundles the real source and node:assert checks it. No browser,
+      # no server. test:reports skips its external XLSX/PDF readers when they're absent.
+      - name: Node test suites
+        run: |
+          # A private tab's suite, where the tree carries it (the public tree doesn't).
+          if [ -f scripts/test-extra-tabs.mjs ]; then npm run test:extra-tabs; fi
+          npm run test:pins
+          npm run test:recur
+          npm run test:doclinks
+          npm run test:update
+          npm run test:apkupdate
+          npm run test:nav
+          npm run test:reports
+          npm run test:listedit
+          node scripts/test-statusfilter.mjs
+          node scripts/test-workspaces.mjs
+          node scripts/test-invite.mjs
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The email tab links native-tls (OpenSSL on Linux).
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      # Failing tests become annotations, so they show on the run's summary page without opening the log.
+      - name: Test ganban-core and ganban-server
+        run: |
+          set +e
+          cargo test -p ganban-core -p ganban-server --no-fail-fast 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          grep -E "^test .* FAILED$|panicked at" test.log | head -30 | sed 's/^/::error::/'
+          exit $status
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The host scripts in a sandbox, with fake launchctl, git, cargo and tauri.
+      - name: Host script tests
+        run: npm run test:ops
+
+      # Tauri's context macro reads the built web UI (frontendDist), so build it first.
+      - name: Check the desktop shell
+        run: |
+          npx vite build
+          cargo check -p gansty

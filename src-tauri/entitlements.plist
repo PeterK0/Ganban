@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hardened-runtime entitlements for notarized distribution builds. The
+     PyInstaller-frozen ragrat engine (CPython + torch + onnxruntime) needs
+     these to run under the hardened runtime; harmless when no engine is
+     bundled. Referenced from tauri.conf.json's bundle.macOS only for
+     distribution. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>

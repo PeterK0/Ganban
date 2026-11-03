@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ganban — Oracle · Node types</title>
+<style>
+  :root{
+    --bg:#0E1116; --bg2:#0B0D12; --panel:#161A22; --panel2:#1B2029; --inset:#0C0F14;
+    --border:#242A35; --border2:#2E3440;
+    --text:#E7E9EF; --muted:#878D9A; --dim:#5C6371;
+    --purple:#A78BFA; --purple-soft:rgba(167,139,250,.15); --purple-bd:rgba(167,139,250,.5);
+    --green:#46D38A; --red:#F06D6D;
+    --t:#37D6AE; --c:#FB8A6E; --a:#F3C065; --gate:#A78BFA; --gray:#9AA0AC;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,"SF Pro Text","Segoe UI",Inter,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#05070A;color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .app{height:100vh;min-height:680px;display:flex;flex-direction:column;background:var(--bg);overflow:hidden}
+  .titlebar{height:34px;flex:0 0 34px;display:flex;align-items:center;position:relative;background:var(--bg);border-bottom:1px solid var(--border);padding:0 14px}
+  .lights{display:flex;gap:8px}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .lights .r{background:#FF5F57}.lights .y{background:#FEBC2E}.lights .g{background:#28C840}
+  .back{margin-left:18px;color:var(--muted);font-size:12.5px}
+  .crumb{margin-left:14px;color:var(--dim);font-size:12.5px}.crumb b{color:#C9CDD6;font-weight:600}
+  .titlebar .ttl{position:absolute;left:50%;transform:translateX(-50%);font-size:13px;font-weight:600;color:#D7DAE2}
+  .wrap{flex:1;display:flex;min-height:0}
+  .rail{width:248px;flex:0 0 248px;background:var(--bg2);border-right:1px solid var(--border);overflow:auto;padding:14px 12px}
+  .rail h2{font-size:16px;margin:4px 4px 3px;font-weight:700}
+  .rail .blurb{color:var(--muted);font-size:11.5px;margin:0 4px 12px;line-height:1.45}
+  .grp{font-size:10px;font-weight:700;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin:14px 6px 7px;display:flex;align-items:center;gap:7px}
+  .grp .gd{width:7px;height:7px;border-radius:50%}
+  .nt{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;cursor:pointer;border:1px solid transparent}
+  .nt:hover{background:var(--panel)}
+  .nt.sel{background:var(--panel);border-color:var(--border2)}
+  .nt .ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;flex:0 0 26px}
+  .nt .nm{font-size:13px;font-weight:600;line-height:1.15}
+  .nt .dsx{font-size:10.5px;color:var(--muted);margin-top:1px}
+  .ic.coral{background:rgba(251,138,110,.14);color:var(--c)} .ic.teal{background:rgba(55,214,174,.13);color:var(--t)}
+  .ic.amber{background:rgba(243,192,101,.14);color:var(--a)} .ic.gate{background:rgba(167,139,250,.15);color:var(--gate)}
+  .ic.gray{background:rgba(154,160,172,.12);color:var(--gray)}
+  .stage{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--inset);background-image:radial-gradient(circle, rgba(255,255,255,.04) 1px, transparent 1.4px);background-size:22px 22px}
+  .ndv-head{height:58px;flex:0 0 58px;display:flex;align-items:center;gap:13px;padding:0 20px;border-bottom:1px solid var(--border);background:var(--bg)}
+  .ndv-head .nic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:17px}
+  .ndv-head .tt h3{margin:0;font-size:15.5px;font-weight:700}
+  .ndv-head .tt .sub{color:var(--muted);font-size:11.5px;margin-top:1px}
+  .pill{display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:5px 10px;border-radius:8px}
+  .pill .pd{width:7px;height:7px;border-radius:50%}
+  .pill.coral{color:var(--c);background:rgba(251,138,110,.13)} .pill.coral .pd{background:var(--c)}
+  .pill.teal{color:var(--t);background:rgba(55,214,174,.12)} .pill.teal .pd{background:var(--t)}
+  .pill.amber{color:var(--a);background:rgba(243,192,101,.13)} .pill.amber .pd{background:var(--a)}
+  .pill.gate{color:#C8B7FB;background:rgba(167,139,250,.15)} .pill.gate .pd{background:var(--gate)}
+  .pill.gray{color:var(--gray);background:rgba(154,160,172,.13)} .pill.gray .pd{background:var(--gray)}
+  .ndv-head .sp{flex:1}
+  .exec{height:36px;padding:0 16px;border-radius:9px;border:0;background:linear-gradient(180deg,#A78BFA,#9277F2);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;font-family:inherit;cursor:pointer}
+  .panes{flex:1;display:flex;min-height:0}
+  .pane{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .pane.in{width:284px;flex:0 0 284px;border-right:1px solid var(--border)}
+  .pane.cfg{flex:1;background:var(--bg)}
+  .pane.out{width:330px;flex:0 0 330px;border-left:1px solid var(--border)}
+  .pane-h{height:42px;flex:0 0 42px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border)}
+  .pane-h .lab{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .pane-h .sp{flex:1}
+  .seg{display:flex;background:#11141B;border-radius:7px;padding:3px}
+  .seg i{font-style:normal;font-size:10.5px;font-weight:600;color:var(--muted);padding:3px 8px;border-radius:5px;cursor:pointer}
+  .seg i.on{background:rgba(124,111,232,.30);color:#EBE7FF}
+  .pane-b{flex:1;overflow:auto;padding:14px}
+  .accent-in{height:2px;flex:0 0 2px;background:transparent}
+  .accent-in.coral{background:var(--c)} .accent-in.gate{background:var(--gate)} .accent-in.teal{background:var(--t)}
+  .iohint{font-size:11px;line-height:1.5;padding:8px 10px;border-radius:8px;margin-bottom:11px}
+  .iohint.coral{color:#EAC8BC;background:rgba(251,138,110,.10);border:1px solid rgba(251,138,110,.4)}
+  .iohint.gate{color:#C8B7FB;background:rgba(167,139,250,.12);border:1px solid var(--purple-bd)}
+  .iohint.teal{color:#A9E6D6;background:rgba(55,214,174,.09);border:1px solid rgba(55,214,174,.35)}
+  .tabs{display:flex;align-items:center;gap:22px;height:42px;padding:0 18px;border-bottom:1px solid var(--border)}
+  .tabs .tb{font-size:13px;font-weight:600;color:var(--muted);height:42px;display:flex;align-items:center;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+  .tabs .tb.on{color:var(--text);border-bottom-color:var(--purple)}
+  .tabs .docs{margin-left:auto;color:var(--muted);font-size:12.5px}
+  .cfg-body{padding:18px;max-width:560px}
+  .cfg-label{font-size:12px;color:var(--muted);margin:14px 0 6px}.cfg-label:first-child{margin-top:0}
+  .cfg-ctrl{min-height:38px;border:1px solid var(--border2);border-radius:9px;display:flex;align-items:center;padding:8px 12px;background:var(--panel);font-size:13px;color:#D7DAE2;gap:8px}
+  .cfg-ctrl .v{flex:1}.cfg-ctrl .chev{color:var(--muted);font-size:12px}.cfg-ctrl .pen{color:var(--muted)}
+  .cfg-ro{font-size:12.5px;color:#9AA0AC;padding:4px 2px}
+  .cfg-sub{font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--dim);text-transform:uppercase;margin:20px 0 4px;border-top:1px solid var(--border);padding-top:14px}
+  .field-head{display:flex;align-items:center;justify-content:space-between;margin:12px 0 7px}
+  .field-head>span:first-child{font-size:12.5px;color:#C9CDD6}
+  .seg2{display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden}
+  .seg2 i{font-style:normal;font-size:10.5px;font-weight:600;color:var(--muted);padding:3px 9px;cursor:pointer}
+  .seg2 i.on{background:rgba(124,111,232,.30);color:#EBE7FF}
+  .expr{display:flex;align-items:center;gap:9px;border:1px solid var(--purple-bd);border-radius:9px;padding:9px 11px;background:rgba(167,139,250,.06)}
+  .expr .fx{font-family:var(--mono);font-size:11px;color:var(--purple);background:rgba(167,139,250,.18);padding:2px 6px;border-radius:5px;font-weight:700}
+  .expr .ex{font-family:var(--mono);font-size:12.5px;color:#9FE6CF}
+  .result{margin-top:9px;border:1px solid rgba(70,211,138,.4);background:rgba(70,211,138,.08);border-radius:9px;padding:9px 11px}
+  .result .rlabel{font-size:10px;font-weight:700;letter-spacing:.5px;color:#5fce93;text-transform:uppercase;margin-bottom:4px}
+  .result .rval{font-family:var(--mono);font-size:12px;color:#7ee0a8}
+  pre.code{font-family:var(--mono);font-size:11.5px;line-height:1.6;color:#CBD3DF;background:#0A0D12;border:1px solid var(--border2);border-radius:9px;padding:12px 13px;white-space:pre;overflow:auto;max-height:280px;margin:8px 0 0}
+  pre.code .bug{color:#FBB19E;background:rgba(251,138,110,.12)}
+  pre.code .cm{color:#5C6371}
+  .coderow{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+  .coderow .ed{color:var(--purple);font-size:12px;font-weight:600;cursor:pointer}
+  .ro{font-size:9px;font-weight:700;text-transform:uppercase;color:#FBB19E;background:rgba(251,138,110,.16);padding:2px 6px;border-radius:5px;margin-left:7px}
+  .qbanner{background:rgba(251,138,110,.10);border:1px solid rgba(251,138,110,.5);border-radius:11px;padding:12px 13px;margin-bottom:16px}
+  .qbanner .bt{display:flex;align-items:center;gap:8px;color:#FBB19E;font-weight:700;font-size:13px}
+  .qbanner .bd{color:#C7CCD6;font-size:12px;line-height:1.5;margin:7px 0 11px}
+  .qbanner .ba{display:flex;gap:8px}
+  .qbanner .ba button{font-family:inherit;font-size:12px;font-weight:600;border-radius:8px;padding:7px 12px;border:1px solid var(--border2);background:transparent;color:#C9CDD6;cursor:pointer}
+  .qbanner .ba button.en{background:linear-gradient(180deg,#A78BFA,#9277F2);color:#fff;border:0}
+  .cfgnote{margin-top:16px;color:var(--dim);font-size:11.5px;line-height:1.55}
+  .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:10px;color:var(--muted);padding:20px}
+  .empty .big{font-size:13.5px}.empty .small{font-size:11.5px;color:var(--dim);line-height:1.5}
+  .empty .gb{border:1px solid var(--border2);border-radius:9px;padding:8px 14px;font-size:12.5px;color:#C9CDD6}
+  .empty .lnk{color:var(--c);font-size:12px}
+  .ran{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted);margin-bottom:10px}
+  .ran .d{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  pre.json{font-family:var(--mono);font-size:11px;line-height:1.55;color:#CBD3DF;margin:0;white-space:pre-wrap;word-break:break-word}
+  .gt{width:100%;border-collapse:collapse;font-size:11px}
+  .gt th{text-align:left;color:var(--dim);font-weight:600;padding:6px 7px;border-bottom:1px solid var(--border2);font-size:10px;text-transform:uppercase}
+  .gt td{padding:6px 7px;border-bottom:1px solid var(--border);color:#CCD1DB;font-family:var(--mono);font-size:11px}
+  .gt td.up{color:var(--green)}.gt td.dn{color:var(--red)}
+  .snippet{font-family:var(--mono);font-size:10.5px;color:#9AA0AC;background:#0A0D12;border:1px solid var(--border2);border-radius:9px;padding:10px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow:auto}
+  .pcard{background:var(--panel2);border:1px solid var(--border);border-radius:11px;padding:12px}
+  .pcard .kvm{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-top:7px}
+  .pcard .kvm:first-child{margin-top:0}
+  .pcard .val{font-size:12.5px;color:#D7DAE2}
+  .pcard .body{font-size:12px;color:#C7CCD6;line-height:1.5;margin-top:8px}
+  .pcard .attach{display:inline-flex;align-items:center;gap:6px;margin-top:10px;background:rgba(167,139,250,.14);color:#C8B7FB;border:1px solid var(--purple-bd);border-radius:7px;padding:5px 9px;font-size:11px;font-family:var(--mono)}
+  .pcard .await{margin-top:11px;font-size:11px;color:#C8B7FB;border-top:1px solid var(--border);padding-top:9px}
+  .disabled{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 14px;border:1px dashed var(--border2);border-radius:11px;line-height:1.6}
+  ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#272d38;border-radius:6px;border:2px solid var(--bg)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <span class="back">← Back to canvas</span>
+    <span class="crumb">Oracle / <b>Freight rate watch</b> / node editor</span>
+    <span class="ttl">Ganban</span>
+  </div>
+  <div class="wrap">
+    <div class="rail">
+      <h2>Node types</h2>
+      <div class="blurb">Every node has the same three-part shape — typed input, config, typed output — and a trust class (the colour). The left edge acquires untrusted data; it earns trust moving inside the walls; writes need a human.</div>
+      <div id="catalog"></div>
+    </div>
+    <div class="stage">
+      <div class="ndv-head" id="ndvHead"></div>
+      <div class="panes">
+        <div class="pane in"><div class="accent-in" id="inAcc"></div><div class="pane-h"><span class="lab">INPUT</span><span class="sp"></span><div class="seg"><i>Schema</i><i class="on">Table</i><i>JSON</i></div></div><div class="pane-b" id="inBody"></div></div>
+        <div class="pane cfg"><div class="tabs"><span class="tb on">Parameters</span><span class="tb">Settings</span><span class="docs">Docs ↗</span></div><div class="pane-b" id="cfgBody" style="padding:0"></div></div>
+        <div class="pane out"><div class="accent-in" id="outAcc"></div><div class="pane-h"><span class="lab">OUTPUT</span><span class="sp"></span><div class="seg"><i>Schema</i><i class="on">Table</i><i>JSON</i></div></div><div class="pane-b" id="outBody"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const INEMPTY = `<div class="empty"><div class="big">No input data yet</div><div class="gb">Execute previous nodes</div><div class="small">(From the earliest node that needs it)</div></div>`;
+function ran(t){return `<div class="ran"><span class="d"></span> ran ${t}</div>`;}
+function tbl(cols,rows){return `<table class="gt"><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>${rows.map(r=>`<tr>${r.map(c=>{const cl=c[0]==='+'?'up':(c[0]==='-')?'dn':'';return `<td class="${cl}">${c}</td>`;}).join('')}</tr>`).join('')}</table>`;}
+function js(s){return `<pre class="json">${s}</pre>`;}
+
+const NT = {
+ sched:{grp:'trig',cat:'amber',icon:'⏱',title:'Every hour',pill:'Trigger · schedule',ds:'fires on a clock',
+   cfg:`<div class="cfg-label">Trigger</div><div class="cfg-ctrl"><span class="v">Schedule</span><span class="chev">▾</span></div><div class="cfg-label">Every</div><div class="cfg-ctrl"><span class="v">1 hour</span><span class="chev">▾</span></div><div class="cfg-label">Timezone</div><div class="cfg-ctrl"><span class="v">Europe/London</span><span class="chev">▾</span></div><div class="cfg-label">Next run</div><div class="cfg-ro">in 9 min · 15:00 local</div><div class="cfgnote">A trigger has no input — it starts the run and emits a control pulse downstream.</div>`,
+   inBody:INEMPTY,
+   outBody:ran('just now')+js(`{
+  "trigger": "schedule",
+  "fired_at": "2026-06-16T15:00:00+01:00",
+  "run_id": "r_8f2a1"
+}`)},
+ emailtrig:{grp:'trig',cat:'coral',icon:'✉️',title:'New email',pill:'Trigger · untrusted',ds:'inbox watch · funnelled',
+   cfg:`<div class="cfg-label">Watch</div><div class="cfg-ctrl"><span class="v">Inbox</span><span class="chev">▾</span></div><div class="cfg-label">Filter</div><div class="cfg-ctrl"><span class="v">unread</span><span class="chev">▾</span></div><div class="cfg-sub">Screening</div><div class="cfg-label">Odysseus funnel</div><div class="cfg-ctrl"><span class="v">on — embed → threshold → metered LLM</span><span class="chev">▾</span></div><div class="cfg-label">On match</div><div class="cfg-ctrl"><span class="v">pre-warm (fetch + draft) before notifying</span><span class="chev">▾</span></div><div class="cfgnote">The email body is untrusted. The funnel screens it before any inside-the-walls node reads it, and nothing here can act with tools.</div>`,
+   inBody:INEMPTY,
+   outAcc:'coral', outHint:{cls:'coral',html:'Output is <b>untrusted</b>. Downstream nodes treat it as hostile until a no-tools librarian extracts a structured request.'},
+   outBody:ran('2s ago')+js(`{
+  "from": "j.okafor@city.ac.uk",
+  "subject": "Send the SMM591 syllabus?",
+  "body": "… (untrusted) …",
+  "attachments": 0
+}`)},
+
+ apisrc:{grp:'acq',cat:'coral',icon:'🛰️',title:'Get a DONKI solar flare',pill:'Oracle · untrusted',ds:'credentialed API GET',
+   cfg:`<div class="cfg-label">Credential to connect with</div><div class="cfg-ctrl"><span class="v">NASA account</span><span class="chev">▾</span><span class="pen">✎</span></div><div class="cfg-label">Resource</div><div class="cfg-ctrl"><span class="v">DONKI Solar Flare</span><span class="chev">▾</span></div><div class="cfg-label">Operation</div><div class="cfg-ctrl"><span class="v">Get</span><span class="chev">▾</span></div><div class="cfg-sub">Additional Fields</div><div class="field-head"><span>Start Date</span><span class="seg2"><i>Fixed</i><i class="on">Expression</i></span></div><div class="expr"><span class="fx">fx</span><span class="ex">{{ $today.minus(7, 'days') }}</span></div><div class="result"><div class="rlabel">Result</div><div class="rval">[DateTime: 2026-06-09T00:00:00-04:00]</div></div><div class="cfgnote">Same shape as the n8n node you were looking at — credential, resource, operation, live-evaluated expressions. The added thing is the trust badge: the response is untrusted, so it can't reach a write node without crossing the walls first.</div>`,
+   inBody:INEMPTY,
+   outAcc:'coral', outHint:{cls:'coral',html:'API response — <b>untrusted</b>. JSON from outside the perimeter.'},
+   outBody:ran('0.6s ago')+js(`[
+  { "flrID": "2026-06-11T0420",
+    "classType": "M1.5",
+    "sourceLocation": "S17W42" },
+  { "flrID": "2026-06-13T1107",
+    "classType": "C8.2",
+    "sourceLocation": "N09E11" }
+]`)},
+ webfetch:{grp:'acq',cat:'coral',icon:'🌐',title:'Fetch page',pill:'Oracle · untrusted',ds:'sandboxed webview',
+   cfg:`<div class="cfg-label">URL</div><div class="cfg-ctrl"><span class="v">ship-bunker.com/prices</span><span class="chev">▾</span></div><div class="cfg-label">Render</div><div class="cfg-ctrl"><span class="v">Sandboxed webview</span><span class="chev">▾</span></div><div class="cfg-label">Wait for</div><div class="cfg-ctrl"><span class="v">selector · table.prices</span><span class="chev">▾</span></div><div class="cfg-label">Run page JS</div><div class="cfg-ctrl"><span class="v">off</span><span class="lk">🔒</span></div><div class="cfgnote">Loads in the same sandboxed view Ganban already ships. The DOM is captured, not screenshotted — the Extract node works on real nodes.</div>`,
+   inBody:`<div class="iohint teal">Control ← schedule trigger</div>`+js(`{ "trigger": "schedule" }`),
+   outAcc:'coral', outHint:{cls:'coral',html:'1 page · 61 KB HTML — <b>untrusted</b>.'},
+   outBody:ran('0.9s ago')+`<div class="snippet">&lt;table class="prices"&gt;
+  &lt;tr&gt;&lt;td&gt;Singapore&lt;/td&gt;&lt;td&gt;VLSFO&lt;/td&gt;
+      &lt;td&gt;612.5&lt;/td&gt;&lt;/tr&gt;
+  &lt;tr&gt;&lt;td&gt;Rotterdam&lt;/td&gt;…
+&lt;/table&gt;</div>`},
+
+ extract:{grp:'walls',cat:'teal',icon:'🎯',title:'Extract table',pill:'Subgraph · deterministic',ds:'replay click-locator',
+   cfg:`<div class="cfg-label">Repeat unit</div><div class="cfg-ctrl"><span class="v">table row</span><span class="chev">▾</span></div><div class="cfg-label">Locator</div><div class="cfg-ctrl"><span class="v">label-anchored (relative)</span><span class="chev">▾</span></div><div class="cfg-label">Confidence</div><div class="cfg-ro">row 0.91 · field 0.70</div><div class="cfg-label">Self-heal</div><div class="cfg-ctrl"><span class="v">LLM re-derives on miss, then saves</span><span class="chev">▾</span></div><div class="cfgnote" style="color:var(--purple);font-weight:600">Open subgraph ▸</div><div class="cfgnote">Authored once by clicking the page; replays deterministically. The model only runs if the locator misses.</div>`,
+   inAcc:'coral', inHint:{cls:'coral',html:'HTML ← fetch page · <b>untrusted</b>'},
+   inBody:`<div class="snippet">&lt;table class="prices"&gt; … &lt;/table&gt;</div>`,
+   outAcc:'teal', outHint:{cls:'teal',html:'Structured rows — trusted shape, values still from an untrusted source.'},
+   outBody:ran('0.1s ago')+tbl(['Port','Grade','USD/MT','Δ'],[['Singapore','VLSFO','612.5','+4.0'],['Rotterdam','VLSFO','548.0','-2.5'],['Fujairah','MGO','842.0','+1.0']])},
+ transform:{grp:'walls',cat:'teal',icon:'⚖️',title:'Normalize',pill:'Step · deterministic',ds:'pure table → table',
+   cfg:`<div class="cfg-label">Unit</div><div class="cfg-ctrl"><span class="v">USD/MT</span><span class="chev">▾</span></div><div class="cfg-label">Port names</div><div class="cfg-ctrl"><span class="v">canonical map</span><span class="chev">▾</span></div><div class="field-head"><span>Timestamp</span><span class="seg2"><i>Fixed</i><i class="on">Expression</i></span></div><div class="expr"><span class="fx">fx</span><span class="ex">{{ $now.toUTC() }}</span></div><div class="result"><div class="rlabel">Result</div><div class="rval">[DateTime: 2026-06-16T14:00:00Z]</div></div><div class="cfgnote">No model, no network — a pure function. Same input always gives the same output, so it's cached on a content hash.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'Rows ← extract table'},
+   inBody:tbl(['Port','Grade','USD/MT'],[['Singapore','VLSFO','612.5'],['Rotterdam','VLSFO','548.0']]),
+   outBody:ran('0.0s ago')+tbl(['port','grade','usd_mt','ts'],[['singapore','VLSFO','612.5','14:00Z'],['rotterdam','VLSFO','548.0','14:00Z']])},
+ librarian:{grp:'walls',cat:'teal',icon:'🧭',title:'Read the request',pill:'Librarian · no tools',ds:'classify / route',
+   cfg:`<div class="cfg-label">Extract</div><div class="cfg-ctrl"><span class="v">doc name · intent</span><span class="chev">▾</span></div><div class="cfg-label">Model</div><div class="cfg-ctrl"><span class="v">host · qwen3</span><span class="chev">▾</span></div><div class="cfg-label">Tools</div><div class="cfg-ctrl"><span class="v">off</span><span class="lk">🔒</span></div><div class="cfg-sub">Output schema</div><pre class="code">{ "doc":  string,
+  "want": "send" | "summarise" | "other",
+  "confidence": number }</pre><div class="cfgnote">The one LLM call in the chain, and it returns a <b>structured decision</b> a deterministic dispatcher executes. No tools on this call, so a hostile email can read but never act.</div>`,
+   inAcc:'coral', inHint:{cls:'coral',html:'Message ← email trigger · <b>untrusted</b>'},
+   inBody:js(`{ "subject": "Send the SMM591 syllabus?",
+  "body": "… (untrusted) …" }`),
+   outAcc:'teal', outHint:{cls:'teal',html:'A typed decision — safe for a deterministic dispatcher to act on.'},
+   outBody:ran('0.4s ago')+js(`{
+  "doc": "SMM591 syllabus",
+  "want": "send",
+  "confidence": 0.93
+}`)},
+ pyowner:{grp:'walls',cat:'teal',icon:'🐍',title:'Quant: rolling VaR',pill:'Python · owner-authored',ds:'your code, trusted',
+   cfg:`<div class="coderow"><span style="font-size:12px;color:var(--muted)">run()</span><span class="ed">Edit ▸</span></div><pre class="code">def run(df, params):
+    r = (df.pivot(index="ts", columns="port", values="price")
+           .pct_change().dropna())
+    w, a = params["window"], 1 - params["confidence"]
+    var = r.rolling(w).quantile(a).iloc[-1]
+    return pd.DataFrame({"port": var.index, "var99": var.values})</pre><div class="cfg-label" style="margin-top:14px">Parameters</div><div class="cfg-ctrl"><span class="v">window 60 · confidence 0.99 · method historical</span><span class="chev">▾</span></div><div class="cfg-label">Venv</div><div class="cfg-ctrl"><span class="v">scientific-base</span><span class="chev">▾</span></div><div class="cfg-label">Network</div><div class="cfg-ctrl"><span class="v">off</span><span class="lk">🔒</span></div><div class="cfgnote">Authored by you on this host, so it runs without review. Long-lived Python worker, Arrow table in/out, cached on code + input + params hash.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'Price table ← extract / normalize'},
+   inBody:tbl(['port','price','ts'],[['SIN','612.5','…'],['ROT','548.0','…']]),
+   outBody:ran('0.3s ago')+tbl(['port','1d VaR 99%','vol ann'],[['Singapore','-2.8%','31%'],['Rotterdam','-2.3%','27%']])},
+ pyimport:{grp:'walls',cat:'coral',icon:'🐍',title:'Stress test',pill:'Python · imported',ds:'quarantined code',
+   banner:`<div class="qbanner"><div class="bt">🔒 Imported code — review before it runs</div><div class="bd">Arrived inside <b>“FX shock pack”</b> from <b>@eratosthenes</b>. Disabled until you read it and enable it.</div><div class="ba"><button>Review code</button><button class="en">Enable</button><button>Discard</button></div></div>`,
+   cfg:`<div class="coderow"><span style="font-size:12px;color:var(--muted)">run()<span class="ro">read-only</span></span></div><pre class="code">def run(df, params):
+    <span class="cm"># arrived with the import — reaches a URL</span>
+    <span class="bug">shocks = requests.get(params["scenarios_url"]).json()</span>
+    out = df.copy()
+    for s in shocks:
+        out[s["name"]] = df["var99"] * s["mult"]
+    return out</pre><div class="cfg-label" style="margin-top:14px">Network</div><div class="cfg-ctrl"><span class="v" style="color:#FBB19E">flagged · run() calls requests.get(…)</span></div><div class="cfgnote">Imported Python is untrusted <b>code</b> — a different class from untrusted data. It stays off, runs isolated (no network by default, CPU/mem/wall caps) once enabled. Edit it to take ownership and it turns teal.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'VaR table ← rolling VaR'},
+   inBody:tbl(['port','var99'],[['Singapore','-2.8%'],['Rotterdam','-2.3%']]),
+   outBody:`<div class="disabled">— disabled until you<br>review and enable it</div>`},
+
+ writeapprove:{grp:'write',cat:'gate',icon:'📎',title:'Draft reply + attach',pill:'Write · needs approval',ds:'proposal → human',
+   cfg:`<div class="cfg-label">Action</div><div class="cfg-ctrl"><span class="v">Draft reply + attach</span><span class="chev">▾</span></div><div class="cfg-label">Target</div><div class="cfg-ctrl"><span class="v">Drafts</span><span class="chev">▾</span></div><div class="cfg-label">Send</div><div class="cfg-ctrl"><span class="v">never</span><span class="lk">🔒</span></div><div class="cfg-label">On apply</div><div class="cfg-ctrl"><span class="v">proposal → Activity → approve → ledger</span><span class="chev">▾</span></div><div class="cfgnote">A write never fires on its own. It produces a proposal a human approves in Activity; only then does it land, append-only, in the ledger. Ganban has no SMTP — it can draft, never send.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'Match ← find the document'},
+   inBody:js(`{ "doc": "SMM591_syllabus.pdf", "score": 0.94 }`),
+   outAcc:'gate', outHint:{cls:'gate',html:'A <b>proposal</b> — nothing happened yet.'},
+   outBody:ran('now')+`<div class="pcard"><div class="kvm">To</div><div class="val">j.okafor@city.ac.uk</div><div class="kvm">Subject</div><div class="val">Re: SMM591 syllabus</div><div class="body">Hi Jamie — attaching the syllabus you asked for. Shout if you need the reading list too.</div><span class="attach">📎 SMM591_syllabus.pdf</span><div class="await">⏳ awaiting your approval in Activity</div></div>`},
+ writeauto:{grp:'write',cat:'gate',icon:'🗄️',title:'Append to note',pill:'Write · auto-apply',ds:'low-risk · ledgered',
+   cfg:`<div class="cfg-label">Action</div><div class="cfg-ctrl"><span class="v">Append to note</span><span class="chev">▾</span></div><div class="cfg-label">Target</div><div class="cfg-ctrl"><span class="v">Note · Daily market brief</span><span class="chev">▾</span></div><div class="cfg-label">Mode</div><div class="cfg-ctrl"><span class="v">append dated</span><span class="chev">▾</span></div><div class="cfg-label">Risk</div><div class="cfg-ctrl"><span class="v">low → auto-apply</span><span class="chev">▾</span></div><div class="cfgnote">Append-only and reversible, so it applies without a prompt — but it's still recorded in the ledger. Flip to “needs approval” per workflow if you'd rather review each run.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'Summary ← summarise'},
+   inBody:js(`{ "text": "Capesize rates firmed …", "sources": 3 }`),
+   outAcc:'gate', outHint:{cls:'gate',html:'Applied and <b>ledgered</b>.'},
+   outBody:ran('now')+js(`{
+  "inserted": 1,
+  "target": "Daily market brief",
+  "ledger": "#4471"
+}`)},
+
+ sink:{grp:'sink',cat:'gray',icon:'📉',title:'Return plot',pill:'Sink · chart',ds:'image out, no port',
+   cfg:`<div class="cfg-label">Kind</div><div class="cfg-ctrl"><span class="v">line chart</span><span class="chev">▾</span></div><div class="cfg-label">X axis</div><div class="cfg-ctrl"><span class="v">Date</span><span class="chev">▾</span></div><div class="cfg-label">Series</div><div class="cfg-ctrl"><span class="v">fitted · actual</span><span class="chev">▾</span></div><div class="cfgnote">A sink consumes data and emits an artifact — a chart or a printed report. Nothing downstream reads it, so it has an input port but no output port.</div>`,
+   inAcc:'teal', inHint:{cls:'teal',html:'Table ← regression / transform'},
+   inBody:tbl(['Date','fitted','actual'],[['Jan','0.021','0.019'],['Feb','0.014','0.018']]),
+   outBody:`<div class="disabled">📈 chart rendered<br><span style="color:var(--dim)">no data port — terminal node</span></div>`},
+};
+
+const GROUPS = [
+ ['trig','Triggers','#F3C065'],
+ ['acq','Oracle · acquire (untrusted)','#FB8A6E'],
+ ['walls','Inside the walls','#37D6AE'],
+ ['write','Writes (gated)','#A78BFA'],
+ ['sink','Sinks','#9AA0AC'],
+];
+const CCmap={amber:'#F3C065',coral:'#FB8A6E',teal:'#37D6AE',gate:'#A78BFA',gray:'#9AA0AC'};
+let cur='apisrc';
+
+function renderRail(){
+  let h='';
+  GROUPS.forEach(([g,label,col])=>{
+    h+=`<div class="grp"><span class="gd" style="background:${col}"></span>${label}</div>`;
+    Object.entries(NT).filter(([,n])=>n.grp===g).forEach(([id,n])=>{
+      h+=`<div class="nt ${id===cur?'sel':''}" data-id="${id}"><div class="ic ${n.cat}">${n.icon}</div><div><div class="nm">${n.title}</div><div class="dsx">${n.ds}</div></div></div>`;
+    });
+  });
+  document.getElementById('catalog').innerHTML=h;
+  document.querySelectorAll('.nt').forEach(el=>el.onclick=()=>{cur=el.dataset.id;render();});
+}
+function render(){
+  const n=NT[cur];
+  document.getElementById('ndvHead').innerHTML=
+    `<div class="nic" style="background:rgba(0,0,0,.2);color:${CCmap[n.cat]};border:1px solid ${CCmap[n.cat]}55">${n.icon}</div>`+
+    `<div class="tt"><h3>${n.title}</h3><div class="sub">${n.ds}</div></div>`+
+    `<div class="pill ${n.cat}"><span class="pd"></span>${n.pill}</div>`+
+    `<div class="sp"></div><button class="exec">▶ Execute step</button>`;
+  document.getElementById('inAcc').className='accent-in '+(n.inAcc||'');
+  document.getElementById('outAcc').className='accent-in '+(n.outAcc||'');
+  document.getElementById('inBody').innerHTML=(n.inHint?`<div class="iohint ${n.inHint.cls}">${n.inHint.html}</div>`:'')+n.inBody;
+  document.getElementById('outBody').innerHTML=(n.outHint?`<div class="iohint ${n.outHint.cls}">${n.outHint.html}</div>`:'')+n.outBody;
+  document.getElementById('cfgBody').innerHTML=`<div class="cfg-body">${n.banner||''}${n.cfg}</div>`;
+  renderRail();
+}
+render();
+</script>
+</body>
+</html>

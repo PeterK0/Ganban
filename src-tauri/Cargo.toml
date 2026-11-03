@@ -1,0 +1,68 @@
+[package]
+name = "gansty"
+version = "1.0.4"
+license = "AGPL-3.0-only"
+description = "Ganban desktop and mobile app (Tauri shell)"
+authors = ["Ganban contributors"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "gansty_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+# Native camera QR/barcode scanning (used on mobile for daemon pairing; a no-op
+# on desktop). Compiles on all targets.
+tauri-plugin-barcode-scanner = "2"
+# The phone updates itself from the host (ADR 0007): download the APK, check its
+# sha256, hand it to Android's installer. Kotlin; empty on every other target.
+tauri-plugin-apk-updater = { path = "../crates/tauri-plugin-apk-updater" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Desktop-only local database stack.
+#
+# The mobile (Android/iOS) build MUST NOT compile sqlx / bundled SQLite: cross-
+# compiling it with the Android NDK fails to link (undefined symbol
+# `__extenddftf2`). On mobile the phone is a pure HTTP thin client to the daemon
+# and does no local DB work, so we gate the `ganban-core` dependency (which is
+# what pulls in sqlx) off the mobile targets entirely.
+#
+# NOTE: dependency tables are evaluated by Cargo from the *target triple*, so
+# this uses `target_os` rather than Tauri's `desktop` cfg (the latter is set by
+# a build script and is only usable inside `#[cfg(...)]` in source code).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+ganban-core = { workspace = true }
+# Desktop can host the daemon in-process (start/stop/QR pairing). The mobile
+# build is a pure client and excludes the HTTP server stack entirely.
+# embed-web compiles dist/ into the daemon so a shipped app serves the touch UI
+# from any machine — tauri's beforeBuildCommand builds dist/ before cargo runs.
+ganban-server = { workspace = true, features = ["embed-web"] }
+tokio = { workspace = true }
+if-addrs = "0.13"
+# Desktop-only: download a project's files from the daemon to a local folder
+# (file sync). rustls to match the server stack and avoid OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# Streaming upload bodies (file_sync::daemon_upload_*): a channel → body stream.
+futures-util = "0.3"
+# The app updates itself from its host (app_update.rs, ADR 0007). Desktop only;
+# registered at runtime only when the build carries the updater's public key.
+tauri-plugin-updater = "2"
+
+[dev-dependencies]
+# Desktop wiring test: drive `run_command` through Tauri's mock runtime (IPC as the
+# webview sends it, no window).
+tauri = { version = "2", features = ["test"] }

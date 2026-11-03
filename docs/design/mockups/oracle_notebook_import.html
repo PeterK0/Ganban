@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ganban — Oracle · Import notebook</title>
+<style>
+  :root{
+    --bg:#0E1116; --bg2:#0B0D12; --panel:#161A22; --panel2:#1B2029; --inset:#0C0F14;
+    --border:#242A35; --border2:#2E3440;
+    --text:#E7E9EF; --muted:#878D9A; --dim:#5C6371;
+    --purple:#A78BFA; --purple-soft:rgba(167,139,250,.15); --purple-bd:rgba(167,139,250,.5); --purple-strong:#7C6FE6;
+    --green:#46D38A; --running:#A78BFA; --red:#F06D6D;
+    --t:#37D6AE; --c:#FB8A6E; --a:#F3C065; --gate:#A78BFA; --gray:#9AA0AC;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,"SF Pro Text","Segoe UI",Inter,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#05070A;color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .app{height:100vh;min-height:720px;display:flex;flex-direction:column;background:var(--bg);overflow:hidden}
+  .titlebar{height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center;position:relative;background:var(--bg);border-bottom:1px solid var(--border)}
+  .lights{position:absolute;left:14px;display:flex;gap:8px}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .lights .r{background:#FF5F57}.lights .y{background:#FEBC2E}.lights .g{background:#28C840}
+  .titlebar b{font-size:13px;font-weight:600;color:#D7DAE2}
+  .topbar{height:58px;flex:0 0 58px;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg)}
+  .logo{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:19px;background:linear-gradient(160deg,#3a2030,#241019);border:1px solid #5a2030}
+  .hostpill{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border:1px solid var(--border2);border-radius:9px;color:#C9CDD6;font-size:13px;font-weight:500}
+  .hostpill .lyr{color:var(--purple)}
+  .stats{display:flex;align-items:center;gap:20px;margin-left:6px}
+  .stat{display:flex;align-items:center;gap:7px;font-size:14px;color:#D2D6DE;font-weight:600}
+  .spacer{flex:1}
+  .iconbtn{width:40px;height:38px;border:1px solid var(--border2);border-radius:9px;display:grid;place-items:center;color:#C9CDD6;font-size:16px}
+  .pill{display:flex;align-items:center;gap:8px;height:38px;padding:0 14px;border:1px solid var(--border2);border-radius:9px;color:#C9CDD6;font-size:13.5px}
+  .pill .mono{font-family:var(--mono);letter-spacing:.5px}
+  .avatar{width:40px;height:40px;border-radius:50%;background:linear-gradient(150deg,#caa46a,#7a5a2a);position:relative;border:2px solid #d8b277}
+  .avatar .badge{position:absolute;top:-3px;right:-3px;background:var(--red);color:#fff;font-size:11px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:grid;place-items:center;padding:0 4px;border:2px solid var(--bg)}
+  .body{flex:1;display:flex;min-height:0}
+  .sidebar{width:236px;flex:0 0 236px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:14px 14px 12px}
+  .nav{display:flex;flex-direction:column;gap:4px}
+  .nav a{display:flex;align-items:center;gap:13px;height:44px;padding:0 14px;border-radius:11px;color:#B9BEC9;font-size:15px;font-weight:500;text-decoration:none}
+  .nav a .ic{width:20px;text-align:center;font-size:16px;opacity:.85}
+  .nav a.active{background:rgba(124,111,232,.26);color:#EBE7FF}
+  .divider{height:1px;background:var(--border);margin:14px 2px}
+  .seg{display:flex;background:#11141B;border-radius:10px;padding:4px;margin-bottom:12px}
+  .seg button{flex:1;height:32px;border:0;background:transparent;color:var(--muted);font-size:13px;font-weight:600;border-radius:7px;font-family:inherit}
+  .seg button.on{background:rgba(124,111,232,.30);color:#EBE7FF}
+  .pinned{flex:1;overflow:auto;display:flex;flex-direction:column;gap:2px}
+  .pinrow{display:flex;align-items:center;gap:10px;height:38px;padding:0 8px;border-radius:8px;color:#AEB4C0;font-size:14px}
+  .pinrow .pin{opacity:.5;font-size:12px}.pinrow .nm{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .pinrow .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+  .newproj{height:46px;margin-top:10px;border:0;border-radius:12px;background:linear-gradient(180deg,#A78BFA,#9277F2);color:#fff;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;font-family:inherit}
+  .joinproj{height:38px;color:var(--muted);font-size:13.5px;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px}
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .tabbar{height:54px;flex:0 0 54px;display:flex;align-items:stretch;gap:26px;padding:0 26px;border-bottom:1px solid var(--border)}
+  .tab{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:15px;font-weight:600;border-bottom:2.5px solid transparent;margin-bottom:-1px}
+  .tab.active{color:var(--text);border-bottom-color:var(--purple)}
+  .tab.new::after{content:"new";font-size:9px;font-weight:700;letter-spacing:.4px;color:var(--purple);background:var(--purple-soft);padding:2px 5px;border-radius:5px;margin-left:2px;text-transform:uppercase}
+  .oracle{flex:1;display:flex;min-height:0}
+  .list{width:286px;flex:0 0 286px;border-right:1px solid var(--border);display:flex;flex-direction:column;padding:18px 14px;overflow:auto}
+  .list-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 4px 12px}
+  .list-h h2{font-size:20px;margin:0;font-weight:700}
+  .list-h .refresh{color:var(--muted);font-size:12.5px;border:1px solid var(--border2);padding:4px 10px;border-radius:7px}
+  .srccard{border:1px solid var(--border2);border-radius:12px;background:var(--panel);padding:12px 13px;margin:0 4px 12px}
+  .srccard .nm{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#E7E9EF}
+  .srccard .meta{color:var(--muted);font-size:12px;margin-top:5px}
+  .srccard .deco{color:var(--t);font-size:12px;font-weight:600;margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+  .sec{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin:14px 4px 8px}
+  .issue{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;margin:0 4px 7px;border-radius:10px;border:1px solid var(--border);background:var(--panel);cursor:pointer;font-size:12.5px;color:#C7CCD6;line-height:1.4}
+  .issue:hover{border-color:var(--border2)}
+  .issue .ig{font-size:14px;line-height:1.1;flex:0 0 auto}
+  .issue.warn .ig{color:var(--a)} .issue.lock .ig{color:var(--c)}
+  .issue b{color:#E7E9EF;font-weight:600}
+  .issue .tgt{color:var(--t);font-family:var(--mono);font-size:11px}
+  .skiprow{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;margin:0 4px;border-radius:10px;border:1px dashed var(--border2);font-size:12.5px;color:var(--muted);line-height:1.4}
+  .skiprow .tgt{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .listnote{margin:14px 4px 4px;color:var(--dim);font-size:11.5px;line-height:1.55}
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .cwrap{flex:1;display:flex;flex-direction:column;min-width:0}
+  .chead{height:60px;flex:0 0 60px;display:flex;align-items:center;gap:14px;padding:0 22px;border-bottom:1px solid var(--border)}
+  .crumb{color:var(--dim);font-size:13px}.crumb b{color:var(--text);font-weight:600}
+  .statuspill{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--c);background:rgba(251,138,110,.13);padding:5px 11px;border-radius:8px;font-weight:600}
+  .statuspill .d{width:7px;height:7px;border-radius:50%;background:var(--c)}
+  .chead .right{margin-left:auto;display:flex;gap:9px}
+  .btn{height:34px;padding:0 14px;border-radius:9px;font-size:13.5px;font-weight:600;border:1px solid var(--border2);background:transparent;color:#C9CDD6;display:flex;align-items:center;gap:7px;font-family:inherit;cursor:pointer}
+  .btn.primary{background:linear-gradient(180deg,#A78BFA,#9277F2);color:#fff;border:0}
+  .btn.ghostbtn{color:var(--muted)}
+  .canvas{flex:1;position:relative;overflow:auto;background:var(--inset);background-image:radial-gradient(circle, rgba(255,255,255,.045) 1px, transparent 1.4px);background-size:22px 22px;background-position:-1px -1px}
+  .scene{position:relative;margin:24px}
+  svg.wires{position:absolute;inset:0;overflow:visible;pointer-events:none}
+  .bandlabel{position:absolute;font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--dim)}
+  .bandlabel .bl{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:middle}
+  .node{position:absolute;width:184px;height:70px;border-radius:13px;background:var(--panel);border:1px solid var(--border2);padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.35);cursor:pointer}
+  .node .row{display:flex;align-items:center;gap:9px}
+  .node .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:14px;flex:0 0 26px}
+  .node .ti{font-size:13.5px;font-weight:600;line-height:1.1}
+  .node .sub{color:var(--muted);font-size:11px;margin-top:6px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .node .tag{position:absolute;top:-9px;right:9px;font-size:9px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;padding:2px 6px;border-radius:5px}
+  .node .badge2{position:absolute;top:-9px;left:9px;font-size:9px;font-weight:700;letter-spacing:.3px;padding:2px 6px;border-radius:5px;background:rgba(55,214,174,.16);color:var(--t)}
+  .port{position:absolute;width:11px;height:11px;border-radius:50%;background:#0C0F14;border:2px solid var(--border2);top:35px;transform:translateY(-50%)}
+  .port.in{left:-6px}.port.out{right:-6px}
+  .cat-coral{border-color:rgba(251,138,110,.45)} .cat-coral .ic{background:rgba(251,138,110,.14);color:var(--c)} .cat-coral .ti{color:#FBB19E} .cat-coral .port{border-color:var(--c)}
+  .cat-teal{border-color:rgba(55,214,174,.42)} .cat-teal .ic{background:rgba(55,214,174,.13);color:var(--t)} .cat-teal .ti{color:#7CE7CC} .cat-teal .port{border-color:var(--t)}
+  .cat-gate{border-color:rgba(167,139,250,.5)} .cat-gate .ic{background:rgba(167,139,250,.15);color:var(--gate)} .cat-gate .ti{color:#C8B7FB} .cat-gate .port{border-color:var(--gate)}
+  .cat-sink{border-color:var(--border2);border-style:dashed} .cat-sink .ic{background:rgba(154,160,172,.12);color:var(--gray)} .cat-sink .ti{color:#AEB4C0} .cat-sink .port{border-color:var(--gray)}
+  .node.ghost{opacity:.5;border-style:dashed;box-shadow:none}
+  .tag.untrusted{background:rgba(251,138,110,.16);color:var(--c)}
+  .tag.sub{background:rgba(55,214,174,.16);color:var(--t)}
+  .tag.warn{background:rgba(243,192,101,.18);color:#F6D08C}
+  .tag.skip{background:rgba(154,160,172,.16);color:var(--gray)}
+  .node.dim{opacity:.55}
+  .node.selected{outline:2px solid var(--purple);outline-offset:2px;box-shadow:0 0 0 5px rgba(167,139,250,.12),0 8px 26px rgba(0,0,0,.45)}
+  .legend{position:absolute;left:24px;bottom:18px;display:flex;flex-wrap:wrap;gap:6px 15px;font-size:11px;color:var(--muted);background:rgba(12,15,20,.85);border:1px solid var(--border);border-radius:10px;padding:8px 12px}
+  .legend .k{display:flex;align-items:center;gap:6px}.legend .sw{width:9px;height:9px;border-radius:50%}
+  .legend .ln{width:18px;border-top:2px solid var(--muted)}.legend .ln.dash{border-top:2px dashed var(--muted)}.legend .ln.pur{border-top:2px dashed var(--gate)}.legend .ln.thin{border-top:1.5px solid var(--gray)}
+  .insp{width:320px;flex:0 0 320px;border-left:1px solid var(--border);padding:20px 18px;overflow:auto}
+  .insp .ih{display:flex;align-items:center;gap:11px}
+  .insp .ih .ic{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;font-size:20px}
+  .insp .ih h3{margin:0;font-size:16.5px;font-weight:700}.insp .ih .ty{color:var(--muted);font-size:12px;margin-top:2px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:13px 0}
+  .chip{font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:7px;background:var(--purple-soft);color:#C8B7FB}
+  .desc{color:#B6BCC8;font-size:13px;line-height:1.5;margin:4px 0 8px}
+  .cellrow{margin:8px 0 2px}
+  .cells{display:inline-block;font-family:var(--mono);font-size:10.5px;color:var(--dim);background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:2px 7px}
+  .sec2{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin:16px 0 8px}
+  .kv{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--border)}
+  .kv .k{color:var(--muted)}.kv .v{color:var(--text);text-align:right}.kv .v.mono{font-family:var(--mono);font-size:11px}
+  .io{font-size:12.5px;color:#C2C7D1;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;line-height:1.5}
+  .io .pt{font-family:var(--mono);font-size:11px;color:var(--t)}
+  .io .pt.obj{color:var(--gate)}
+  .grid{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:2px}
+  .grid th{text-align:left;color:var(--dim);font-weight:600;padding:5px 7px;border-bottom:1px solid var(--border2);font-size:10.5px;text-transform:uppercase}
+  .grid td{padding:6px 7px;border-bottom:1px solid var(--border);color:#CCD1DB;font-family:var(--mono);font-size:11px}
+  .grid td.up{color:var(--green)}.grid td.dn{color:var(--red)}
+  pre.code{font-family:var(--mono);font-size:11px;line-height:1.6;color:#CBD3DF;background:#0A0D12;border:1px solid var(--border2);border-radius:9px;padding:11px 12px;white-space:pre;overflow:auto;max-height:230px;margin:0}
+  pre.code .bug{color:#F6D08C;background:rgba(243,192,101,.10)}
+  .flagbox{border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;margin:0 0 14px}
+  .flagbox.warn{background:rgba(243,192,101,.10);border:1px solid rgba(243,192,101,.5);color:#E9D6AE}
+  .flagbox.lock{background:rgba(251,138,110,.10);border:1px solid rgba(251,138,110,.5);color:#EAC8BC}
+  .flagbox b{color:#F6D08C}.flagbox.lock b{color:#FBB19E}
+  .flagbox code{font-family:var(--mono);font-size:11px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px}
+  .reuse{background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--t);border-radius:9px;padding:9px 11px;font-size:12px;color:#C7CCD6;line-height:1.5;margin-top:4px}
+  .reuse b{color:#7CE7CC}
+  .coderow{display:flex;align-items:center;justify-content:space-between}
+  .coderow .ed{color:var(--purple);font-size:11.5px;font-weight:600}
+  .ro-tag{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:#FBB19E;background:rgba(251,138,110,.16);padding:2px 6px;border-radius:5px;margin-left:6px}
+  .note{margin-top:12px;color:var(--dim);font-size:11.5px;line-height:1.5}
+  ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#272d38;border-radius:6px;border:2px solid var(--bg)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div><b>Ganban</b></div>
+  <div class="topbar">
+    <div class="logo">⛩️</div>
+    <div class="hostpill"><span class="lyr">▤</span> 100.84.224.92 <span style="opacity:.6">▾</span></div>
+    <div class="stats"><div class="stat"><span>📁</span> 10 Projects</div><div class="stat"><span>≡</span> 13 Areas</div><div class="stat"><span>🗒</span> 42 Tasks</div></div>
+    <div class="spacer"></div>
+    <div class="iconbtn">🔍</div><div class="pill">🕘 No active task</div><div class="pill"><span class="mono">02:41:09</span></div>
+    <div class="avatar"><span class="badge">3</span></div>
+  </div>
+  <div class="body">
+    <div class="sidebar">
+      <nav class="nav">
+        <a href="#"><span class="ic">🏠</span> Home</a><a href="#"><span class="ic">📁</span> Projects</a>
+        <a href="#"><span class="ic">📅</span> Events</a><a href="#"><span class="ic">🗺️</span> Atlas</a>
+        <a href="#" class="active"><span class="ic">💬</span> Assistant</a><a href="#"><span class="ic">👥</span> Contacts</a>
+        <a href="#"><span class="ic">📄</span> Reports</a><a href="#"><span class="ic">🗄️</span> Bin</a>
+      </nav>
+      <div class="divider"></div>
+      <div class="seg"><button class="on">Pinned</button><button>Projects</button></div>
+      <div class="pinned">
+        <div class="pinrow"><span class="pin">📌</span><span class="nm">SMM283 - Pyth…</span><span class="dot"></span></div>
+        <div class="pinrow"><span class="pin">📌</span><span class="nm">SMM393 - Finte…</span><span class="dot"></span></div>
+        <div class="pinrow"><span class="pin">📌</span><span class="nm">Financial Model…</span><span class="dot"></span></div>
+        <div class="pinrow"><span class="pin">📌</span><span class="nm">SMM716 - Ship…</span><span class="dot"></span></div>
+      </div>
+      <button class="newproj">＋ New Project</button>
+      <div class="joinproj">→ Join a project</div>
+    </div>
+    <div class="main">
+      <div class="tabbar">
+        <div class="tab"><span class="ic">💬</span> Chats</div><div class="tab"><span class="ic">🔍</span> Corpus</div>
+        <div class="tab"><span class="ic">📁</span> Indexing</div><div class="tab"><span class="ic">🧠</span> Models</div>
+        <div class="tab"><span class="ic">⚡</span> Activity</div><div class="tab active new"><span class="ic">🔮</span> Oracle</div>
+      </div>
+      <div class="oracle">
+        <div class="list">
+          <div class="list-h"><h2>Import review</h2><span class="refresh">↻ Re-scan</span></div>
+          <div class="srccard">
+            <div class="nm">📓 CAPM_Estimation.ipynb</div>
+            <div class="meta">23 cells · python3 · pandas · statsmodels</div>
+            <div class="deco">→ 15 nodes · 2 pipelines · 1 reusable (×3)</div>
+          </div>
+          <div class="sec">Issues · 2</div>
+          <div class="issue warn" onclick="sel('clean_capm')"><span class="ig">⚠</span><span><b>Typo, cell 5</b> — <code style="font-family:var(--mono)">.colums</code> rename is a no-op. Imported as written. <span class="tgt">→ clean</span></span></div>
+          <div class="issue lock" onclick="sel('load_capm')"><span class="ig">🔒</span><span><b>File reads</b> — cells 4 &amp; 13 open local <span class="tgt">.xlsx</span> on run. Confirm paths. <span class="tgt">→ load ×2</span></span></div>
+          <div class="sec">Skipped · 1</div>
+          <div class="skiprow"><span style="flex:0 0 auto">⊘</span><span><b style="color:#AEB4C0">Interest-rate stub</b> — cell 22 never executed <span class="tgt">(exec=None)</span>. Left out.</span></div>
+          <div class="listnote">Nothing runs until you <b style="color:#C8B7FB">Enable graph</b>. Imported nodes are read-only — open one and <b style="color:#C8B7FB">Edit</b> to take ownership and make it yours.</div>
+        </div>
+        <div class="cwrap">
+          <div class="chead">
+            <div class="crumb">Oracle / Import / <b>CAPM_Estimation.ipynb</b></div>
+            <div class="statuspill"><span class="d"></span> Quarantined — review to enable</div>
+            <div class="right"><button class="btn">⌕ Review code</button><button class="btn ghostbtn">Discard</button><button class="btn primary">✓ Enable graph</button></div>
+          </div>
+          <div class="canvas"><div class="scene" id="scene"><svg class="wires" id="wires"></svg></div></div>
+        </div>
+        <div class="insp" id="insp"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CC={coral:'#FB8A6E',teal:'#37D6AE',gate:'#A78BFA',sink:'#6B7280'};
+const ICBG={coral:'rgba(251,138,110,.14)',teal:'rgba(55,214,174,.13)',gate:'rgba(167,139,250,.15)',sink:'rgba(154,160,172,.12)'};
+const NW=184, NH=70;
+
+const C_CLEAN=`def run(df, params):
+    # carried verbatim from cell 5 — see flag above
+    df.colums = ['Date','NDQCOMP','APPL','MSOFT','TBILL']   #BUG
+    df['Date'] = pd.to_datetime(df['Date'], format='%d%m%Y')
+    return df`;
+const C_RET=`def run(df, params):
+    div = params["tbill_div"]            # lifted: was 1200
+    df = df.assign(
+        dlNDQ  = np.log(df.NDQCOMP).diff(),
+        dlAPPL = np.log(df.APPL).diff(),
+        dlMSOFT= np.log(df.MSOFT).diff(),
+        tbill  = df.TBILL / div)
+    for k in ["NDQ","APPL","MSOFT"]:
+        df["exr_"+k] = df["dl"+k] - df.tbill
+    return df`;
+const C_OLS=`def run(df, params):
+    y = df[params["y"]]
+    X = sm.add_constant(df[params["X"]])
+    s = slice(params["start"], params["end"])   # lifted sample
+    m = sm.OLS(y[s], X[s]).fit()
+    return {"summary": m.summary(), "model": m}`;
+const C_FACT=`def run(df, params):
+    for c in ["MkRF","SMB","HML","RMW","CMA","RF"]:
+        df[c.lower()] = df[c] / params["factor_div"]   # was /100
+    for t in params["tickers"]:
+        df["r_"+t] = np.log(df[t]).diff()
+    return df`;
+const C_EW=`def run(df, params):
+    cols = ["r_"+t for t in params["tickers"]]
+    df["r_ew"] = df[cols].mean(axis=1)               # equal weight
+    return df`;
+const C_DIAG=`def run(model, params):
+    r = model.resid          # model is an in-worker object, not a table
+    return {
+      "JB":    sms.jarque_bera(r),
+      "White": sms.het_white(r, model.model.exog),
+      "ARCH":  sms.het_arch(r, nlags=params["arch_lags"]),
+      "LBQ":   sms.acorr_ljungbox(r, lags=params["lbq_lags"]),
+    }`;
+const C_CORR=`def run(df, params):
+    return df[params["cols"]].corr(method="pearson")`;
+
+const NODES = {
+  // ---------------- Pipeline A : CAPM ----------------
+  load_capm:{x:24,y:150,cat:'coral',icon:'📥',title:'Load CAPM data',sub:'Stock CAPM…2025.xlsx',tag:['file read','untrusted'],ports:['in','out'],
+    ty:'Source · imported',chips:['source','file','imported'],cells:'cell 4',
+    flag:{cls:'lock',html:'<b>🔒 Reads a local file on run.</b> Opens <code>Stock CAPM Example Python 2025.xlsx</code>. It came in with the import — confirm the path resolves on this host before enabling.'},
+    desc:'Reads the price workbook into a table. First node of the CAPM pipeline.',
+    input:'—',inPt:'', params:[['path','Stock CAPM…2025.xlsx'],['sheet','0']],
+    outPt:'CAPM_df', output:'<span class="pt">CAPM_df</span> · table · 5 cols × 120 rows'},
+  clean_capm:{x:236,y:150,cat:'teal',icon:'🧹',title:'Clean & dates',sub:'rename · parse Date',tag:['typo flagged','warn'],ports:['in','out'],
+    ty:'Transform · flagged',chips:['transform','deterministic'],cells:'cell 5',
+    flag:{cls:'warn',html:'<b>⚠ Likely typo.</b> Cell 5 assigns <code>CAPM_df.colums = [...]</code> — <code>.colums</code>, not <code>.columns</code> — so it sets a stray attribute and the rename never happens. Imported <b>as written</b>, not corrected. Fix it here, then enable.'},
+    desc:'Renames columns and parses the date. The rename is the flagged line — carried faithfully so you decide.',
+    input:'CAPM_df ← load',inPt:'CAPM_df', params:[['names','Date · NDQCOMP · APPL · MSOFT · TBILL'],['date_fmt','%d%m%Y']],
+    code:C_CLEAN, codero:true, outPt:'CAPM_df', output:'<span class="pt">CAPM_df</span> · table (rename pending fix)'},
+  returns_capm:{x:448,y:150,cat:'teal',icon:'Σ',title:'Excess returns',sub:'log-returns − T-bill',ports:['in','out'],
+    ty:'Transform · deterministic',chips:['transform','deterministic'],cells:'cell 6',
+    desc:'Log returns for the index and each stock, the monthly T-bill, and the excess-return columns the regressions consume.',
+    input:'CAPM_df ← clean',inPt:'CAPM_df', params:[['tbill_div','1200']],
+    code:C_RET, outPt:'CAPM_df+', output:'<span class="pt">CAPM_df</span> · +6 cols (dl*, tbill, exr_*)'},
+  ols_apple:{x:704,y:92,cat:'teal',icon:'📈',title:'OLS · Apple',sub:'exr_APPL ~ exr_NDQ',tag:['OLS · reused','sub'],badge:'↻ ×3',ports:['in','out'],
+    ty:'Python · regression',chips:['python','regression','reused'],cells:'cell 8',
+    desc:'CAPM beta for Apple — Apple excess return on the market excess return.',
+    reuse:'One node template — <b>OLS + summary</b> — bound to 3 call sites (Apple, Microsoft, Fama-French). Edit it once; every use updates.',
+    input:'CAPM_df ← excess returns',inPt:'CAPM_df', params:[['y','exr_APPL'],['X','[exr_NDQ]'],['start','1'],['end','119'],['add_const','True']],
+    code:C_OLS,
+    table:{cols:['term','coef','t','p'],rows:[['const (α)','0.011','1.3','0.195'],['exr_NDQ (β)','1.182','12.4','0.000']]},
+    note:'Illustrative coefficients. R² ≈ 0.57. Returns {summary, model} — model is an object port.'},
+  ols_msft:{x:704,y:208,cat:'teal',icon:'📈',title:'OLS · Microsoft',sub:'exr_MSOFT ~ exr_NDQ',tag:['OLS · reused','sub'],badge:'↻ ×3',ports:['in','out'],
+    ty:'Python · regression',chips:['python','regression','reused'],cells:'cell 10',
+    desc:'CAPM beta for Microsoft — same template, second call site. In the notebook this cell silently reused y / X / results from the Apple cell; here it is its own node with its own params.',
+    reuse:'Same <b>OLS + summary</b> template as Apple and FF. The shadowed <code>results</code> from the notebook becomes a distinct output per node.',
+    input:'CAPM_df ← excess returns',inPt:'CAPM_df', params:[['y','exr_MSOFT'],['X','[exr_NDQ]'],['start','1'],['end','119'],['add_const','True']],
+    code:C_OLS,
+    table:{cols:['term','coef','t','p'],rows:[['const (α)','0.004','0.6','0.563'],['exr_NDQ (β)','1.071','14.9','0.000']]},
+    note:'Illustrative coefficients. R² ≈ 0.66.'},
+  plots_capm:{x:448,y:300,cat:'sink',icon:'📉',title:'Return plots',sub:'2 charts · Apple, MSFT',tag:['sink','skip'],ports:['in'],
+    ty:'Sink · charts',chips:['sink','no-output'],cells:'cells 7, 9',
+    desc:'The two return charts (each stock vs NASDAQ). They emit images, nothing downstream consumes them — so they are sinks, folded into one node.',
+    input:'dl* ← excess returns',inPt:'series', params:[['kind','line'],['x','Date']],
+    output:'2 charts · no data port'},
+  skip_ir:{x:960,y:150,cat:'sink',icon:'⊘',title:'Interest-rate stub',sub:'cell 22 · never run',tag:['skipped','skip'],ports:[],ghost:true,
+    ty:'Skipped · not imported',chips:['skipped'],cells:'cell 22',
+    desc:'A third section header with only a comment banner and execution_count = None. It never ran and has no code, so the importer left it out. Re-include it manually if you fill it in.',
+    input:'—',inPt:'', params:[['exec_count','None'],['status','skipped']], output:'— not imported'},
+
+  // ---------------- Pipeline B : Fama-French ----------------
+  load_ff:{x:24,y:486,cat:'coral',icon:'📥',title:'Load FF data',sub:'Fama_French…2025.xlsx',tag:['file read','untrusted'],ports:['in','out'],
+    ty:'Source · imported',chips:['source','file','imported'],cells:'cell 13',
+    flag:{cls:'lock',html:'<b>🔒 Reads a local file on run.</b> Opens <code>Fama_French data python 2025.xlsx</code>. Confirm the path before enabling.'},
+    desc:'Reads the Fama-French workbook (factors + 12 stocks). Start of the second, independent pipeline.',
+    input:'—',inPt:'', params:[['path','Fama_French…2025.xlsx'],['sheet','0']],
+    outPt:'FF_df', output:'<span class="pt">FF_df</span> · table · 19 cols'},
+  clean_ff:{x:236,y:486,cat:'teal',icon:'🧹',title:'Clean & dates',sub:'rename · parse · window',ports:['in','out'],
+    ty:'Transform · deterministic',chips:['transform','deterministic'],cells:'cell 14',
+    desc:'Renames the 19 columns, parses the date, and sets the sample window. The window bounds become params.',
+    input:'FF_df ← load',inPt:'FF_df', params:[['begobs','0'],['endobs','118']],
+    outPt:'FF_df', output:'<span class="pt">FF_df</span> · table · dated'},
+  factors_ff:{x:448,y:486,cat:'teal',icon:'🧮',title:'Factors & returns',sub:'÷100 · log-returns',ports:['in','out'],
+    ty:'Transform · deterministic',chips:['transform','deterministic'],cells:'cell 15',
+    desc:'Scales the five factors and the risk-free rate, and builds log returns for each of the twelve stocks.',
+    input:'FF_df ← clean',inPt:'FF_df', params:[['factor_div','100'],['tickers','APL · CHV · … · ARD']],
+    code:C_FACT, outPt:'FF_df+', output:'<span class="pt">FF_df</span> · +factors, +r_* (12)'},
+  ewport:{x:660,y:486,cat:'teal',icon:'⚖️',title:'Equal-weight port.',sub:'mean of 12 r_*',ports:['in','out'],
+    ty:'Transform · deterministic',chips:['transform','deterministic'],cells:'cell 16',
+    desc:'Builds the equal-weight portfolio return that the 5-factor regression explains.',
+    input:'r_* ← factors & returns',inPt:'series ×12', params:[['weight','equal'],['out','r_ew']],
+    outPt:'r_ew', output:'<span class="pt">r_ew</span> · series'},
+  ols_ff:{x:872,y:486,cat:'teal',icon:'📈',title:'OLS · FF 5-factor',sub:'r_ew−rf ~ 5 factors',tag:['OLS · reused','sub'],badge:'↻ ×3',ports:['in','out'],
+    ty:'Python · regression',chips:['python','regression','reused'],cells:'cell 19',
+    desc:'Third call site of the shared OLS node — the equal-weight excess return on the five Fama-French factors. Also emits a fitted-vs-actual chart.',
+    reuse:'Same <b>OLS + summary</b> template as the two CAPM regressions. Different y / X / sample, one body.',
+    input:'r_ew, factors ← upstream',inPt:'table', params:[['y','r_ew − rf'],['X','[Ex_mkt,smb,hml,rmv,cma]'],['start','1'],['end','118']],
+    code:C_OLS,
+    table:{cols:['factor','coef','t'],rows:[['Ex_mkt','0.98','21.3'],['smb','0.41','4.1'],['hml','0.12','1.2'],['rmv','-0.07','-0.6'],['cma','0.20','1.7']]},
+    note:'Illustrative. Outputs {summary, model}; model flows to Diagnostics as an object, not a table.'},
+  diag:{x:1084,y:486,cat:'teal',icon:'🔬',title:'Diagnostics',sub:'JB · White · ARCH · LBQ',ports:['in'],
+    ty:'Report · from model',chips:['report','from-object'],cells:'cell 20',
+    desc:'Runs the residual diagnostics on the fitted model. Its input is the model object itself, so this edge stays inside the Python worker — no table crosses the boundary.',
+    input:'<span class="pt obj">model</span> ← OLS · FF &nbsp;<span style="color:var(--dim)">(in-worker object ref)</span>',inPt:'OBJ', params:[['arch_lags','5'],['lbq_lags','6']],
+    code:C_DIAG,
+    table:{cols:['test','stat','p'],rows:[['Jarque-Bera','3.41','0.182'],['White','12.0','0.285'],['ARCH(5)','6.8','0.236'],['LBQ(6)','7.9','0.245']]},
+    note:'Illustrative test values. The dashed purple wire = an object port, not Arrow.'},
+  corr:{x:448,y:610,cat:'sink',icon:'🔢',title:'Factor correlations',sub:'5×5 Pearson',tag:['sink','skip'],ports:['in'],
+    ty:'Sink · report',chips:['sink','report'],cells:'cell 17',
+    desc:'Prints the factor correlation matrix. A read-only report — a sink off the factors node.',
+    input:'factors ← factors & returns',inPt:'table', params:[['cols','Ex_mkt,smb,hml,rmv,cma'],['method','pearson']],
+    code:C_CORR,
+    table:{cols:['','mkt','smb','hml'],rows:[['mkt','1.00','0.18','-0.21'],['smb','0.18','1.00','0.05'],['hml','-0.21','0.05','1.00']]}},
+  plot_factors:{x:660,y:610,cat:'sink',icon:'📉',title:'Factor plot',sub:'5 factor series',tag:['sink','skip'],ports:['in'],
+    ty:'Sink · chart',chips:['sink','no-output'],cells:'cell 18',
+    desc:'Time-series chart of the five factors. Image out, nothing consumes it — a sink.',
+    input:'factors ← factors & returns',inPt:'table', params:[['kind','line'],['x','Date']],
+    output:'1 chart · no data port'},
+};
+
+const BANDS = [
+  {x:24,y:104,col:'var(--c)',text:'CAPM · β estimation (Apple, Microsoft)'},
+  {x:24,y:440,col:'var(--t)',text:'Fama-French · 5-factor model'},
+];
+
+const WIRES = [
+  ['load_capm','clean_capm','data'],
+  ['clean_capm','returns_capm','data'],
+  ['returns_capm','ols_apple','data'],
+  ['returns_capm','ols_msft','data'],
+  ['returns_capm','plots_capm','sink'],
+  ['load_ff','clean_ff','data'],
+  ['clean_ff','factors_ff','data'],
+  ['factors_ff','ewport','data'],
+  ['ewport','ols_ff','data'],
+  ['ols_ff','diag','object','model'],
+  ['factors_ff','corr','sink'],
+  ['factors_ff','plot_factors','sink'],
+];
+
+const SCENE_W=1300, SCENE_H=720;
+let curNode='clean_capm';
+
+function out(n){return [n.x+NW, n.y+NH/2];}
+function inn(n){return [n.x, n.y+NH/2];}
+function pathd(s,t){
+  const [x1,y1]=out(s),[x2,y2]=inn(t);
+  if(x2-x1>26){const dx=Math.max(40,(x2-x1)*0.5);return `M${x1} ${y1} C${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;}
+  const o=x1+26,b=x2-26,my=(y1+y2)/2;
+  return `M${x1} ${y1} L${o} ${y1} L${o} ${my} L${b} ${my} L${b} ${y2} L${x2} ${y2}`;
+}
+function sel(id){curNode=id;draw();}
+
+function draw(){
+  const scene=document.getElementById('scene');
+  scene.style.width=SCENE_W+'px';scene.style.height=SCENE_H+'px';
+  const svg=document.getElementById('wires');
+  svg.setAttribute('viewBox','0 0 '+SCENE_W+' '+SCENE_H);svg.style.width=SCENE_W+'px';svg.style.height=SCENE_H+'px';
+  let wsvg='';
+  WIRES.forEach(([f,t,kind,label])=>{
+    const s=NODES[f],d=NODES[t];
+    const col = kind==='object'?CC.gate : kind==='sink'?'#5C6371' : CC[s.cat];
+    const dash = kind==='object'?'stroke-dasharray="6 4"':'';
+    const w = kind==='sink'?1.6:2.2;
+    const op = kind==='sink'?0.7:1;
+    wsvg+=`<path d="${pathd(s,d)}" fill="none" stroke="${col}" stroke-width="${w}" ${dash} opacity="${op}"/>`;
+    if(label){const [x1,y1]=out(s),[x2,y2]=inn(d);wsvg+=`<text x="${(x1+x2)/2}" y="${(y1+y2)/2-7}" fill="#C8B7FB" font-size="10.5" font-family="-apple-system,sans-serif" text-anchor="middle">${label}</text>`;}
+  });
+  svg.innerHTML=wsvg;
+
+  scene.querySelectorAll('.node,.bandlabel').forEach(n=>n.remove());
+  BANDS.forEach(b=>{
+    const el=document.createElement('div');el.className='bandlabel';
+    el.style.left=b.x+'px';el.style.top=b.y+'px';
+    el.innerHTML=`<span class="bl" style="background:${b.col}"></span>${b.text}`;
+    scene.appendChild(el);
+  });
+  Object.entries(NODES).forEach(([id,n])=>{
+    const el=document.createElement('div');
+    el.className='node cat-'+n.cat+(n.ghost?' ghost':'')+(id===curNode?' selected':'');
+    el.style.left=n.x+'px';el.style.top=n.y+'px';el.dataset.node=id;
+    el.innerHTML=(n.badge?`<span class="badge2">${n.badge}</span>`:'')+
+      (n.tag?`<span class="tag ${n.tag[1]}">${n.tag[0]}</span>`:'')+
+      `<div class="row"><div class="ic">${n.icon}</div><div class="ti">${n.title}</div></div><div class="sub">${n.sub}</div>`+
+      (n.ports.includes('in')?'<span class="port in"></span>':'')+(n.ports.includes('out')?'<span class="port out"></span>':'');
+    el.onclick=()=>{curNode=id;draw();};
+    scene.appendChild(el);
+  });
+  if(!scene.querySelector('.legend')){
+    const lg=document.createElement('div');lg.className='legend';
+    lg.innerHTML='<div class="k"><span class="sw" style="background:var(--c)"></span>imported / file</div>'+
+      '<div class="k"><span class="sw" style="background:var(--t)"></span>inside the walls</div>'+
+      '<div class="k"><span class="sw" style="background:var(--gray)"></span>sink</div>'+
+      '<div class="k"><span class="ln"></span>table (Arrow)</div>'+
+      '<div class="k"><span class="ln pur"></span>object (in-worker)</div>'+
+      '<div class="k"><span class="ln thin"></span>→ sink</div>';
+    scene.appendChild(lg);
+  }
+  renderInsp();
+}
+
+function renderInsp(){
+  const n=NODES[curNode];
+  const flag = n.flag?`<div class="flagbox ${n.flag.cls}">${n.flag.html}</div>`:'';
+  const reuse = n.reuse?`<div class="sec2">Reused node</div><div class="reuse">${n.reuse}</div>`:'';
+  const code = n.code?`<div class="sec2 coderow"><span>run()${n.codero?'<span class="ro-tag">read-only</span>':''}</span>${n.codero?'<span class="ed">Edit ▸</span>':'<span class="ed">Edit ▸</span>'}</div><pre class="code">${n.code.replace(/#BUG/,'').replace(/(df\.colums = \[[^\]]*\])/,'<span class="bug">$1</span>')}</pre>`:'';
+  let body='';
+  if(n.table) body='<div class="sec2">Output preview</div><table class="grid"><tr>'+n.table.cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+n.table.rows.map(r=>'<tr>'+r.map(c=>{const cl=(c[0]==='+')?'up':(c[0]==='−'||c[0]==='-')?'dn':'';return '<td class="'+cl+'">'+c+'</td>';}).join('')+'</tr>').join('')+'</table>';
+  else if(n.output) body='<div class="sec2">Output</div><div class="io">'+n.output+'</div>';
+  document.getElementById('insp').innerHTML=
+    flag+
+    '<div class="ih"><div class="ic" style="background:'+ICBG[n.cat]+';color:'+CC[n.cat]+'">'+n.icon+'</div><div><h3>'+n.title+'</h3><div class="ty">'+n.ty+'</div></div></div>'+
+    '<div class="chips">'+n.chips.map(c=>'<span class="chip">'+c+'</span>').join('')+'</div>'+
+    '<div class="desc">'+n.desc+'</div>'+
+    '<div class="cellrow"><span class="cells">📓 '+n.cells+'</span></div>'+
+    reuse+
+    '<div class="sec2">Input</div><div class="io">'+n.input+'</div>'+
+    '<div class="sec2">Parameters</div>'+n.params.map(p=>'<div class="kv"><span class="k">'+p[0]+'</span><span class="v mono">'+p[1]+'</span></div>').join('')+
+    code+body+
+    (n.note?'<div class="note">'+n.note+'</div>':'');
+}
+draw();
+</script>
+</body>
+</html>

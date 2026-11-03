@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The nightly backup of the Ganban host's database (03:30, 14 kept, in @APP_DIR@/backups).
+     Rendered by ops/install.sh. A Mac asleep at 03:30 runs it when it wakes. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ganban.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@REPO@/ops/backup.sh</string>
+    <string>--keep</string>
+    <string>14</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@REPO@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GANBAN_APP_DIR</key>
+    <string>@APP_DIR@</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>@LOGS@/backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOGS@/backup.log</string>
+</dict>
+</plist>

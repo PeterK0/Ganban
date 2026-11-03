@@ -1,0 +1,690 @@
+/* Gilt: the shared classes of Ganban's November 2026 design (docs/dev/GILT.md).
+   Values come from the prototype's style block, rewritten onto the theme's
+   --color-* variables (ThemeProvider sets them). Every class is prefixed g-
+   so it can't collide with Tailwind or older CSS, and sits in Tailwind's
+   components layer, so a utility on the same element still wins.
+
+   Prototype variable -> theme variable:
+     --crust/--mantle/--base   --color-crust / --color-mantle / --color-base
+     --s0 / --s1 / --ov        --color-surface-0 / --color-surface-1 / --color-overlay-0
+     --fg                      --color-text
+     --fg2 / --mut             --g-fg2 / --g-mut (below: text mixed into base, so
+                               every theme gets the same step, whatever its subtexts)
+     --gold/--giltA/--giltB    --color-gold / --color-gilt-a / --color-gilt-b
+     --acc/--accH/--onacc      --color-primary / --color-primary-hover / --color-primary-text
+     --grn/--red/--sky/--yel   --color-success / --color-error / --color-info / --color-medium
+     --org/--pink/--lav/--teal --g-org / --g-pink / --g-lav / --g-teal (mixed, below:
+                               the themes carry no orange, pink, lavender or teal) */
+
+:root {
+  --g-fg2: color-mix(in srgb, var(--color-text) 86%, var(--color-base));
+  --g-mut: color-mix(in srgb, var(--color-text) 70%, var(--color-base));
+  --g-org: color-mix(in srgb, var(--color-warning) 60%, var(--color-error));
+  --g-pink: color-mix(in srgb, var(--color-error) 55%, var(--color-primary));
+  --g-lav: color-mix(in srgb, var(--color-primary) 50%, var(--color-info));
+  --g-teal: color-mix(in srgb, var(--color-info) 60%, var(--color-success));
+}
+
+@layer base {
+  body {
+    font-size: 15px; /* Gilt's body text; rem-based utilities are unaffected */
+  }
+  /* Gilt's focus ring: gold, 2px, offset 2px. In the base layer, so a
+     focus:ring-* / focus:outline-none utility still overrides it. */
+  :focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
+  }
+  /* Native checkboxes, radios and sliders take the theme's accent. */
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'] {
+    accent-color: var(--color-primary);
+  }
+}
+
+@layer components {
+  /* Colour helpers: set --pc for g-gem and g-tile. */
+  .c-pur { --pc: var(--color-primary); }
+  .c-org { --pc: var(--g-org); }
+  .c-cyan { --pc: var(--color-info); }
+  .c-pink { --pc: var(--g-pink); }
+  .c-grn { --pc: var(--color-success); }
+  .c-yel { --pc: var(--color-medium); }
+  .c-teal { --pc: var(--g-teal); }
+  .c-lav { --pc: var(--g-lav); }
+  .c-none { --pc: var(--color-overlay-0); }
+
+  .g-deco {
+    font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.24em;
+  }
+
+  .g-gem {
+    flex: none;
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: var(--pc, var(--color-gold));
+    transform: rotate(45deg);
+  }
+
+  .g-tile {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--pc, var(--color-gold)) 18%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, var(--color-gold)) 45%, transparent);
+    color: var(--pc, var(--color-gold));
+    font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+    padding-top: 2px;
+  }
+  .g-tile.lg {
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+    border-radius: 5px;
+  }
+
+  /* Panels */
+  .g-card {
+    position: relative;
+    background: var(--color-base);
+    border: 1px solid var(--color-gilt-a);
+    outline: 1px solid var(--color-gilt-b);
+    outline-offset: -6px;
+    border-radius: 3px;
+  }
+  /* The four gold corner marks; combine with g-card (after it, so the
+     background-image survives g-card's background shorthand). */
+  .g-corners,
+  .g-modal {
+    background-image:
+      linear-gradient(var(--color-gold), var(--color-gold)), linear-gradient(var(--color-gold), var(--color-gold)),
+      linear-gradient(var(--color-gold), var(--color-gold)), linear-gradient(var(--color-gold), var(--color-gold)),
+      linear-gradient(var(--color-gold), var(--color-gold)), linear-gradient(var(--color-gold), var(--color-gold)),
+      linear-gradient(var(--color-gold), var(--color-gold)), linear-gradient(var(--color-gold), var(--color-gold));
+    background-repeat: no-repeat;
+    background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+    background-position:
+      left 9px top 9px, left 9px top 9px, right 9px top 9px, right 9px top 9px,
+      left 9px bottom 9px, left 9px bottom 9px, right 9px bottom 9px, right 9px bottom 9px;
+  }
+  .g-plain {
+    background: var(--color-base);
+    border: 1px solid var(--color-surface-0);
+    border-radius: 3px;
+  }
+
+  /* Headings */
+  .g-h2 {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin: 0 0 16px;
+    font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.24em;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-gold);
+  }
+  .g-h2::before,
+  .g-h2::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    background: var(--color-gold);
+    transform: rotate(45deg);
+    opacity: 0.8;
+  }
+  .g-h2 .n {
+    color: var(--g-mut);
+    letter-spacing: 0.1em;
+  }
+  .g-ptitle {
+    margin: 6px 0 0;
+    font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+    font-size: 38px;
+    font-weight: 300;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    line-height: 1.1;
+  }
+
+  /* Glint: a gold-white sheen that sweeps once per hover. (The prototype's
+     corner star is left out at the owner's request.) Off under
+     prefers-reduced-motion (below). */
+  .g-glint {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .g-glint::after {
+    content: '';
+    position: absolute;
+    top: -30%;
+    bottom: -30%;
+    left: 0;
+    width: 38%;
+    background: linear-gradient(90deg, transparent, rgba(255, 244, 214, 0.22) 30%, rgba(255, 252, 240, 0.85) 50%, rgba(255, 244, 214, 0.22) 70%, transparent);
+    transform: translateX(-180%) skewX(-20deg);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .g-glint:hover::after,
+  .g-glint:focus-visible::after {
+    animation: g-sheen 0.62s cubic-bezier(0.25, 0.6, 0.3, 1);
+  }
+
+  /* Buttons */
+  .g-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 18px;
+    border-radius: 3px;
+    background: var(--color-surface-0);
+    color: var(--color-text);
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  .g-btn:hover { background: var(--color-surface-1); }
+  .g-btn:disabled { opacity: 0.4; cursor: default; }
+  .g-btn-pri {
+    background: var(--color-primary);
+    color: var(--color-primary-text);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  }
+  .g-btn-pri:hover { background: var(--color-primary-hover); }
+  .g-btn-gilt {
+    background: transparent;
+    color: var(--color-gold);
+    box-shadow: inset 0 0 0 1px var(--color-gilt-a);
+  }
+  .g-btn-gilt:hover { background: var(--color-gilt-b); }
+  .g-btn-ghost {
+    background: transparent;
+    color: var(--g-fg2);
+    box-shadow: inset 0 0 0 1px var(--color-surface-1);
+  }
+  .g-btn-ghost:hover { background: var(--color-surface-0); color: var(--color-text); }
+  .g-btn-danger {
+    background: transparent;
+    color: var(--color-error);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error) 55%, transparent);
+  }
+  .g-btn-danger:hover { background: color-mix(in srgb, var(--color-error) 10%, transparent); }
+  .g-btn-sm {
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .g-iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 3px;
+    color: var(--g-fg2);
+  }
+  .g-iconbtn:hover { background: var(--color-surface-0); color: var(--color-text); }
+  .g-iconbtn:disabled { opacity: 0.4; cursor: default; }
+  .g-lnk {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 0 4px;
+    color: var(--color-info);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .g-lnk:hover { text-decoration: underline; }
+
+  /* Task status marks */
+  .g-st {
+    position: relative;
+    flex: none;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid var(--g-mut);
+  }
+  .g-st-progress {
+    border-color: var(--g-org);
+    background: conic-gradient(var(--g-org) 0 50%, transparent 50%);
+  }
+  .g-st-done {
+    border-color: var(--color-success);
+    background: var(--color-success);
+  }
+  .g-st-blocked { border-color: var(--color-error); }
+  .g-st-blocked::after {
+    content: '';
+    position: absolute;
+    left: 1px;
+    right: 1px;
+    top: 5px;
+    height: 1.5px;
+    background: var(--color-error);
+  }
+
+  /* Pills */
+  .g-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 12px;
+    background: var(--color-surface-0);
+    color: var(--g-fg2);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .g-tag-hi { color: var(--g-org); background: color-mix(in srgb, var(--g-org) 12%, transparent); }
+  .g-tag-red { color: var(--color-error); background: color-mix(in srgb, var(--color-error) 12%, transparent); }
+  .g-tag-warn { color: var(--color-medium); background: color-mix(in srgb, var(--color-medium) 10%, transparent); }
+  .g-tag-ok { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, transparent); }
+  .g-tag-pri { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, transparent); }
+
+  /* Initials avatar */
+  .g-av {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid var(--color-gilt-a);
+    color: var(--color-gold);
+    font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    padding-top: 2px;
+    background: var(--color-mantle);
+  }
+
+  /* Overlays. The scrim covers the whole window, top bar included. */
+  .g-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    background: rgba(10, 10, 16, 0.45);
+    cursor: default;
+  }
+  /* A modal panel with the g-card g-corners look (the corner marks come from
+     the g-corners rule above). Size it with utilities: w-[…] / h-[…]. */
+  .g-modal {
+    position: fixed;
+    z-index: 131;
+    left: 50%;
+    top: 50%;
+    width: 900px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 40px);
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    background-color: var(--color-base);
+    border: 1px solid var(--color-gilt-a);
+    outline: 1px solid var(--color-gilt-b);
+    outline-offset: -6px;
+    border-radius: 3px;
+    color: var(--color-text);
+    overflow: hidden;
+    animation: g-fadein 0.2s ease-out both;
+  }
+}
+
+/* ── Controls and rows ──────────────────────────────────────────────────────
+   Fields, labels, switches, tabs, chips, rows and small helpers, promoted from
+   the lanes' local sheets (task's gt-, tabs' gtb-, settings' gilt-form). Like
+   the classes above they sit in the components layer, so a utility on the same
+   element wins: g-field w-64, g-flbl !mb-0 and g-field font-mono all work.
+
+   Focus, settled once: a field (g-field, and bordered inputs inside g-form)
+   turns its border gold and drops the ring; buttons, switches, tabs, chips and
+   every other control keep the global 2px gold ring (base layer, above). */
+@layer components {
+/* A Gilt input, select or textarea (the prototype's .field). */
+.g-field {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 3px;
+  background-color: var(--color-mantle);
+  border: 1px solid var(--color-surface-1);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 15px;
+}
+.g-field::placeholder { color: var(--color-overlay-0); }
+.g-field:focus,
+.g-field:focus-visible { border-color: var(--color-gold); outline: none; }
+.g-field:disabled { opacity: 0.6; }
+textarea.g-field {
+  padding: 10px 12px;
+  line-height: 1.6;
+}
+/* A select keeps the app's chevron (index.css) with Gilt's gutter. */
+select.g-field:not(.appearance-auto) {
+  padding-right: 34px;
+  background-position: right 12px center;
+}
+.g-field-sm {
+  min-height: 32px;
+  font-size: 13px;
+}
+textarea.g-field-sm { padding: 6px 10px; }
+
+/* A form whose one-off inline inputs (any input carrying Tailwind's `border`)
+   get the g-field colours and focus without an edit each: Settings, the
+   profile modal, first run and the gates. Prefer g-field on new inputs. */
+.g-form :is(input, select, textarea)[class~='border']:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']) {
+  background-color: var(--color-mantle);
+  border-color: var(--color-surface-1);
+  border-radius: 3px;
+  color: var(--color-text);
+}
+.g-form :is(input, select, textarea)[class~='border']::placeholder { color: var(--color-overlay-0); }
+.g-form :is(input, select, textarea)[class~='border']:is(:focus, :focus-visible) {
+  border-color: var(--color-gold);
+  box-shadow: none;
+  outline: none;
+}
+.g-form :is(input[type='checkbox'], input[type='radio'], input[type='range']) { accent-color: var(--color-primary); }
+
+/* Labels: Josefin, small caps, muted (the prototype's .flbl and table heads).
+   g-flbl sits above a field; g-cap is the same type inline (captions, heads). */
+.g-flbl,
+.g-cap {
+  font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--g-mut);
+}
+.g-flbl {
+  display: block;
+  margin-bottom: 6px;
+}
+/* A strip or panel title: the same type, larger, in gold. */
+.g-stitle {
+  font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-gold);
+  padding-top: 2px;
+}
+/* A sub-view title under a page's g-ptitle (Atlas's Bridge, Models). */
+.g-subtitle {
+  font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+  font-size: 26px;
+  font-weight: 300;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  line-height: 1.15;
+}
+
+/* A switch (the prototype's .tog). Put role="switch" aria-checked on it and a
+   <span class="g-tog-k"> inside. g-tog-grn turns it green when on. */
+.g-tog {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--color-surface-0);
+  box-shadow: inset 0 0 0 1px var(--color-surface-1);
+}
+.g-tog::before { content: ''; position: absolute; inset: -4px; } /* a 32px hit area */
+.g-tog-k {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-overlay-0);
+  transition: left 0.16s, background 0.16s;
+}
+.g-tog[aria-checked='true'] {
+  background: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+.g-tog[aria-checked='true'] .g-tog-k { left: 24px; background: var(--color-primary); }
+.g-tog-grn[aria-checked='true'] {
+  background: color-mix(in srgb, var(--color-success) 25%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-success);
+}
+.g-tog-grn[aria-checked='true'] .g-tog-k { background: var(--color-success); }
+/* A row holding a switch: label left, switch right. */
+.g-togrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+}
+
+/* Tabs with a gold underline (the prototype's .dtab): a pane's or a page's
+   sections. Mark the current one aria-selected="true" or add g-on. */
+.g-dtab {
+  min-height: 42px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--g-mut);
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.g-dtab:hover { color: var(--color-text); }
+.g-dtab[aria-selected='true'],
+.g-dtab.g-on { color: var(--color-gold); box-shadow: inset 0 -2px 0 var(--color-gold); background: none; }
+
+/* Chips (the prototype's .chips/.chip): filters and segmented switches. Mark
+   the chosen one aria-selected="true", aria-pressed="true" or g-on. */
+.g-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.g-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  color: var(--g-fg2);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.g-chip:hover { background: var(--color-surface-0); color: var(--color-text); }
+.g-chip:disabled { opacity: 0.4; cursor: default; }
+
+/* The chosen state (gilt fill, gold text, gilt outline) for chips and any
+   other selectable control; g-chip and g-dtab also read aria-selected. */
+.g-on,
+.g-chip.g-on,
+.g-chip[aria-selected='true'],
+.g-chip[aria-pressed='true'] {
+  background: var(--color-gilt-b);
+  color: var(--color-gold);
+  box-shadow: inset 0 0 0 1px var(--color-gilt-a);
+}
+
+/* A list row (the prototype's .arow): hover fill; g-sel or aria-selected
+   marks the chosen one. */
+.g-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 3px;
+}
+.g-row:hover { background: var(--color-surface-0); }
+/* The selected row: gilt fill, a gold bar on the left, a gilt outline. Works
+   on any row, not only g-row. */
+.g-sel,
+.g-row.g-sel,
+.g-row[aria-selected='true'] {
+  background: var(--color-gilt-b);
+  box-shadow: inset 2px 0 0 var(--color-gold), inset 0 0 0 1px var(--color-gilt-a);
+}
+/* A list row with a gilt hairline under it (time entries, files, events). */
+.g-frow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--color-gilt-b);
+}
+/* A comment or update row (the prototype's .upd): avatar left, body right. */
+.g-upd {
+  display: flex;
+  gap: 14px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-gilt-b);
+}
+.g-upd-reply {
+  gap: 10px;
+  padding: 10px 0 0;
+  border-top: 0;
+}
+
+/* A toolbar or header strip: the mantle with a gilt hairline under it. */
+.g-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-mantle);
+  border-bottom: 1px solid var(--color-gilt-b);
+}
+/* A quiet inset box (the prototype's .storage): notes, sub-forms. */
+.g-inset {
+  padding: 14px 16px;
+  border-radius: 3px;
+  background: var(--color-mantle);
+  border: 1px solid var(--color-surface-0);
+}
+/* A divider: gold deco text between two hairlines ("More details"). */
+.g-rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 32px;
+  font-family: 'Josefin Sans', Figtree, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-gold);
+}
+.g-rule::before,
+.g-rule::after {
+  content: '';
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--color-gilt-b);
+}
+/* A section a disclosure just opened ("More details"): eases in from above. */
+.g-reveal {
+  animation: g-reveal 0.28s ease-out both;
+}
+/* A drop zone: a dashed gilt frame that lights up while dragging over. */
+.g-drop {
+  border: 1px dashed var(--color-gilt-a);
+  border-radius: 3px;
+  background: var(--color-mantle);
+}
+.g-drop.g-over {
+  border-color: var(--color-gold);
+  background: var(--color-gilt-b);
+}
+/* A neutral page (PDF canvas and thumbnails): white paper in every theme. */
+.g-paper {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+/* A thin progress bar (the prototype's .pbar); a <span> inside, width = %. */
+.g-pbar {
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--color-surface-0);
+}
+.g-pbar > span { display: block; height: 100%; background: var(--pc, var(--color-gold)); }
+/* Grows a small control's hit area to at least 32px without changing its look. */
+.g-hit { position: relative; }
+.g-hit::after { content: ''; position: absolute; inset: -4px; }
+/* Running text keeps a readable line length inside any panel. */
+.g-read { max-width: 72ch; }
+
+}
+
+/* Latte is the one light theme: its yellow and peach read too faintly as text
+   on its pale base, so warning text and pills take a darker mix there
+   (ThemeProvider sets data-theme). Outside @layer, so it beats the utility. */
+[data-theme='catppuccin-latte'] .text-medium,
+[data-theme='catppuccin-latte'] .g-tag-warn {
+  color: color-mix(in srgb, var(--color-medium) 60%, var(--color-text));
+}
+[data-theme='catppuccin-latte'] .text-warning {
+  color: color-mix(in srgb, var(--color-warning) 75%, var(--color-text));
+}
+
+/* The top bar's live-timer dot (the shell lane uses it). */
+.g-pulse {
+  animation: g-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes g-sheen {
+  from { transform: translateX(-180%) skewX(-20deg); }
+  to { transform: translateX(330%) skewX(-20deg); }
+}
+@keyframes g-pulse {
+  50% { opacity: 0.25; }
+}
+@keyframes g-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes g-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .g-glint::after,
+  .g-pulse,
+  .g-reveal,
+  .g-modal {
+    animation: none !important;
+  }
+}

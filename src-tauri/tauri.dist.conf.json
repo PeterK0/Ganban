@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/ragrat-engine/**/*",
+      "resources/docling-models/**/*"
+    ],
+    "targets": ["app", "dmg", "msi"],
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

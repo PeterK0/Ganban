@@ -1,0 +1,38 @@
+<svg width="680" viewBox="0 0 680 480" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Odysseus detection funnel</title>
+<desc>A funnel from roughly a thousand quarantined items per day, through cheap embedding and matching detectors, a threshold gate, a metered librarian model pass, down to a handful of proposals for human review.</desc>
+<style>
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .th { font-size: 14px; font-weight: 500; }
+  .ts { font-size: 12px; font-weight: 400; }
+  rect { stroke-width: 1; }
+  .coral rect { fill: #FAECE7; stroke: #993C1D; }
+  .coral .th { fill: #712B13; } .coral .ts { fill: #993C1D; }
+  .amber rect { fill: #FAEEDA; stroke: #854F0B; }
+  .amber .th { fill: #633806; } .amber .ts { fill: #854F0B; }
+  .teal rect { fill: #E1F5EE; stroke: #0F6E56; }
+  .teal .th { fill: #085041; } .teal .ts { fill: #0F6E56; }
+  .cap { fill: #5F5E5A; }
+  .joint { fill: #888780; opacity: 0.15; }
+</style>
+
+<g class="coral"><rect x="60" y="40" width="560" height="56" rx="8"/><text class="th" x="340" y="60" text-anchor="middle" dominant-baseline="central">Quarantine</text><text class="ts" x="340" y="78" text-anchor="middle" dominant-baseline="central">About 1,000 hostile items a day</text></g>
+
+<polygon class="joint" points="60,96 620,96 560,120 120,120"/>
+
+<g class="coral"><rect x="120" y="120" width="440" height="56" rx="8"/><text class="th" x="340" y="140" text-anchor="middle" dominant-baseline="central">Embed and match</text><text class="ts" x="340" y="158" text-anchor="middle" dominant-baseline="central">Queries, white space, tripwires</text></g>
+
+<polygon class="joint" points="120,176 560,176 480,200 200,200"/>
+
+<g class="amber"><rect x="200" y="200" width="280" height="56" rx="8"/><text class="th" x="340" y="220" text-anchor="middle" dominant-baseline="central">Threshold gate</text><text class="ts" x="340" y="238" text-anchor="middle" dominant-baseline="central">Survivor rate is the dial</text></g>
+
+<polygon class="joint" points="200,256 480,256 430,280 250,280"/>
+
+<g class="teal"><rect x="250" y="280" width="180" height="56" rx="8"/><text class="th" x="340" y="300" text-anchor="middle" dominant-baseline="central">Librarian pass</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">Tokens metered</text></g>
+
+<polygon class="joint" points="250,336 430,336 410,360 270,360"/>
+
+<g class="teal"><rect x="270" y="360" width="140" height="56" rx="8"/><text class="th" x="340" y="380" text-anchor="middle" dominant-baseline="central">Proposals</text><text class="ts" x="340" y="398" text-anchor="middle" dominant-baseline="central">To the inbox</text></g>
+
+<text class="ts cap" x="340" y="448" text-anchor="middle">Coral = untrusted, amber = the dial, teal = inside the walls. Per-stage counts and tokens land in the ledger.</text>
+</svg>

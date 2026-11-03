@@ -1,0 +1,23 @@
+[package]
+name = "ganban-core"
+version = "1.0.4"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "Shared data layer and business logic for Ganban (desktop app + daemon)"
+
+[lib]
+name = "ganban_core"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+# task_local! for the domain-event suppression scope (sync merge + rule actions).
+tokio = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }

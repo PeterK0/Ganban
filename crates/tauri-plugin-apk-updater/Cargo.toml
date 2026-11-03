@@ -1,0 +1,15 @@
+[package]
+name = "tauri-plugin-apk-updater"
+version = "1.0.4"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "Android: download the host's APK, check its sha256 and hand it to the system installer"
+publish = false
+# tauri-plugin's build script requires `links` to match the package name.
+links = "tauri-plugin-apk-updater"
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
