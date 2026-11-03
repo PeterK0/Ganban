@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "ganban-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "ganban-server"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "argon2",
  "async-imap",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "gansty"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -5396,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-apk-updater"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "tauri",
  "tauri-plugin",

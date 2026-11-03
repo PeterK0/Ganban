@@ -9,6 +9,13 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-11-03
+
+- The first release after a clean-up of the public repository; the earlier 1.0.x downloads were withdrawn. Apps from
+  1.0.2 on update to this release by themselves; a 1.0.1 install needs this one installed once.
+- A tab in its own folder now registers itself, and the server compiles optional tabs in when their files exist
+  (`docs/dev/TAB_SPEC.md`).
+
 ## [1.0.4] - 2026-11-03
 
 - fix(ops): a stalled update shows only its own part of launchd's log

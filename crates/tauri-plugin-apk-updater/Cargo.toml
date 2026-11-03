@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-apk-updater"
-version = "1.0.4"
+version = "1.0.5"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Android: download the host's APK, check its sha256 and hand it to the system installer"
