@@ -134,3 +134,34 @@ async fn migration_drops_expiry_and_revives_expired_devices() {
     db.close().await;
     init_db_role(&path, Role::Server).await.unwrap();
 }
+
+/// A device's last-seen stamp is bookkeeping: while another connection holds the
+/// write lock (a long import), signing in still works at once, and the stamp lands
+/// once the lock frees.
+#[tokio::test]
+async fn signing_in_while_the_database_is_busy_defers_the_last_seen_stamp() {
+    let db = init_db_role(&temp_db("busy"), Role::Server).await.unwrap();
+    let (misha, token) = member_on_one_device(&db).await;
+    sqlx::query("UPDATE device_tokens SET last_seen_at = '2020-01-01T00:00:00Z' WHERE user_id = ?").bind(misha).execute(&db).await.unwrap();
+    let mut writer = db.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
+    let t = std::time::Instant::now();
+    let (user, _) = auth::validate_device_token(&db, &token).await.unwrap().expect("still valid");
+    assert_eq!(user.id, misha);
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "waited {:?}", t.elapsed());
+    let devices = auth::list_user_devices(&db, misha).await.unwrap();
+    assert!(devices[0].last_seen_at.unwrap() < chrono::DateTime::parse_from_rfc3339("2021-01-01T00:00:00Z").unwrap(), "not yet");
+    sqlx::query("ROLLBACK").execute(&mut *writer).await.unwrap();
+    drop(writer);
+    // Free again: the deferred stamp lands.
+    let landed = async {
+        loop {
+            let devices = auth::list_user_devices(&db, misha).await.unwrap();
+            if devices[0].last_seen_at.unwrap() > chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), landed).await.expect("the stamp landed");
+}

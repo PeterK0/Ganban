@@ -491,7 +491,7 @@ pub async fn create_bank_draft(db: &Db, ent: &Entity, draft: BankDraft) -> Resul
 pub async fn create_bank_draft_in(conn: &mut Conn, ent: &Entity, d: BankDraft) -> Result<Entry> {
     let date = check_date(&d.date)?;
     require_open(conn, ent, &date).await?;
-    let account = get_account_in(conn, ent, d.account_id).await?;
+    let account = super::accounts::get_account_bare_in(conn, ent, d.account_id).await?;
     let counter = get_ledger_account_in(conn, ent, d.counter_ledger_account_id).await?;
     if counter.archived || account.archived {
         return Err(AppError::InvalidInput("that account is archived".into()));

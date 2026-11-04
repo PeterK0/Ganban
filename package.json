@@ -1,7 +1,7 @@
 {
   "name": "ganban",
   "private": true,
-  "version": "1.0.7",
+  "version": "1.0.8",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -38,7 +38,8 @@
     "test:inflight": "node scripts/test-inflight-saves.mjs",
     "test:cadence": "node scripts/test-schedule-cadence.mjs",
     "test:finreports": "node scripts/test-finance-reports.mjs",
-    "test:fincash": "node scripts/test-finance-cash.mjs"
+    "test:fincash": "node scripts/test-finance-cash.mjs",
+    "test:finimport": "node scripts/test-finance-import-job.mjs"
   },
   "dependencies": {
     "@fontsource/figtree": "^5.3.0",

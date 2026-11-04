@@ -80,14 +80,13 @@ pub async fn store_rates(db: &Db, rows: &[Observation], source: &str) -> Result<
 }
 
 pub async fn store_rates_in(conn: &mut Conn, rows: &[Observation], source: &str) -> Result<usize> {
-    for (date, cur, rate) in rows {
-        sqlx::query("INSERT OR REPLACE INTO fin_rates (currency, date, rate, source) VALUES (?, ?, ?, ?)")
-            .bind(cur)
-            .bind(date)
-            .bind(rate)
-            .bind(source)
-            .execute(&mut *conn)
-            .await?;
+    // Many rows per statement: the full history is some 200,000.
+    for chunk in rows.chunks(250) {
+        let mut q = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO fin_rates (currency, date, rate, source) ");
+        q.push_values(chunk, |mut b, (date, cur, rate)| {
+            b.push_bind(cur).push_bind(date).push_bind(rate).push_bind(source);
+        });
+        q.build().execute(&mut *conn).await?;
     }
     Ok(rows.len())
 }
@@ -150,29 +149,62 @@ fn unreachable(cur: &str, date: &str) -> AppError {
 
 /// Fill the cache for a miss on (`cur`, `date`), inside the caller's transaction: the full
 /// history when the cache is empty or the date is older than the 90-day feed, else that
-/// feed.
+/// feed. An import fetches before it writes ([`ensure_rates`]), so this is the fallback.
 async fn fetch_on_demand(conn: &mut Conn, cur: &str, date: &str) -> Result<()> {
     let Some(od) = current_fetcher() else { return Err(unreachable(cur, date)) };
     let _one_at_a_time = od.guard.lock().await;
+    if let Some(rows) = feed_for_miss(conn, &od, cur, date).await? {
+        store_rates_in(conn, &rows, "ecb").await?;
+    }
+    Ok(())
+}
+
+/// The feed rows that fill a miss on (`cur`, `date`), or `None` when the rate is there
+/// after all (another caller filled it). The caller holds the fetcher's guard.
+async fn feed_for_miss(conn: &mut Conn, od: &OnDemand, cur: &str, date: &str) -> Result<Option<Arc<Vec<Observation>>>> {
     if lookup(conn, cur, date).await?.is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let cached: i64 = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM fin_rates)").fetch_one(&mut *conn).await?;
     let recent_enough = (chrono::Utc::now().date_naive() - chrono::Duration::days(85)).format("%Y-%m-%d").to_string();
     let url = if cached == 0 || date < recent_enough.as_str() { ECB_HIST_URL } else { ECB_90D_URL };
-    let rows = match od.recent(url) {
-        Some(rows) => rows,
-        None => {
-            let xml = (od.fetch)(url).await.map_err(|_| unreachable(cur, date))?;
-            let rows = Arc::new(parse_ecb_xml(&xml));
-            if rows.is_empty() {
-                return Err(unreachable(cur, date));
-            }
-            od.remember(url, rows.clone());
-            rows
+    if let Some(rows) = od.recent(url) {
+        return Ok(Some(rows));
+    }
+    let xml = (od.fetch)(url).await.map_err(|_| unreachable(cur, date))?;
+    let rows = Arc::new(parse_ecb_xml(&xml));
+    if rows.is_empty() {
+        return Err(unreachable(cur, date));
+    }
+    od.remember(url, rows.clone());
+    Ok(Some(rows))
+}
+
+/// Makes sure a rate is cached for each (currency, date), fetching the ECB feed for a
+/// miss *before* the caller opens a write transaction: no network wait while holding
+/// the database's write lock. The rows are stored in short transactions of their own.
+pub async fn ensure_rates(db: &Db, needs: &[(String, String)]) -> Result<()> {
+    let mut conn = db.acquire().await?;
+    let mut seen = std::collections::HashSet::new();
+    for (cur, date) in needs {
+        let cur = currency::normalise(cur)?;
+        let date = super::check_date(date)?;
+        if !seen.insert((cur.clone(), date.clone())) || lookup(&mut conn, &cur, &date).await?.is_some() {
+            continue;
         }
-    };
-    store_rates_in(conn, &rows, "ecb").await?;
+        let Some(od) = current_fetcher() else { return Err(unreachable(&cur, &date)) };
+        let _one_at_a_time = od.guard.lock().await;
+        let Some(rows) = feed_for_miss(&mut conn, &od, &cur, &date).await? else { continue };
+        // Short transactions with a gap between, so other writes get in (see
+        // `ImportOptions::pause`).
+        for chunk in rows.chunks(20_000) {
+            store_rates(db, chunk, "ecb").await?;
+            tokio::time::sleep(Duration::from_millis(110)).await;
+        }
+        if lookup(&mut conn, &cur, &date).await?.is_none() {
+            return Err(AppError::InvalidInput(format!("no ECB rate for {cur} on or before {date}")));
+        }
+    }
     Ok(())
 }
 

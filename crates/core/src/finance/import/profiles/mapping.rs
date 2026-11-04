@@ -212,6 +212,7 @@ pub fn parse(key: &str, m: &Mapping, rows: &[Vec<Cell>]) -> Result<ProfileOutput
             line,
             booked_date: booked.date(),
             booked_at: (booked.time() != chrono::NaiveTime::MIN).then_some(booked),
+            occurred_at: (booked.time() != chrono::NaiveTime::MIN).then_some(booked),
             value_date: date_of(cell(row, c_value), value_fmt.as_deref(), AUTO_DATE_FORMATS).map(|d| d.date()),
             description: parts.join(" — "),
             payee: cell(row, c_payee).clean(),

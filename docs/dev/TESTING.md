@@ -36,6 +36,7 @@ None needs a running server, a browser or network access.
 | `npm run test:finmoney` | Finance money: minor units to display and back in several locales, split checks, debits and credits. |
 | `npm run test:finreports` | Finance reports: months and periods, statement rows with subtotals and comparatives, net worth, budget progress, the forecast band's scale and a statement's PDF. |
 | `npm run test:fincash` | Finance quick-add of a cash expense: which cash account it posts to and the balanced entry it makes. |
+| `npm run test:finimport` | Finance import job progress: how full the bar is through the stages, and the stage labels. |
 | `npm run test:pdfsections` | PDF Studio's section kinds (front matter, chapters, back matter) and the chapter numbering in extracted file names. |
 | `npm run test:cadence` | An automation's schedule: interval, daily and weekly (`Mon,Thu 09:00`), read and written as the host parses them. |
 | `npm run test:update` | The version compare behind the host-served update check. |

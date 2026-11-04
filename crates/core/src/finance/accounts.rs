@@ -291,6 +291,20 @@ pub async fn get_account_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<Fi
         .ok_or_else(|| not_found("account"))
 }
 
+/// [`get_account_in`] without the balances (all zero): what a write needs to check an
+/// account, without summing its lines (a large import drafts thousands in a row).
+pub(crate) async fn get_account_bare_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<FinAccount> {
+    sqlx::query_as(
+        "SELECT a.*, 0 AS balance_minor, 0 AS draft_balance_minor, 0 AS balance_functional_minor, \
+         0 AS draft_balance_functional_minor FROM fin_accounts a WHERE a.id = ? AND a.entity_id = ?",
+    )
+    .bind(id)
+    .bind(ent.id)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| not_found("account"))
+}
+
 pub async fn get_account(db: &Db, ent: &Entity, id: i64) -> Result<FinAccount> {
     let mut conn = db.acquire().await?;
     get_account_in(&mut conn, ent, id).await

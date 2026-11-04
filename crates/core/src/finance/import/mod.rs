@@ -11,6 +11,7 @@
 
 pub mod decode;
 pub mod dedupe;
+pub mod jobs;
 pub mod pipeline;
 pub mod profiles;
 pub mod sniff;
@@ -133,6 +134,9 @@ pub struct ParsedRow {
     pub booked_date: NaiveDate,
     /// The booking time, when the file has one (FX legs pair on it).
     pub booked_at: Option<NaiveDateTime>,
+    /// When the transaction happened, to the second, when the file says (Revolut's
+    /// Started Date). Dedupe tells identical lines on one day apart by it.
+    pub occurred_at: Option<NaiveDateTime>,
     pub value_date: Option<NaiveDate>,
     pub description: String,
     pub payee: Option<String>,
@@ -264,3 +268,5 @@ pub fn parse(bytes: &[u8], profile: Option<&ProfileSpec>) -> Result<ParseResult>
 mod tests;
 #[cfg(test)]
 mod pipeline_tests;
+#[cfg(test)]
+mod dedupe_tests;

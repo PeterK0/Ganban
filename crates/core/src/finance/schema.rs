@@ -222,5 +222,26 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
     for sql in TABLES {
         sqlx::query(sql).execute(pool).await?;
     }
+    // Dedupe by group (`import::dedupe`): the group and the bank's timestamp of each
+    // line, backfilled for lines stored before. A batch is `running` until its import
+    // finishes, so a rerun of an interrupted import finishes its lines too.
+    for (table, column, ty) in [
+        ("fin_source_lines", "dedupe_key", "TEXT"),
+        ("fin_source_lines", "occurred_at", "TEXT"),
+        ("fin_import_batches", "status", "TEXT NOT NULL DEFAULT 'done'"),
+    ] {
+        let has: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
+            .bind(table)
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
+        if has == 0 {
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}")).execute(pool).await?;
+        }
+    }
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_fin_source_lines_dedupe ON fin_source_lines(entity_id, account_id, dedupe_key)")
+        .execute(pool)
+        .await?;
+    super::import::dedupe::backfill(pool).await?;
     Ok(())
 }

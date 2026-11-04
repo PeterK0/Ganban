@@ -169,6 +169,7 @@ pub fn parse(rows: &[Vec<Cell>]) -> Result<ProfileOutput> {
             line,
             booked_date: booked.date(),
             booked_at: None,
+            occurred_at: None,
             value_date: date_of(cell(row, c_value), value_fmt, DATE_FORMATS).map(|d| d.date()),
             description,
             payee: None,

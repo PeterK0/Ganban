@@ -9,6 +9,20 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-04
+
+### Fixed
+
+- **Finance: importing a long statement no longer locks up the host.** A big import (years of transactions)
+  used to hold the database for its whole run, so the rest of Ganban failed with "database is locked" and the import
+  itself timed out. Imports now run in the background in short steps, with a progress bar on the Import screen that
+  survives a refresh. An interrupted import is safe to run again.
+- **Finance: repeated and overlapping imports never duplicate transactions.** Importing the same year twice, or
+  exports whose periods overlap, keeps each transaction once. Genuinely identical transactions on the same day (two
+  identical coffees) are both kept. The same statement as CSV or Excel, or with its balance column hidden, is
+  recognised as the same.
+- The host's database now runs in WAL mode with a longer wait for busy moments, so reads don't wait on writes.
+
 ## [1.0.7] - 2026-11-04
 
 ### Added

@@ -406,6 +406,34 @@ pub async fn enroll(
     Ok(EnrollResult { device_token: raw_device, user })
 }
 
+/// How stale a device's `last_seen_at` may get before a request stamps it again.
+const LAST_SEEN_EVERY_SECS: i64 = 60;
+
+/// How long a request waits for its last-seen stamp before going on without it.
+const LAST_SEEN_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Stamps a device's `last_seen_at`, best-effort: at most once a minute, and never
+/// in the request's way. The stamp runs as its own task; when the database is busy
+/// (a long write elsewhere) the request goes on after [`LAST_SEEN_WAIT`] and the
+/// stamp lands when the lock frees, or is dropped with a log line.
+async fn stamp_last_seen(db: &Db, device_id: i64) {
+    let db = db.clone();
+    let stamp = tokio::spawn(async move {
+        let now = Utc::now();
+        let due = now - chrono::Duration::seconds(LAST_SEEN_EVERY_SECS);
+        let r = sqlx::query("UPDATE device_tokens SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)")
+            .bind(now)
+            .bind(device_id)
+            .bind(due)
+            .execute(&db)
+            .await;
+        if let Err(e) = r {
+            eprintln!("device last-seen skipped: {e}");
+        }
+    });
+    let _ = tokio::time::timeout(LAST_SEEN_WAIT, stamp).await;
+}
+
 /// Validate a device token. A token is valid until its row is gone (revoked)
 /// or its user is deactivated — there is no time limit. Stamps `last_seen_at`
 /// (what the devices list shows) and returns the user WITH the token's row id
@@ -419,11 +447,7 @@ pub async fn validate_device_token(db: &Db, raw: &str) -> Result<Option<(User, i
 
     let Some(row) = row else { return Ok(None) };
 
-    sqlx::query("UPDATE device_tokens SET last_seen_at = ? WHERE id = ?")
-        .bind(Utc::now())
-        .bind(row.id)
-        .execute(db)
-        .await?;
+    stamp_last_seen(db, row.id).await;
 
     // is_active = 0 is "removed from this host": their enrolled devices must
     // stop authenticating, not just disappear from pickers.

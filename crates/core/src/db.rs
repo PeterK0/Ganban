@@ -1,9 +1,14 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::ConnectOptions;
 use std::path::Path;
 use std::str::FromStr;
 
 use crate::error::Result;
+
+/// How long a statement waits for another connection's write lock before it fails
+/// with "database is locked". Writes are kept short (a large import commits in
+/// batches), so this only ever covers a queue of short transactions.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Shared database handle. A thin alias over the sqlx SQLite pool so callers can
 /// store/pass `core::Db` without depending on sqlx directly.
@@ -46,8 +51,20 @@ pub async fn init_db_role(db_path: &Path, role: Role) -> Result<SqlitePool> {
 
     println!("Database path: {} (role: {:?})", db_path.display(), role);
 
+    // Set explicitly rather than trusting driver defaults (the default is a rollback
+    // journal, where a writer blocks every reader, and a 5 s busy timeout):
+    // - WAL, so reads never wait on a writer and a writer never waits on reads;
+    // - a busy timeout long enough to queue behind another writer's short
+    //   transaction instead of failing with "database is locked";
+    // - synchronous NORMAL, the safe pairing with WAL (no corruption on power loss,
+    //   at most the last commits lost), which keeps commits cheap;
+    // - foreign keys on (ON DELETE CASCADE relies on it).
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(BUSY_TIMEOUT)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
         .disable_statement_logging();
 
     let mut builder = SqlitePoolOptions::new().max_connections(5);

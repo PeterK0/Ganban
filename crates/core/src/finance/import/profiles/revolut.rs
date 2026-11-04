@@ -175,6 +175,7 @@ pub fn parse(rows: &[Vec<Cell>]) -> Result<ProfileOutput> {
             line,
             booked_date: booked.date(),
             booked_at: Some(booked),
+            occurred_at: Some(started.unwrap_or(booked)),
             value_date: started.map(|d| d.date()),
             description: decode::clean_text(&description),
             payee,

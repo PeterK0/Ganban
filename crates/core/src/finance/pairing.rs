@@ -10,7 +10,7 @@
 //! Matches the matcher is sure of are `auto`; uncertain ones are `review`, and their
 //! entries stay as they were until the user accepts.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use serde::Serialize;
@@ -418,14 +418,16 @@ pub(crate) struct Fresh {
     pub counterpart_account: Option<i64>,
 }
 
-/// Pairs fresh entries with each other and with the entity's unpaired bank entries
-/// that are still uncategorised (or on clearing) within the window.
-pub(crate) async fn pair_fresh(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[Fresh]) -> Result<PairingOutcome> {
-    let mut out = PairingOutcome::default();
+/// The pairs for fresh entries, with each other and with the entity's unpaired bank
+/// entries that are still uncategorised (or on clearing) within the window. Writes
+/// nothing: an import reads these on a plain connection, then books them in short
+/// transactions ([`book_pairs`]).
+pub(crate) async fn plan_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[Fresh]) -> Result<Vec<Proposal>> {
     if fresh.is_empty() {
-        return Ok(out);
+        return Ok(Vec::new());
     }
-    let fresh_ids: HashSet<i64> = fresh.iter().map(|f| f.entry_id).collect();
+    let by_id: HashMap<i64, &Fresh> = fresh.iter().map(|f| (f.entry_id, f)).collect();
+    let fresh_ids: HashSet<i64> = by_id.keys().copied().collect();
     let dates: Vec<String> = {
         let mut v = Vec::new();
         for f in fresh {
@@ -435,7 +437,7 @@ pub(crate) async fn pair_fresh(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
     };
     let parse = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
     let (Some(min), Some(max)) = (dates.iter().filter_map(|d| parse(d)).min(), dates.iter().filter_map(|d| parse(d)).max()) else {
-        return Ok(out);
+        return Ok(Vec::new());
     };
     let from = (min - Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
     let to = (max + Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
@@ -457,7 +459,7 @@ pub(crate) async fn pair_fresh(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
         if !(v.is_uncategorised(s) || v.is_clearing(s)) {
             continue;
         }
-        let f = fresh.iter().find(|f| f.entry_id == id);
+        let f = by_id.get(&id).copied();
         cands.push(Candidate {
             entry_id: id,
             account_id,
@@ -488,9 +490,22 @@ pub(crate) async fn pair_fresh(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
     let ecb = |f: &str, t: &str, d: NaiveDate| {
         spot.iter().find(|((a, b, dd), _)| a == f && b == t && *dd == d).map(|(_, r)| *r)
     };
-    for p in propose_pairs(&cands, &ecb) {
+    Ok(propose_pairs(&cands, &ecb))
+}
+
+/// Books proposed pairs. A side that got paired or categorised since the proposal was
+/// made (the user working while an import runs) is skipped.
+pub(crate) async fn book_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, proposals: &[Proposal]) -> Result<PairingOutcome> {
+    let mut out = PairingOutcome::default();
+    for p in proposals {
+        if has_live_pair(conn, p.a).await? || has_live_pair(conn, p.b).await? {
+            continue;
+        }
         let a = bank_view(conn, ent, s, p.a).await?;
         let b = bank_view(conn, ent, s, p.b).await?;
+        if ![&a, &b].iter().all(|v| v.is_uncategorised(s) || v.is_clearing(s)) {
+            continue;
+        }
         if p.auto {
             let adjust = book(conn, ent, s, &a, &b, p.kind).await?;
             insert_pair(conn, ent, p.kind, p.a, p.b, adjust, "auto", p.score).await?;

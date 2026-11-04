@@ -4,10 +4,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { DecoHeading } from '../../components/gilt';
 import * as fin from './api';
+import { progressPercent, stageLabel } from './importJob.pure';
 import { formatDate } from './money.pure';
 import { Empty, MUTED, Money, errText, splitEntry, useFinance } from './shared';
 
-type Step = { at: 'pick' } | { at: 'preview'; file: File; b64: string; preview: fin.ImportPreview } | { at: 'done'; result: fin.ImportResult };
+type Step =
+  | { at: 'pick' }
+  | { at: 'preview'; file: File; b64: string; preview: fin.ImportPreview }
+  | { at: 'running'; job: fin.ImportJob }
+  | { at: 'done'; result: fin.ImportResult };
+
+/** How often the screen asks the host how the import is going. */
+const POLL_MS = 700;
+/** Failed status checks in a row before the screen stops following an import. */
+const MAX_MISSES = 8;
 
 export default function ImportView() {
   const { reload } = useFinance();
@@ -19,7 +29,55 @@ export default function ImportView() {
 
   useEffect(() => {
     fin.listProfiles().then(setProfiles).catch(() => setProfiles([]));
+    // An import started before a refresh (or on another screen) is still running: follow it.
+    fin
+      .importStatus()
+      .then((job) => {
+        if (job?.state === 'running') setStep((s) => (s.at === 'pick' ? { at: 'running', job } : s));
+      })
+      .catch(() => {});
   }, []);
+
+  // Follow a running import until it's done.
+  const runningId = step.at === 'running' ? step.job.job_id : null;
+  useEffect(() => {
+    if (runningId == null) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let misses = 0;
+    const gone = (why: string) => {
+      setStep({ at: 'pick' });
+      setMsg(`${why} Run the same file again: it adds only what is missing.`);
+      void reload();
+    };
+    const tick = async () => {
+      try {
+        const job = await fin.importStatus(runningId);
+        if (stop) return;
+        misses = 0;
+        if (!job) gone('The import is no longer on the host.');
+        else if (job.state === 'running') {
+          setStep({ at: 'running', job });
+          timer = setTimeout(tick, POLL_MS);
+        } else if (job.state === 'done' && job.result) {
+          setStep({ at: 'done', result: job.result });
+          void reload();
+        } else gone(job.error ? `${job.error}.` : 'The import stopped.');
+      } catch (e) {
+        if (stop) return;
+        // A passing failure (the network, a busy host) keeps following the job; only a
+        // job the host no longer knows (it restarted), or a run of failures, gives up.
+        const text = errText(e);
+        if (/not found/i.test(text) || ++misses >= MAX_MISSES) gone(`${text}.`);
+        else timer = setTimeout(tick, POLL_MS * 2);
+      }
+    };
+    timer = setTimeout(tick, POLL_MS);
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [runningId, reload]);
 
   const preview = async (file: File, b64?: string, profileKey?: string) => {
     if (file.size > fin.MAX_IMPORT_BYTES) {
@@ -82,9 +140,8 @@ export default function ImportView() {
               setBusy(true);
               setMsg(null);
               try {
-                const result = await fin.runImport(step.file.name, step.b64, profileKey, map);
-                setStep({ at: 'done', result });
-                await reload();
+                const job = await fin.runImport(step.file.name, step.b64, profileKey, map);
+                setStep({ at: 'running', job });
               } catch (e) {
                 setMsg(errText(e));
               } finally {
@@ -93,6 +150,7 @@ export default function ImportView() {
             }}
           />
         )}
+        {step.at === 'running' && <Running job={step.job} />}
         {step.at === 'done' && <Result result={step.result} onAgain={() => setStep({ at: 'pick' })} />}
         {msg && <p className="text-sm text-error">{msg}</p>}
       </section>
@@ -381,6 +439,26 @@ function MappingWizard({ sample, header, onSaved }: { sample: string[][]; header
         </button>
       </div>
       {msg && <p className="text-sm text-error">{msg}</p>}
+    </div>
+  );
+}
+
+/** An import on its way: the stage, rows done of the total, and the bar. */
+function Running({ job }: { job: fin.ImportJob }) {
+  const { locale } = useFinance();
+  const pct = progressPercent(job);
+  const fmt = (n: number) => new Intl.NumberFormat(locale).format(n);
+  return (
+    <div className="g-card g-corners p-5 space-y-3" aria-live="polite">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="g-stitle truncate">Importing {job.file_name || 'the file'}</div>
+        <span className={`text-sm tabular-nums ${MUTED}`}>{pct}%</span>
+      </div>
+      <div className="g-pbar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <span style={{ width: `${pct}%` }} />
+      </div>
+      <p className="text-sm text-text tabular-nums">{stageLabel(job, fmt)}</p>
+      <p className={`text-xs ${MUTED}`}>The import runs on the host: you can leave this screen and come back.</p>
     </div>
   );
 }

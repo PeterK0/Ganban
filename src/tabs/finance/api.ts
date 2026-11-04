@@ -3,6 +3,7 @@
 // local path names its acting profile, as the other personal commands do. Calls go through
 // `invokePrivate`, so amounts and payees never reach the console log.
 import { invokePrivate } from '../../lib/api';
+import type { ImportStage } from './importJob.pure';
 import { splitsToJournal } from './money.pure';
 
 const actingUser = () => Number(localStorage.getItem('currentUserId')) || undefined;
@@ -186,6 +187,21 @@ export interface ImportPreview {
 
 export type AccountMapTarget = number | { create: { kind: AccountKind; name: string; institution?: string; currency: string } };
 
+/** An import running on the host (`fin_import`, `fin_import_status`). */
+export interface ImportJob {
+  job_id: number;
+  state: 'running' | 'done' | 'failed';
+  stage: ImportStage;
+  /** Rows done of the total, in the current stage. */
+  done: number;
+  total: number;
+  file_name: string;
+  started_at: string;
+  finished_at: string | null;
+  result: ImportResult | null;
+  error: string | null;
+}
+
 export interface ImportResult {
   batch_id: number;
   created: number;
@@ -286,8 +302,11 @@ export const rate = (currency: string, date: string) => call<{ rate: number; dat
 export const listProfiles = () => call<Profile[]>('fin_list_profiles');
 export const previewImport = (fileName: string, contentBase64: string, profileKey?: string) =>
   call<ImportPreview>('fin_preview_import', { fileName, contentBase64, profileKey });
+/** Starts the import as a background job on the host; follow it with `importStatus`. */
 export const runImport = (fileName: string, contentBase64: string, profileKey: string, accountMap: Record<string, AccountMapTarget>) =>
-  call<ImportResult>('fin_import', { fileName, contentBase64, profileKey, accountMap });
+  call<ImportJob>('fin_import', { fileName, contentBase64, profileKey, accountMap });
+/** The job with this id, else the user's latest (null when there's none). */
+export const importStatus = (jobId?: number) => call<ImportJob | null>('fin_import_status', jobId == null ? {} : { jobId });
 export const saveProfile = (input: { key: string; name: string; mapping: ProfileMapping }) => call<Profile>('fin_save_profile', { input });
 export const deleteProfile = (key: string) => call<Profile>('fin_delete_profile', { key });
 

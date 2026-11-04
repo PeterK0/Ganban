@@ -42,8 +42,8 @@ All tables are prefixed `fin_`. They're host-only and never synced to offline re
 | `fin_entities` | id, user_id UNIQUE, project_id (the user's personal container), name, functional_currency, created_at | Created on first use, with the default chart. v1 has one per user; the model allows more. |
 | `fin_ledger_accounts` | id, entity_id, code, name, class (`asset` `liability` `equity` `income` `expense`), parent_id, currency NULL (monetary accounts), cash_flow_class NULL (`operating` `investing` `financing`), system_key NULL, archived, position | `system_key` marks the accounts the app posts to: `opening_equity`, `transfers_clearing`, `fx_realised_gain`, `fx_realised_loss`, `fx_unrealised_gain`, `fx_unrealised_loss`, `bank_fees`, `uncategorised_expense`, `uncategorised_income`. |
 | `fin_accounts` | id, entity_id, ledger_account_id UNIQUE, kind (`current` `savings` `card` `cash` `loan`), name, institution, currency, iban_mask NULL, profile_key NULL, archived, created_at | A bank, vault, card, cash or loan account the user holds. Its ledger account is an asset (current, savings, cash) or a liability (card, loan) in its currency. |
-| `fin_import_batches` | id, entity_id, file_name, profile_key, imported_at, rows_total, rows_new, rows_duplicate | One per import. |
-| `fin_source_lines` | id, entity_id, account_id, batch_id, hash, booked_date, value_date NULL, description, payee NULL, amount_minor, currency, fee_minor, balance_minor NULL, bank_category NULL, kind_hint NULL (`card` `transfer` `exchange` `interest` `fee` `refund` `topup` `atm` `other`), raw_json, dismissed_at NULL, created_at; UNIQUE(entity_id, account_id, hash) | Verbatim imported rows. Manual entries have none. Deleting an entry marks its source line dismissed, so a re-import doesn't bring it back. |
+| `fin_import_batches` | id, entity_id, file_name, profile_key, imported_at, rows_total, rows_new, rows_duplicate, status (`running` `done`) | One per import. `running` until its import finishes, so a rerun finishes an interrupted one. |
+| `fin_source_lines` | id, entity_id, account_id, batch_id, hash, dedupe_key, occurred_at NULL, booked_date, value_date NULL, description, payee NULL, amount_minor, currency, fee_minor, balance_minor NULL, bank_category NULL, kind_hint NULL (`card` `transfer` `exchange` `interest` `fee` `refund` `topup` `atm` `other`), raw_json, dismissed_at NULL, created_at; UNIQUE(entity_id, account_id, hash) | Verbatim imported rows. Manual entries have none. Deleting an entry marks its source line dismissed, so a re-import doesn't bring it back. |
 | `fin_entries` | id, entity_id, date, description, payee NULL, status (`draft` `posted` `reversed`), source_line_id NULL, reverses_id NULL, notes NULL, created_at, updated_at | One source line makes at most one entry. Imports arrive as `draft` (the inbox). |
 | `fin_lines` | id, entry_id, ledger_account_id, amount_minor, currency, functional_minor, rate, memo NULL | At least two lines per entry, balanced on `functional_minor`. |
 | `fin_pairs` | id, entity_id, kind (`transfer` `fx`), entry_a, entry_b, adjust_entry_id NULL, status (`auto` `review` `confirmed` `rejected`), score, created_at | A transfer between own accounts. Both bank entries post their counter line to `transfers_clearing`, so a matched pair nets to 0. An FX pair adds an adjusting entry for the realised difference. |
@@ -105,7 +105,8 @@ are `YYYY-MM-DD`.
 |---|---|---|
 | `fin_list_profiles` | — | `Profile[] {key, name, builtIn, mapping}` |
 | `fin_preview_import` | `fileName, contentBase64, profileKey?` | `{format: "csv"\|"xlsx", profileKey?, confidence, header: string[], rows: ParsedRow[] (first 50), accounts: [{guess_key, name, institution?, currency, kind, iban_mask?, matched_account_id?}], sample: string[][] (the first 30 raw rows, for the wizard), warnings: string[]}` |
-| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}` | `{batchId, created, duplicates, paired, review, categorisedByRules, refunds, warnings}`; lines of accounts left out of `accountMap` are skipped with a warning |
+| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}` | `ImportJob`, running: the import goes on in the background (§ Import pipeline, Large imports). Refused while the user has one running. A wrong profile or another user's account is refused here; anything else ends the job `failed`. Lines of accounts left out of `accountMap` are skipped with a warning |
+| `fin_import_status` | `jobId?` | `ImportJob \| null`: that job (another user's is not found), else the user's latest. `ImportJob {job_id, state: running\|done\|failed, stage: reading\|rates\|accounts\|rows\|pairing\|rules\|done, done, total (rows, in the stage), file_name, started_at, finished_at?, result?: {batch_id, created, duplicates, paired, review, categorised_by_rules, refunds, warnings}, error?}` |
 | `fin_save_profile` / `fin_delete_profile` | `input {key, name, mapping}` / `key` | `Profile` |
 | `fin_list_pairs` | `status?` | `Pair[]` with both entries |
 | `fin_resolve_pair` | `pairId, accept` | `Pair` |
@@ -114,7 +115,7 @@ are `YYYY-MM-DD`.
 | `fin_suggest_rule` | `entryId` | `Rule \| null`: a rule drafted from this entry's correction, offered after the second identical fix; its `conditions` and `action` come back in `fin_create_rule`'s input shape |
 | `fin_apply_rules` | `entryIds?` (all drafts by default) | `{categorised}` |
 
-Uploads go through the command table as base64. A file is capped at 1.5 MB, which fits `/invoke`'s body limit; a year of bank lines is a few hundred KB.
+Uploads go through the command table as base64. A file is capped at 1.5 MB, which fits `/invoke`'s body limit; a year of bank lines is a few hundred KB, and six years of a busy Revolut account about 500 KB.
 
 ## Import pipeline
 
@@ -143,9 +144,15 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
    - **Piraeus:** `Category, Transaction Details, Transaction Date (DD/MM/YYYY), Transaction Comments /
      Reference Code, Amount, Currency, Progressive Ledger Balance, Currency`. The bank's Category is a rule hint.
      Greek text is kept as it is.
-4. **Dedupe:** a hash of (account, booked date, amount, currency, normalised description, the occurrence index
-   within that day), plus the balance chain where the file has one. Re-importing an overlapping export adds
-   nothing.
+4. **Dedupe** (`import/dedupe.rs`): a line's group (`dedupe_key`) is a hash of (account, booked date, amount,
+   currency, normalised description); the lines of one group look identical. Within a group, the file's lines
+   match the stored ones by the strongest thing both sides have: the bank's timestamp to the second
+   (`occurred_at`, Revolut's Started Date), else the running balance (Piraeus), else nothing, when the file adds
+   only as many lines as it has beyond those stored. So the same file twice, overlapping exports, the same data as
+   CSV and as XLSX, and a file with the balance masked all add nothing twice; two identical coffees on one day stay
+   two; and a day two exports cut at different points is told apart by the timestamp or the balance. The `hash`
+   (unique per account) only guards against a double insert. Lines stored before groups existed get theirs
+   backfilled at startup, so they match the same way.
 5. **Draft entries:** each bank line is drafted against `uncategorised_*`. Then, in this order:
    - **Transfer and FX pairing:** the same amount and currency with opposite signs within 3 days across the user's
      accounts. An FX pair matches "Exchanged to" legs by time and the bank's amounts.
@@ -154,8 +161,18 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
    - **Rules,** on unpaired entries only, so a rule can't grab a transfer leg.
    - **Refund matching:** a positive line whose payee matches an earlier expense goes to that expense's category.
 
-   Uncertain matches go to `review`. A foreign-currency line needs an ECB rate for its date, fetched on demand when
-   missing.
+   Uncertain matches go to `review`. A foreign-currency line needs an ECB rate for its date: the import works out
+   the (currency, date) pairs the file needs and fetches the missing ones before it writes anything.
+
+**Large imports.** `fin_import` starts a background job and answers at once; `fin_import_status` reports the stage,
+rows done of the total, and the result. One import per user at a time, kept in the host's memory. The job writes in
+short transactions, so the rest of the host keeps working: the accounts and the batch in one, the new lines in
+batches of 250, then the final pass (pairing, pocket counterparts, rules, refunds) in batches of 100, with a short
+pause after each so other writers get the lock. An interrupted import is safe to run again: dedupe skips the lines it
+stored, and the lines of every batch still `running` go through the rerun's final pass (a pocket's side is written
+only for the lines the rerun's file holds). The database runs in WAL mode
+with a 15 s busy timeout (`crates/core/src/db.rs`), and per-request bookkeeping such as a device's last-seen stamp
+waits for the lock in the background rather than holding up or failing the request.
 
 ## The interface (lane C)
 
@@ -169,8 +186,8 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
   - **Transactions:** the drafts inbox and the posted list, filters, inline categorising with a category picker,
     a splits editor, bulk post, and the rule suggestion after a correction.
   - **Accounts:** list, create with an opening balance, archive.
-  - **Import:** file, preview, profile (or the mapping wizard), account mapping, import, and the result with the
-    review list.
+  - **Import:** file, preview, profile (or the mapping wizard), account mapping, import with a progress bar (a
+    refreshed page finds the running import), and the result with the review list.
   - **Accounting:** the journal with debit and credit columns, a manual journal form, the trial balance and the
     chart of accounts editor.
 - Styling per `docs/dev/GILT.md`. Amounts use `Intl.NumberFormat` in the user's locale with the currency.

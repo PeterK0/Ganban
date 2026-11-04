@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use ganban_core::error::AppError;
-use ganban_core::finance::import::{pipeline, MAX_FILE_BYTES, TOO_LARGE};
+use ganban_core::finance::import::{jobs, pipeline, MAX_FILE_BYTES, TOO_LARGE};
 use ganban_core::finance::{self, pairing, rules, Entity};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -67,13 +67,27 @@ pub(super) const COMMANDS: &[Command] = &[
             reply(pipeline::preview(cx.db, &entity(cx, a).await?, &bytes, key.as_deref()).await?)
         })
     }),
+    // Starts the import as a background job and answers at once with the job;
+    // `fin_import_status` follows it. A wrong profile or account is refused here.
     command("fin_import").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             let bytes = file_bytes(a)?;
-            let map: HashMap<String, pipeline::AccountChoice> = req(a, "accountMap")?;
+            let account_map: HashMap<String, pipeline::AccountChoice> = req(a, "accountMap")?;
             let ent = entity(cx, a).await?;
-            let name = a.opt_str("fileName").unwrap_or_default();
-            reply(pipeline::import_file(cx.db, &ent, &name, &bytes, &a.req_str("profileKey")?, map).await?)
+            let profile_key = a.req_str("profileKey")?;
+            pipeline::check_request(cx.db, &ent, &profile_key, &account_map).await?;
+            let file_name = a.opt_str("fileName").unwrap_or_default();
+            reply(jobs::start(cx.db, &ent, jobs::ImportRequest { file_name, bytes, profile_key, account_map })?)
+        })
+    }),
+    // The caller's import job: `jobId`'s, else their latest (null when there's none).
+    command("fin_import_status").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let job_id = match a.get("jobId").filter(|v| !v.is_null()) {
+                None => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| AppError::InvalidInput("invalid 'jobId'".into()))?),
+            };
+            reply(jobs::status(cx.db, &entity(cx, a).await?, job_id)?)
         })
     }),
     command("fin_list_pairs").access(Access::OwnFinance).author(USER).run(|cx, a| {
@@ -134,7 +148,7 @@ mod tests {
     #[test]
     fn every_import_command_is_the_callers_own() {
         let names: Vec<&str> = super::COMMANDS.iter().map(|c| c.name).collect();
-        assert_eq!(names.len(), 14, "{names:?}");
+        assert_eq!(names.len(), 15, "{names:?}");
         for c in super::COMMANDS {
             assert!(c.name.starts_with("fin_"));
             assert!(matches!(c.access, Some(Access::OwnFinance)), "{} must use OwnFinance", c.name);
@@ -155,6 +169,20 @@ mod tests {
         v["id"].as_i64().unwrap()
     }
 
+    /// Starts an import and waits for its job; returns the job's result.
+    async fn import(db: &ganban_core::Db, who: crate::AuthUser, args: Value) -> Value {
+        let job = http(db, who, "fin_import", args).await.unwrap();
+        assert_eq!(job["state"], "running");
+        loop {
+            let st = http(db, who, "fin_import_status", json!({ "jobId": job["job_id"] })).await.unwrap();
+            match st["state"].as_str() {
+                Some("done") => return st["result"].clone(),
+                Some("running") => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                _ => panic!("import failed: {st}"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn preview_then_import_over_the_table() {
         let db = test_db("fin_import_flow").await;
@@ -170,7 +198,7 @@ mod tests {
                 "revolut:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } },
                 "revolut:pocket:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } }
             } });
-        let r = http(&db, mia, "fin_import", args).await.unwrap();
+        let r = import(&db, mia, args).await;
         assert_eq!((r["created"].as_i64(), r["paired"].as_i64(), r["review"].as_i64()), (Some(2), Some(1), Some(0)));
         assert!(r["batch_id"].as_i64().is_some() && r["categorised_by_rules"] == 0);
         let pairs = http(&db, mia, "fin_list_pairs", json!({ "status": "auto" })).await.unwrap();
@@ -182,7 +210,7 @@ mod tests {
         let by_name = |n: &str| accounts.as_array().unwrap().iter().find(|a| a["name"] == n).map(id).unwrap();
         let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
             "accountMap": { "revolut:current:EUR": by_name("Everyday"), "revolut:pocket:holiday:EUR": by_name("Holiday") } });
-        let r = http(&db, mia, "fin_import", again).await.unwrap();
+        let r = import(&db, mia, again).await;
         assert_eq!((r["created"].as_i64(), r["duplicates"].as_i64()), (Some(0), Some(2)));
 
         // Rules over the table.
@@ -212,11 +240,10 @@ mod tests {
         let rule = http(&db, ana, "fin_create_rule", json!({ "input": { "conditions": { "text": "x" }, "action": { "ledgerAccountId": groceries } } }))
             .await
             .unwrap();
-        http(&db, ana, "fin_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
+        import(&db, ana, json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
             "accountMap": { "revolut:current:EUR": id(&hers),
                 "revolut:pocket:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } } } }))
-        .await
-        .unwrap();
+        .await;
         let pair = id(&http(&db, ana, "fin_list_pairs", json!({})).await.unwrap()[0]);
         let entries = http(&db, ana, "fin_list_entries", json!({})).await.unwrap();
         let entry = id(&entries["entries"][0]);
@@ -240,6 +267,44 @@ mod tests {
             assert_eq!(http(&db, user, "fin_list_pairs", json!({})).await.unwrap(), json!([]));
             assert_eq!(http(&db, user, "fin_list_rules", json!({})).await.unwrap(), json!([]));
         }
+    }
+
+    #[tokio::test]
+    async fn an_import_is_a_job_with_progress_one_per_user() {
+        let db = test_db("fin_import_job").await;
+        let mia = member(&db, 7, &[]).await;
+        let ana = member(&db, 8, &[]).await;
+        assert_eq!(http(&db, mia, "fin_import_status", json!({})).await.unwrap(), Value::Null);
+        let args = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
+            "accountMap": { "revolut:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } } } });
+        // The job answers at once; a second import waits for the first to finish.
+        let job = http(&db, mia, "fin_import", args.clone()).await.unwrap();
+        assert_eq!((job["state"].as_str(), job["file_name"].as_str()), (Some("running"), Some("s.csv")));
+        let err = http(&db, mia, "fin_import", args.clone()).await.unwrap_err();
+        assert!(err.to_string().contains("already running"), "{err}");
+        // Another user can import alongside, and can't see Mia's job.
+        assert_eq!(http(&db, ana, "fin_import_status", json!({})).await.unwrap(), Value::Null);
+        assert!(http(&db, ana, "fin_import_status", json!({ "jobId": job["job_id"] })).await.unwrap_err().is_not_found());
+        // Without an id, the status finds the latest job (a refreshed page).
+        let mut st = http(&db, mia, "fin_import_status", json!({})).await.unwrap();
+        while st["state"] == "running" {
+            assert!(st["total"].as_u64().unwrap() >= st["done"].as_u64().unwrap());
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            st = http(&db, mia, "fin_import_status", json!({})).await.unwrap();
+        }
+        assert_eq!((st["state"].as_str(), st["stage"].as_str(), st["job_id"].as_u64()), (Some("done"), Some("done"), job["job_id"].as_u64()));
+        assert_eq!((st["result"]["created"].as_i64(), st["done"].as_i64(), st["total"].as_i64()), (Some(2), Some(2), Some(2)));
+        assert!(st["finished_at"].is_string() && st["error"].is_null());
+        // Done, the next import may start; a bad profile is refused before any job.
+        let err = http(&db, mia, "fin_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "nope", "accountMap": {} }))
+            .await
+            .unwrap_err();
+        assert!(err.is_not_found());
+        let accounts = http(&db, mia, "fin_list_accounts", json!({})).await.unwrap();
+        let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
+            "accountMap": { "revolut:current:EUR": id(&accounts[0]) } });
+        let r = import(&db, mia, again).await;
+        assert_eq!((r["created"].as_i64(), r["duplicates"].as_i64()), (Some(0), Some(2)));
     }
 
     #[tokio::test]
