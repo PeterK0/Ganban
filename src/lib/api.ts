@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { logApi, logPerformance } from "./logger";
-import { isMobilePlatform, isWebClient, isDesktopOnline, isTauri, daemonFetch, uploadSharedFile, hasDaemon, getDaemonBaseUrl, getMe } from "./daemon";
+import { isMobilePlatform, isWebClient, isDesktopOnline, isTauri, daemonFetch, uploadSharedFile, hasDaemon, getDaemonBaseUrl, getMe, DaemonError } from "./daemon";
+import { localErrorParts } from "./hostError.pure";
 import { parseProfile } from "./profile";
 import type { ProjectFile } from "./daemon";
 import type {
@@ -42,7 +43,6 @@ import type {
   CreateContactInput,
   UpdateContactInput,
   User,
-  UserSetting,
   CreateUserInput,
   UpdateUserInput,
   ModelKit,
@@ -122,7 +122,21 @@ const DESKTOP_ONLY = new Set(["export_database", "import_database", "set_user_pr
  * owner (ADR 0001). Authorship is the acting profile id the args carry.
  */
 export function invokeLocal<T>(command: string, args?: Record<string, any>): Promise<T> {
-  return invoke<T>("run_command", { command, args: args ?? {} });
+  return invoke<T>("run_command", { command, args: args ?? {} }).catch((e: unknown) => {
+    // A refusal with a code arrives as `{ error, code }`: rethrow it as the
+    // DaemonError the HTTP path throws, so callers match `code` the same way.
+    const parts = localErrorParts(e);
+    throw parts?.code ? new DaemonError(parts.message, 400, parts.code) : e;
+  });
+}
+
+/**
+ * The same transport without the console log of the arguments: for commands whose data is
+ * private to its user (Finance: amounts, payees, descriptions stay out of logs). A local write
+ * isn't reported as a pulse either: a pulse reaches every member, and this data is no one else's.
+ */
+export function invokePrivate<T>(command: string, args?: Record<string, any>): Promise<T> {
+  return useHttpTransport() ? httpInvoke<T>(command, args) : invokeLocal<T>(command, args);
 }
 
 /**
@@ -933,7 +947,7 @@ export type AiFileKind = "attachment" | "project";
  * Put a file in or out of the AI overview (the project's knowledge base); new files
  * start out. Project admins, the owner and the file's uploader may. Over the host's size
  * guard (GANBAN_AI_MAX_FILE_MB, default 50) including is refused unless `force` is true;
- * the error names the size ("This file is 380 MB, over the 50 MB limit…") so the UI can
+ * the refusal carries the code AI_FILE_TOO_LARGE (lib/hostError.pure.ts) so the UI can
  * ask whether to index it anyway. Runs on the host, where the index lives. Returns the
  * updated row: a FileAttachment or a ProjectFile.
  */
@@ -1077,10 +1091,11 @@ export async function attachPastedImage(taskId: number, file: File): Promise<Fil
   });
 }
 
+/** A user's setting: its value, or null when unset (the host returns the value alone). */
 export async function getUserSetting(
   userId: number,
   settingKey: string
-): Promise<UserSetting | null> {
+): Promise<string | null> {
   return await invokeWithLogging("get_user_setting", { userId, settingKey });
 }
 

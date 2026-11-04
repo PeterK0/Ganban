@@ -98,6 +98,8 @@ pub async fn bind(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> 
     tokio::net::TcpListener::bind(addr).await
 }
 
+mod agent_work;
+
 /// Serve the router on `listener` until `shutdown` resolves. Lets the desktop
 /// app host the daemon in-process with graceful stop, and the standalone binary
 /// serve forever (`std::future::pending()`).
@@ -106,9 +108,13 @@ mod email;
 mod events;
 #[cfg(feature = "tab-email")]
 mod email_oauth;
+mod finance_rates;
+mod finance_tools;
+mod finance_reminder;
 mod foldersync;
 mod hostmon;
 mod maptiles;
+mod net_guard;
 // Tabs whose host side lives in one optional file, compiled in when the file is
 // there (build.rs sets the cfg): a build can carry tabs the public tree doesn't.
 #[cfg(extra_tabs)]
@@ -131,6 +137,7 @@ pub use logging::init_logging;
 mod ollama;
 mod oracle_run;
 mod pi_rpc;
+mod pi_sandbox;
 mod rag;
 mod rules;
 // Public so the desktop shell's Tauri commands can drive auto-share locally
@@ -189,6 +196,10 @@ pub async fn serve(
     // running), execute any routine whose "last run older than N hours" trigger
     // is due — the embedded-app-native version of a schedule.
     routines::spawn_runner(db.clone(), rag.clone(), ollama.clone(), stop_rx.clone());
+    // Finance translations that miss the rates cache fetch the ECB feed on demand.
+    finance_rates::register_on_demand();
+    // Finance's weekly bank-import reminder (a host-local "Mon 09:00" per user).
+    finance_reminder::spawn(db.clone(), stop_rx.clone());
     // Oracle schedule triggers: LIVE workflows with a parseable cadence run on
     // the host's clock (60s scheduler; paused workflows never fire).
     // A 'running' workflow run cannot have survived the restart we just did —
@@ -1864,7 +1875,7 @@ async fn invoke_inner(
     user: AuthUser,
     Json(body): Json<InvokeBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let cx = commands::Ctx::http(&db, user).with_storage_root(&root.0).with_shares(&shares);
+    let cx = commands::Ctx::http(&db, user).with_storage_root(&root.0).with_shares(&shares).with_agents(hub.agents());
     let cx = match &update_paths {
         Some(Extension(p)) => cx.with_update_paths(p),
         None => cx,
@@ -2033,22 +2044,51 @@ fn normalize_ics_url(url: &str) -> String {
 }
 
 async fn fetch_ics(url: &str) -> std::result::Result<String, String> {
-    let client = reqwest::Client::builder()
+    // Only the owner enters subscription URLs (a model can't), and a calendar
+    // on a home Nextcloud over the LAN or tailnet is a normal setup, so the
+    // owner's network is in reach. The guard still refuses cloud metadata
+    // endpoints and non-http(s) URLs, checks and pins every hop's address,
+    // and caps redirects.
+    let parsed = reqwest::Url::parse(url).map_err(|_| "that doesn't look like a valid URL".to_string())?;
+    net_guard::check_url_in(&parsed, net_guard::Scope::OwnerNetwork).await?;
+    let client = net_guard::client_builder_in(net_guard::Scope::OwnerNetwork, 3)
         .timeout(std::time::Duration::from_secs(20))
         .user_agent("Ganban/0.5 (calendar-import)")
-        // Bound redirects: this is the one client that fetches arbitrary remote
-        // URLs (vs. the loopback ragrat/Ollama clients), so cap the hops to blunt
-        // redirect-based SSRF into internal services. The daemon may bind 0.0.0.0,
-        // and only the owner can reach this route, but a feed URL someone shared
-        // could 30x toward an internal endpoint.
-        .redirect(reqwest::redirect::Policy::limited(3))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let resp = client.get(parsed).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
     resp.text().await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod ics_fetch_tests {
+    /// Calendar subscriptions reach the owner's network (a Nextcloud on the
+    /// LAN or tailnet) but never a cloud metadata endpoint or a non-http URL.
+    #[tokio::test]
+    async fn ics_fetch_reaches_the_owners_network_but_not_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let body = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let cal = super::fetch_ics(&format!("http://localhost:{port}/remote.php/dav/calendars/me/home?export")).await.unwrap();
+        assert!(cal.starts_with("BEGIN:VCALENDAR"), "a calendar on the owner's own network is fetched");
+        for url in ["http://169.254.169.254/latest/meta-data/", "http://[fd00:ec2::254]/", "http://100.100.100.200/"] {
+            let err = super::fetch_ics(url).await.unwrap_err();
+            assert!(err.contains("not allowed"), "{url}: {err}");
+        }
+        assert!(super::fetch_ics("file:///etc/passwd").await.is_err());
+    }
 }
 
 /// Fetch + parse + upsert one subscription's events. Never returns Err — a bad
@@ -2447,12 +2487,13 @@ async fn chat_handler(
     State(db): State<Db>,
     Extension(rag): Extension<rag::SharedRag>,
     Extension(ollama): Extension<ollama::SharedOllama>,
+    Extension(hub): Extension<events::EventHub>,
     user: AuthUser,
     Json(body): Json<ChatBody>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
     let ollama = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
     let rag = rag.read().await.clone();
-    require(&db, &user, body.project_id, auth::ROLE_MEMBER).await?;
+    require_chat_project(&db, &user, body.project_id).await?;
     if body.message.trim().is_empty() {
         return Err(ApiError(AppError::InvalidInput("empty message".into())));
     }
@@ -2477,6 +2518,15 @@ async fn chat_handler(
         None => ops::get_project_model_profile(&db, body.project_id).await.ok().flatten(),
     };
     let (params, system_prompt) = resolve_profile(&db, profile_id).await;
+    // A Personal chat may hold figures from the finance tools in its history, so it runs on a
+    // local model only, tools on or off (FINANCE.md § Assistant).
+    if finance_tools::is_own_personal(&db, user.id, body.project_id).await
+        && !finance_tools::engine_is_local(&Runner::Ollama, &params, &ollama.config().base_url)
+    {
+        return Err(ApiError(AppError::InvalidInput(
+            "Personal chats run on local models only: pick a personality on a local Ollama model".into(),
+        )));
+    }
 
     // Loadouts (Step 3): the personality's assigned loadouts SCOPE which tools
     // it may use, contribute system-prompt fragments, and may route the tool
@@ -2568,6 +2618,16 @@ async fn chat_handler(
     // Capacity meter: token/latency totals for this turn (tool rounds + the
     // final streamed answer, summed at persist time).
     let mut turn_usage = ollama::Usage::default();
+    // Live agent work (the timer's "Agents"): the tasks this turn's tools touch, under
+    // the personality's name, until the turn ends. Dropped with the answer stream, so
+    // a failed or abandoned turn clears itself too.
+    let personality = match profile_id {
+        Some(pid) => ops::get_model_profile(&db, pid).await.ok().flatten(),
+        None => ops::active_model_profile(&db).await.ok().flatten(),
+    }
+    .map(|p| p.name)
+    .unwrap_or_else(|| "Assistant".into());
+    let agent_run = agent_work::Run::start(&hub, user.id, user.is_owner, body.project_id, &personality);
     if body.use_tools {
         // ask_atlas exists when the knowledge engine is up AND the workspace
         // has Atlas collections to ask about.
@@ -2611,10 +2671,43 @@ async fn chat_handler(
             },
             None => resolve_task_params(&db, "tools", &params).await,
         };
+        // The runner the tool tier names (a loadout's routed sub-model is an Ollama profile).
+        let tool_runner = match loadout_routing {
+            Some(_) => Runner::Ollama,
+            None => resolve_protocol(&db, "tools").await.runner,
+        };
+        // Finance reads: only in the caller's own Personal chat, only when the tool loop
+        // and the answer both run on a local Ollama model (FINANCE.md § Assistant). A
+        // loadout still scopes them like any other tool.
+        // The answer streams through Ollama's chat API (`chat_stream`), so its runner is Ollama.
+        let host_url = ollama.config().base_url.clone();
+        let finance_engines_local = finance_tools::engine_is_local(&Runner::Ollama, &params, &host_url);
+        let finance_defs: Vec<Value> = if finance_engines_local {
+            finance_tools::offered_defs(&db, user.id, body.project_id, &tool_runner, &tool_params, &host_url).await
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .filter(|d| {
+            let name = d["function"]["name"].as_str().unwrap_or("");
+            loadout_tool_filter.as_ref().is_none_or(|f| f.contains(name))
+        })
+        .collect();
+        if !finance_defs.is_empty() {
+            if let Some(Value::String(content)) = messages.first_mut().and_then(|m| m.get_mut("content")) {
+                content.push_str(&finance_tools::prompt_note(chrono::Local::now().date_naive()));
+            }
+            tool_defs.extend(finance_defs);
+        }
         // Epoch H: the tool tier may designate a remote engine.
         let tool_client = ollama::OllamaClient::for_params(&ollama, &tool_params);
-        let (used, prepared, loop_usage) =
-            tools::run_tool_loop(&db, rag.as_ref(), &tool_client, &tool_params, &mut messages, &tool_defs, body.project_id, user.id, user.is_owner).await;
+        // When the answering model isn't local, the finance gate must fail at execution too,
+        // so the loop is told the turn isn't on a local Ollama runner.
+        let runner = if finance_engines_local { tool_runner } else { Runner::Pi };
+        let (used, prepared, loop_usage) = tools::run_tool_loop(
+            &db, rag.as_ref(), &tool_client, &tool_params, &mut messages, &tool_defs, body.project_id, user.id, user.is_owner, &agent_run, &runner,
+        )
+        .await;
         tools_used = used;
         prepared_writes = prepared;
         turn_usage.add(loop_usage);
@@ -2691,6 +2784,8 @@ async fn chat_handler(
     };
     let model_name = params.model.clone();
     let sse = stream! {
+        // Owned by the stream, so the run ends when the answer does, errors or is dropped.
+        let _agent_run = agent_run;
         // Surface what we grounded on up front, so references show *before* the
         // answer (LM-Studio-style "tool use"), then signal that the model is
         // generating. The client shows a "retrieving context" state for the gap
@@ -2751,7 +2846,7 @@ async fn list_chats_handler(
     user: AuthUser,
     Query(q): Query<ListChatsQuery>,
 ) -> Result<Json<Vec<Chat>>, ApiError> {
-    require(&db, &user, q.project_id, auth::ROLE_MEMBER).await?;
+    require_chat_project(&db, &user, q.project_id).await?;
     let mut chats = ops::list_chats(&db, q.project_id, Some(user.id)).await?;
     // Stamp authorship server-side, so the client never has to guess who "me" is.
     for c in &mut chats {
@@ -2776,12 +2871,15 @@ async fn chat_set_public(
     let pid = ops::chat_project(&db, cid)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
-    require(&db, &user, pid, auth::ROLE_MEMBER).await?;
+    require_chat_project(&db, &user, pid).await?;
     let chat = ops::get_chat(&db, cid)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
     if chat.user_id != Some(user.id) {
         require(&db, &user, pid, auth::ROLE_ADMIN).await?;
+    }
+    if body.public && finance_tools::is_own_personal(&db, user.id, pid).await {
+        return Err(ApiError(AppError::InvalidInput("a Personal chat stays private to you".into())));
     }
     Ok(Json(ops::set_chat_public(&db, cid, body.public).await?))
 }
@@ -3660,10 +3758,12 @@ async fn giphy_search_handler(
     if !term.is_empty() {
         req = req.query(&[("q", term.as_str())]);
     }
+    // The key rides in the query string (GIPHY has no header form), so an error
+    // must not quote the URL: it would hand the host's key to whoever searched.
     let resp = req
         .send()
         .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(format!("giphy: {e}")))))?;
+        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(format!("giphy: {}", net_guard::error_text(e))))))?;
     if !resp.status().is_success() {
         let code = resp.status().as_u16();
         let msg = if code == 401 || code == 403 {
@@ -3676,8 +3776,24 @@ async fn giphy_search_handler(
     let body: Value = resp
         .json()
         .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(format!("giphy: {e}")))))?;
+        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(format!("giphy: {}", net_guard::error_text(e))))))?;
     Ok(Json(body))
+}
+
+/// Who may reach a project's chats: its members, except that a personal container's chats
+/// (the Personal lane) are its own user's alone. The owner's project bypass stops there, as it
+/// does at Finance (ADR 0009): someone else's Personal chats are "not found".
+async fn require_chat_project(db: &Db, user: &AuthUser, project_id: i64) -> Result<(), ApiError> {
+    require(db, user, project_id, auth::ROLE_MEMBER).await?;
+    let personal_of: Option<Option<i64>> = sqlx::query_scalar("SELECT personal_user_id FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError(AppError::from(e)))?;
+    match personal_of.flatten() {
+        Some(owner_of) if owner_of != user.id => Err(ApiError(AppError::NotFound("project".into()))),
+        _ => Ok(()),
+    }
 }
 
 /// Author-or-admin guard shared by the bin lifecycle handlers; returns the chat.
@@ -3685,7 +3801,7 @@ async fn chat_for_manage(db: &Db, user: &AuthUser, cid: i64) -> Result<Chat, Api
     let chat = ops::get_chat(db, cid)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
-    require(db, user, chat.project_id, auth::ROLE_MEMBER).await?;
+    require_chat_project(db, user, chat.project_id).await?;
     if chat.user_id != Some(user.id) {
         require(db, user, chat.project_id, auth::ROLE_ADMIN).await?;
     }
@@ -3698,7 +3814,7 @@ async fn chats_binned_handler(
     user: AuthUser,
     Query(q): Query<ListChatsQuery>,
 ) -> Result<Json<Vec<Chat>>, ApiError> {
-    require(&db, &user, q.project_id, auth::ROLE_MEMBER).await?;
+    require_chat_project(&db, &user, q.project_id).await?;
     let mut chats = ops::list_binned_chats(&db, q.project_id, user.id).await?;
     for c in &mut chats {
         c.is_mine = true;
@@ -3740,7 +3856,7 @@ async fn chat_messages_handler(
     let chat = ops::get_chat(&db, id)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("chat not found".into())))?;
-    require(&db, &user, chat.project_id, auth::ROLE_MEMBER).await?;
+    require_chat_project(&db, &user, chat.project_id).await?;
     // A private thread is readable only by its author (published ones by the
     // whole team); a project admin may read any for moderation.
     if !chat.is_public && chat.user_id != Some(user.id) {
@@ -3934,7 +4050,7 @@ async fn rundown_generate_handler(
     // A manual "run now" is the rundown routine's other trigger: go through the
     // routine record so the run is stamped + ledgered exactly like a catch-up run.
     if let Some(routine) = ops::routine_by_kind(&db, "rundown").await? {
-        routines::run_routine(&db, &client, rag_client.as_ref(), &routine).await.map_err(ApiError)?;
+        routines::run_routine(&db, Some(&client), rag_client.as_ref(), &routine).await.map_err(ApiError)?;
         if let Some(r) = secretary::latest_rundown(&db).await? {
             return Ok(Json(r));
         }
@@ -3971,6 +4087,15 @@ async fn consume_and_apply(
         if let (Some(pid), Some(input)) = (pending.profile_id, args.get_mut("input").and_then(Value::as_object_mut)) {
             input.insert("profile_id".into(), json!(pid));
         }
+    }
+    // Scope is re-checked now, not only when the proposal was made: the task
+    // may have moved or the proposer left in between. A stale proposal stays
+    // listed so it can be rejected.
+    if let Err(why) = tools::recheck_scope(db, &pending.command, &args, pending.project_id, pending.user_id).await {
+        if let Err(e2) = ganban_core::proposals::reinsert(db, &pending).await {
+            tracing::warn!("could not reinsert proposal {proposal_id}: {e2}");
+        }
+        return Err(AppError::Forbidden(format!("this proposal no longer applies: {why}")));
     }
     match tools::apply_write(db, root, &pending.command, &args).await {
         Ok(result) => {
@@ -4361,9 +4486,10 @@ async fn routine_run_handler(
     let routine = ops::get_routine(&db, id)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("routine not found".into())))?;
-    let client = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
+    // Only the kinds that need the model ask for one (run_routine says so).
+    let client = ollama.read().await.clone();
     let rag_client = rag.read().await.clone();
-    routines::run_routine(&db, &client, rag_client.as_ref(), &routine).await.map(Json).map_err(ApiError)
+    routines::run_routine(&db, client.as_ref(), rag_client.as_ref(), &routine).await.map(Json).map_err(ApiError)
 }
 
 #[cfg(feature = "tab-email")]
@@ -4409,7 +4535,7 @@ mod email_handlers {
     /// a loopback listener + returns the auth URL the UI launches in a browser.
     pub async fn email_oauth_begin(
         Extension(flows): Extension<email_oauth::SharedFlows>,
-        _user: AuthUser,
+        user: AuthUser,
         Json(b): Json<OAuthBeginBody>,
     ) -> Result<Json<Value>, ApiError> {
         let client_id = b.client_id.trim().to_string();
@@ -4417,17 +4543,17 @@ mod email_handlers {
             return Err(ApiError(AppError::InvalidInput("a Google OAuth client id is required".into())));
         }
         let secret = b.client_secret.filter(|s| !s.trim().is_empty());
-        let begun = email_oauth::begin(flows, client_id, secret).await.map_err(AppError::InvalidInput)?;
+        let begun = email_oauth::begin(flows, user.id, client_id, secret).await.map_err(AppError::InvalidInput)?;
         Ok(Json(json!({ "flow_id": begun.flow_id, "auth_url": begun.auth_url })))
     }
 
     /// Poll a sign-in's progress (pending / done+email / error).
     pub async fn email_oauth_poll(
         Extension(flows): Extension<email_oauth::SharedFlows>,
-        _user: AuthUser,
+        user: AuthUser,
         Path(flow_id): Path<String>,
     ) -> Json<Value> {
-        Json(email_oauth::poll(&flows, &flow_id))
+        Json(email_oauth::poll(&flows, &flow_id, user.id))
     }
 
     /// Per-USER mailboxes: members connect their own inboxes; nobody browses
@@ -4457,13 +4583,18 @@ mod email_handlers {
         user: AuthUser,
         Json(b): Json<AccountBody>,
     ) -> Result<Json<EmailAccount>, ApiError> {
+        // Refuse a member's mailbox on an internal address up front; the sync
+        // would refuse it at every connect anyway (`email::Reach`).
+        email::resolve_mail_host(b.host.trim(), b.port, email::Reach::for_caller(user.is_owner))
+            .await
+            .map_err(AppError::InvalidInput)?;
         let folders = if b.folders.trim().is_empty() { "INBOX".to_string() } else { b.folders.trim().to_string() };
         let horizon = b.horizon_days.unwrap_or(90);
         // OAuth path: claim the refresh token from the just-completed sign-in;
         // the resolved Google address wins over any typed username.
         if let Some(flow_id) = b.oauth_flow_id.as_deref().filter(|f| !f.is_empty()) {
             let (email, refresh_token) = flows
-                .take_done(flow_id)
+                .take_done(flow_id, user.id)
                 .ok_or_else(|| ApiError(AppError::InvalidInput("sign-in not completed — finish it in the browser, then add".into())))?;
             let username = if email.is_empty() { b.username.trim().to_string() } else { email };
             let label = if b.label.trim().is_empty() { username.clone() } else { b.label.trim().to_string() };
@@ -4490,7 +4621,10 @@ mod email_handlers {
     }
 
     /// Probe credentials and return the mailbox's folders (for the card).
-    pub async fn email_account_test(_user: AuthUser, Json(b): Json<AccountBody>) -> Result<Json<Value>, ApiError> {
+    /// A member's probe goes only to public addresses (the SSRF guard): the
+    /// host and port are theirs to type, so this is otherwise a scanner for the
+    /// host's LAN and tailnet. The owner may test a mailbox on their own network.
+    pub async fn email_account_test(user: AuthUser, Json(b): Json<AccountBody>) -> Result<Json<Value>, ApiError> {
         let probe = EmailAccount {
             id: 0,
             user_id: None,
@@ -4511,7 +4645,7 @@ mod email_handlers {
             last_result: None,
             created_at: chrono::Utc::now(),
         };
-        let folders = email::test_account(&probe).await.map_err(AppError::InvalidInput)?;
+        let folders = email::test_account(&probe, email::Reach::for_caller(user.is_owner)).await.map_err(AppError::InvalidInput)?;
         Ok(Json(json!({ "ok": true, "folders": folders })))
     }
 
@@ -5985,7 +6119,18 @@ async fn loadout_create_handler(
     if input.name.trim().is_empty() {
         return Err(ApiError(AppError::InvalidInput("a loadout needs a name".into())));
     }
+    refuse_unknown_tools(&db, &input.tools).await?;
     Ok(Json(ops::create_loadout(&db, input).await?))
+}
+
+/// A loadout may only name tools this host has (see `tools::unknown_tool_names`).
+async fn refuse_unknown_tools(db: &Db, tools: &[String]) -> Result<(), ApiError> {
+    let unknown = tools::unknown_tool_names(db, tools).await;
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError(AppError::InvalidInput(format!("no such tool on this host: {}", unknown.join(", ")))))
+    }
 }
 
 async fn loadout_update_handler(
@@ -5994,6 +6139,9 @@ async fn loadout_update_handler(
     Path(id): Path<i64>,
     Json(input): Json<ganban_core::models::UpdateLoadout>,
 ) -> Result<Json<ganban_core::models::Loadout>, ApiError> {
+    if let Some(tools) = &input.tools {
+        refuse_unknown_tools(&db, tools).await?;
+    }
     Ok(Json(ops::update_loadout(&db, id, input).await?))
 }
 
@@ -6066,8 +6214,35 @@ impl IntoResponse for ApiError {
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
         };
-        let body = Json(json!({ "error": self.0.to_string() }));
+        let body = match self.0.code() {
+            Some(code) => Json(json!({ "error": self.0.to_string(), "code": code })),
+            None => Json(json!({ "error": self.0.to_string() })),
+        };
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod api_error_tests {
+    use super::*;
+
+    async fn body_of(e: AppError) -> (StatusCode, Value) {
+        let res = ApiError(e).into_response();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 4096).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_refusal_sends_its_code_next_to_the_message() {
+        let code = ganban_core::error::codes::AI_FILE_TOO_LARGE;
+        assert!(AppError::Refused { code, message: String::new() }.is_invalid_input(), "other transports map it to 400 too");
+        let (status, body) = body_of(AppError::Refused { code, message: "too big".into() }).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], code);
+        assert_eq!(body["error"], "Invalid input: too big");
+        let (_, plain) = body_of(AppError::InvalidInput("nope".into())).await;
+        assert!(plain.get("code").is_none(), "{plain}");
     }
 }
 
@@ -6225,6 +6400,39 @@ mod proposal_tests {
         // …and the proposal is consumed: it can be neither re-rejected nor applied.
         assert!(consume_and_reject(&db, id, 1).await.is_err());
         assert!(consume_and_apply(&db, &test_root(), id, 1).await.is_err(), "a rejected proposal must never apply");
+    }
+
+    /// Scope is re-checked when a proposal is approved: a task that moved to
+    /// another project, or a proposer who left, refuses the write, and the
+    /// proposal stays listed to be rejected.
+    #[tokio::test]
+    async fn approval_rechecks_the_proposals_scope() {
+        let db = test_db("rescope").await;
+        let a = dispatch(&db, "create_project", &j!({ "input": { "name": "A" }, "createdBy": 1 })).await.unwrap()["id"].as_i64().unwrap();
+        let b = dispatch(&db, "create_project", &j!({ "input": { "name": "B" }, "createdBy": 1 })).await.unwrap()["id"].as_i64().unwrap();
+        seed_member(&db, 2, "alice", a).await;
+        let tid = dispatch(&db, "create_task", &j!({
+            "input": { "project_id": a, "title": "T", "status": "To Do", "priority": "Low" }
+        })).await.unwrap()["id"].as_i64().unwrap();
+
+        // The task moves to project B after Alice's agent proposed a comment on it.
+        let pw = tools::prepare_write(&db, 2, a, "create_comment", &j!({ "task_id": tid, "content": "hi" })).await.unwrap();
+        let id = ganban_core::proposals::register(&db, a, 2, None, 0, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        sqlx::query("UPDATE tasks SET project_id = ? WHERE id = ?").bind(b).bind(tid).execute(&db).await.unwrap();
+        let err = consume_and_apply(&db, &test_root(), id, 2).await.unwrap_err().to_string();
+        assert!(err.contains("no longer applies"), "{err}");
+        assert!(ledger_rows(&db).await.is_empty(), "nothing applied");
+        assert!(ganban_core::proposals::peek_meta(&db, id).await.unwrap().is_some(), "still listed, to be rejected");
+
+        // A proposer who has left the project can't have their write land either.
+        sqlx::query("UPDATE tasks SET project_id = ? WHERE id = ?").bind(a).bind(tid).execute(&db).await.unwrap();
+        ganban_core::auth::remove_project_member(&db, a, 2).await.unwrap();
+        let err = consume_and_apply(&db, &test_root(), id, 1).await.unwrap_err().to_string();
+        assert!(err.contains("no longer a member"), "{err}");
+
+        // Back in scope, it applies.
+        seed_member(&db, 2, "alice", a).await;
+        assert_eq!(consume_and_apply(&db, &test_root(), id, 2).await.unwrap()["ok"], true);
     }
 
     #[tokio::test]
@@ -6800,6 +7008,54 @@ mod invoke_wiring_tests {
         let (status, _, _) = host.invoke(Who::Loopback, "get_projects", json!({})).await;
         assert_eq!(status, StatusCode::OK);
         assert!(pulses.try_recv().is_err(), "reads never pulse");
+    }
+
+    #[tokio::test]
+    async fn finance_writes_send_no_pulse_to_other_members() {
+        let host = Host::new("finance_quiet").await;
+        let (_, a, _) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "A" } })).await;
+        let token = host.member_device(a["id"].as_i64().unwrap(), "Mia").await;
+        // Every subscriber (the owner's and other members' streams) shares this channel.
+        let mut pulses = host.hub.subscribe();
+        let before = host.hub.current_id();
+        let input = json!({ "input": { "kind": "current", "name": "Everyday", "currency": "EUR", "openingBalanceMinor": 1000 } });
+        let (status, account, _) = host.invoke(Who::Device(&token), "fin_create_account", input).await;
+        assert_eq!(status, StatusCode::OK, "{account}");
+        let args = json!({ "accountId": account["id"], "input": { "name": "Daily" } });
+        let (status, _, _) = host.invoke(Who::Device(&token), "fin_update_account", args).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(pulses.try_recv().is_err(), "a finance write pulses nobody");
+        assert_eq!(host.hub.current_id(), before, "nor moves the pulse id others resume from");
+    }
+
+    #[tokio::test]
+    async fn personal_chats_are_their_users_alone_even_to_the_owner() {
+        let host = Host::new("personal_chats").await;
+        let (_, a, _) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "A" } })).await;
+        let token = host.member_device(a["id"].as_i64().unwrap(), "Mia").await;
+        let (status, space, _) = host.invoke(Who::Device(&token), "ensure_personal_space", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let personal = space["projectId"].as_i64().unwrap();
+        let mia: i64 = sqlx::query_scalar("SELECT personal_user_id FROM projects WHERE id = ?").bind(personal).fetch_one(&host.db).await.unwrap();
+        let chat = ops::create_chat(&host.db, personal, Some(mia), None, Some("Money")).await.unwrap().id;
+        ops::append_message(&host.db, chat, "user", "how much did I spend?", None, None, None, None, None, None).await.unwrap();
+
+        let (status, listed) = route(&host, Who::Device(&token), "GET", &format!("/chats?project_id={personal}"), Body::empty()).await;
+        assert_eq!((status, listed.as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
+        // The owner's project bypass stops at someone else's Personal lane.
+        for path in [format!("/chats?project_id={personal}"), format!("/chats/{chat}/messages"), format!("/chats/binned?project_id={personal}")] {
+            let (status, _) = route(&host, Who::Loopback, "GET", &path, Body::empty()).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+        let (status, _) = route(&host, Who::Loopback, "POST", &format!("/chats/{chat}/bin"), Body::empty()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let body = Body::from(json!({ "public": true }).to_string());
+        let (status, _) = route(&host, Who::Loopback, "POST", &format!("/chats/{chat}/publish"), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // Nor does Mia share it: a Personal chat has no team.
+        let body = Body::from(json!({ "public": true }).to_string());
+        let (status, _) = route(&host, Who::Device(&token), "POST", &format!("/chats/{chat}/publish"), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

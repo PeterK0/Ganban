@@ -7,6 +7,7 @@ import { Modal } from './gilt';
 import { TabIcon } from './icons/TabIcon';
 import { stashTabIcon } from '../tabs/registry';
 import { useKnowledgeEngine } from './KnowledgeEngine';
+import { isProjectTab } from '../tabs/modules';
 
 interface ProjectSettingsModalProps {
   project: Project;
@@ -51,7 +52,7 @@ export default function ProjectSettingsModal({
         listProfiles()
           .then((r) => setProfiles(r.profiles))
           .catch(() => setProfiles([]));
-        listAvailableTabs().then(setAvailableTabs).catch(() => setAvailableTabs([]));
+        listAvailableTabs().then((t) => setAvailableTabs(t.filter((d) => isProjectTab(d.id)))).catch(() => setAvailableTabs([]));
         getProjectTabs(project.id).then(setEnabledTabs).catch(() => setEnabledTabs([]));
         getApprovalPolicy(project.id)
           .then((r) => setApprovalPol(r.policy))

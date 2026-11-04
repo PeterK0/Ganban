@@ -8,6 +8,7 @@ import {
   executeProposal,
   rejectProposal,
   listChats,
+  personalSpaceId,
   getChatMessages,
   setChatPublic,
   listProfiles,
@@ -119,19 +120,36 @@ function ChatsTab() {
   const nav = useNav();
   const { data, loading, error, reload } = useAsync(() => getProjects(), []);
   const projects = (data ?? []).filter((p) => !p.archived);
+  // The Personal lane: chats in the caller's own hidden container, private to them.
+  const [personal, setPersonal] = useState<Project | null>(null);
+  useEffect(() => {
+    personalSpaceId()
+      .then((id) => setPersonal({ id, name: "Personal", archived: false, created_at: "", updated_at: "" }))
+      .catch(() => {/* an older host has no personal containers */});
+  }, []);
 
   return (
     <>
       {error && <ErrorBanner message={error} onRetry={reload} />}
       {loading && !data ? (
         <Spinner />
-      ) : projects.length === 0 ? (
+      ) : projects.length === 0 && !personal ? (
         <EmptyState text="No projects yet. The assistant answers questions grounded in a project's tasks, events, notes and files." />
       ) : (
         <div className="pb-24">
           <p className="px-4 py-3 text-sm gm-mut">
             Chat with an AI grounded in a project's tasks, events, notes &amp; files.
           </p>
+          {personal && (
+            <button onClick={() => nav.push(<ProjectChatsScreen project={personal} />)} className="gm-row">
+              <span className="g-tile" aria-hidden="true">🔒</span>
+              <span className="flex-1 min-w-0">
+                <span className="block truncate text-[15px] font-medium">Personal</span>
+                <span className="block truncate text-xs gm-mut">Private to you · your finances with Tools on a local model</span>
+              </span>
+              <Chevron />
+            </button>
+          )}
           {projects.map((p) => (
             <button
               key={p.id}

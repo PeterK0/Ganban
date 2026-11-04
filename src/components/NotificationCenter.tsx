@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNotifications, notify, type Notif, type NotifCategory } from '../store/notifications';
-import { getNotifications, markNotificationsRead } from '../lib/api';
+import { useNotifications, type Notif, type NotifCategory } from '../store/notifications';
+import { markNotificationsRead } from '../lib/api';
+import { pullServerNotifications } from '../lib/notificationFeed';
 import { useAppStore } from '../store/appStore';
 import {
   listIndexJobs,
@@ -282,32 +283,13 @@ export default function NotificationCenter({
   const shown = tab === 'all' ? items : items.filter((i) => i.category === tab);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Pull durable server notifications (@mentions) into the bell. Surface each
-  // unread one once (stable id dedups; a per-session set avoids re-adding ones
-  // the user dismissed); only server-UNREAD are shown, so marking-read sticks.
-  const surfaced = useRef<Set<number>>(new Set());
+  // Pull the host's durable notifications (mentions, reminders) into the bell
+  // (src/lib/notificationFeed.ts, shared with the phone shell).
   useEffect(() => {
     if (!currentUser) return;
-    let active = true;
-    const pull = async () => {
-      try {
-        const list = await getNotifications();
-        if (!active) return;
-        for (const n of list) {
-          if (n.read || surfaced.current.has(n.id)) continue;
-          surfaced.current.add(n.id);
-          notify({ id: `srv-${n.id}`, category: (n.category as NotifCategory) || 'comment', title: n.title, body: n.body ?? undefined });
-        }
-      } catch {
-        /* host unreachable — the bell just doesn't update */
-      }
-    };
-    pull();
-    const t = setInterval(pull, 60000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
+    void pullServerNotifications();
+    const t = setInterval(() => void pullServerNotifications(), 60000);
+    return () => clearInterval(t);
   }, [currentUser, open]);
 
   // Marking read clears them on the host too, so they don't re-surface on refetch.

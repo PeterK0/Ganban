@@ -59,16 +59,46 @@ pub enum Schedule {
     Every(chrono::Duration),
     /// "07:00" — daily at that HOST-LOCAL time.
     Daily { hour: u32, minute: u32 },
+    /// "Mon 09:00" / "Mon,Thu 09:00" — on those weekdays at that HOST-LOCAL
+    /// time. `days` is a bit set, Monday = bit 0.
+    Weekly { days: u8, hour: u32, minute: u32 },
+}
+
+const WEEKDAY_NAMES: [(&str, &str); 7] = [
+    ("mon", "monday"),
+    ("tue", "tuesday"),
+    ("wed", "wednesday"),
+    ("thu", "thursday"),
+    ("fri", "friday"),
+    ("sat", "saturday"),
+    ("sun", "sunday"),
+];
+
+fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let (h, m) = (h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// "mon,thu" (or "mon, thu") → a weekday bit set; any unknown name → None.
+fn parse_weekdays(s: &str) -> Option<u8> {
+    let mut days = 0u8;
+    for name in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let i = WEEKDAY_NAMES.iter().position(|(short, long)| name == *short || name == *long)?;
+        days |= 1 << i;
+    }
+    (days != 0).then_some(days)
 }
 
 pub fn parse_schedule(s: &str) -> Option<Schedule> {
     let s = s.trim().to_lowercase();
-    if let Some((h, m)) = s.split_once(':') {
-        let (h, m) = (h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?);
-        if h < 24 && m < 60 {
-            return Some(Schedule::Daily { hour: h, minute: m });
-        }
-        return None;
+    if let Some(i) = s.rfind(char::is_whitespace).filter(|_| s.starts_with(|c: char| c.is_ascii_alphabetic())) {
+        let (days, time) = (parse_weekdays(&s[..i])?, parse_hhmm(&s[i..])?);
+        return Some(Schedule::Weekly { days, hour: time.0, minute: time.1 });
+    }
+    if s.contains(':') {
+        let (h, m) = parse_hhmm(&s)?;
+        return Some(Schedule::Daily { hour: h, minute: m });
     }
     let mut parts = s.split_whitespace();
     let n: i64 = parts.next()?.parse().ok()?;
@@ -101,6 +131,62 @@ pub fn schedule_of(def: &Value) -> Option<String> {
     })
 }
 
+/// The host-local wall-clock instants of a clock schedule (daily or weekly)
+/// around `now`: the latest at or before it, or the first after it. `None`
+/// for an `Every` schedule.
+fn clock_instant(
+    schedule: Schedule,
+    now: chrono::DateTime<chrono::Utc>,
+    after: bool,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Datelike, TimeZone};
+    let (days, hour, minute) = match schedule {
+        Schedule::Every(_) => return None,
+        Schedule::Daily { hour, minute } => (0x7f, hour, minute),
+        Schedule::Weekly { days, hour, minute } => (days, hour, minute),
+    };
+    let local_now = now.with_timezone(&chrono::Local).naive_local();
+    // Eight days each way covers every weekly cadence.
+    let mut offsets: Vec<i64> = (0..=8).collect();
+    if !after {
+        offsets.iter_mut().for_each(|d| *d = -*d);
+    }
+    offsets.into_iter().find_map(|d| {
+        let date = local_now.date() + chrono::Duration::days(d);
+        if days & (1 << date.weekday().num_days_from_monday()) == 0 {
+            return None;
+        }
+        let at = date.and_hms_opt(hour, minute, 0)?;
+        let fits = if after { at > local_now } else { at <= local_now };
+        if !fits {
+            return None;
+        }
+        // A time inside a spring-forward gap runs when the clocks resume.
+        let local = chrono::Local.from_local_datetime(&at).earliest().or_else(|| {
+            chrono::Local.from_local_datetime(&(at + chrono::Duration::hours(1))).earliest()
+        })?;
+        Some(local.with_timezone(&chrono::Utc))
+    })
+}
+
+/// The latest due instant of a daily or weekly schedule at or before `now`.
+pub fn last_instant(schedule: Schedule, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    clock_instant(schedule, now, false)
+}
+
+/// When a schedule next runs after `now`, given its last run.
+#[allow(dead_code)] // for screens that show the next run; the tests pin it
+pub fn next_run(
+    schedule: Schedule,
+    last_run: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    match schedule {
+        Schedule::Every(dur) => Some(last_run.map_or(now, |l| (l + dur).max(now))),
+        _ => clock_instant(schedule, now, true),
+    }
+}
+
 /// Whether a scheduled workflow is due at `now`, given its last run.
 pub fn is_due(
     schedule: Schedule,
@@ -109,27 +195,13 @@ pub fn is_due(
 ) -> bool {
     match schedule {
         Schedule::Every(dur) => last_run.map_or(true, |l| now - l >= dur),
-        Schedule::Daily { hour, minute } => {
-            use chrono::TimeZone;
-            // The most recent host-local hh:mm instant at or before now; due
-            // if the last run predates it (or there never was one).
-            let local_now = now.with_timezone(&chrono::Local);
-            let today = local_now.date_naive().and_hms_opt(hour, minute, 0).unwrap();
-            let candidate = if today <= local_now.naive_local() {
-                today
-            } else {
-                today - chrono::Duration::days(1)
-            };
-            let prev = chrono::Local
-                .from_local_datetime(&candidate)
-                .earliest()
-                .map(|d| d.with_timezone(&chrono::Utc));
-            match (prev, last_run) {
-                (Some(p), Some(l)) => l < p,
-                (Some(_), None) => true,
-                (None, _) => false,
-            }
-        }
+        // The most recent host-local instant at or before now; due if the
+        // last run predates it (or there never was one).
+        _ => match (last_instant(schedule, now), last_run) {
+            (Some(p), Some(l)) => l < p,
+            (Some(_), None) => true,
+            (None, _) => false,
+        },
     }
 }
 
@@ -736,13 +808,17 @@ async fn fetch_http(params: &Value) -> Result<(String, Option<String>), AppError
     // token appended, so server logs can still identify us). Cookies stay OUT
     // by design: this is the UNTRUSTED acquire node — authenticated sessions
     // are the web_sessions registry's job (Demonstration D1), behind its gate.
-    let client = reqwest::Client::builder()
+    // The URL is a flow's (possibly a template's): the SSRF guard checks it,
+    // and the client pins each hop's address and caps redirects.
+    let parsed = reqwest::Url::parse(url).map_err(|_| AppError::InvalidInput("fetch.http: not a valid URL".into()))?;
+    crate::net_guard::check_url(&parsed).await.map_err(|e| AppError::InvalidInput(format!("fetch.http: {e}")))?;
+    let client = crate::net_guard::client_builder(5)
         .timeout(std::time::Duration::from_secs(20))
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 ganban-oracle/1.0")
         .build()
         .map_err(|e| AppError::InvalidInput(format!("http client: {e}")))?;
     let res = client
-        .get(url)
+        .get(parsed)
         .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8")
         .header(reqwest::header::ACCEPT_LANGUAGE, "en")
         .send()
@@ -1352,6 +1428,16 @@ async fn quiz_generate(
 mod tests {
     use super::*;
 
+    /// fetch.http goes through the SSRF guard: a flow can't read the host's
+    /// own services or its tailnet.
+    #[tokio::test]
+    async fn fetch_http_refuses_internal_addresses() {
+        for url in ["http://127.0.0.1:8765/", "http://localhost:1/", "http://100.100.100.100/"] {
+            let err = fetch_http(&json!({ "url": url })).await.unwrap_err().to_string();
+            assert!(err.contains("not allowed"), "{url}: {err}");
+        }
+    }
+
     fn test_root() -> std::path::PathBuf {
         let p = std::env::temp_dir().join(format!("ganban_oracle_root_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&p);
@@ -1384,6 +1470,38 @@ mod tests {
         ]});
         assert_eq!(schedule_of(&def).as_deref(), Some("1 hour"));
         assert_eq!(schedule_of(&json!({ "nodes": [{ "id": "t", "type": "trigger.manual" }] })), None);
+    }
+
+    #[test]
+    fn weekly_schedules_parse_and_find_their_next_run() {
+        use chrono::{Datelike, Duration, Local, TimeZone, Timelike, Utc};
+        assert_eq!(parse_schedule("Mon 09:00"), Some(Schedule::Weekly { days: 0b1, hour: 9, minute: 0 }));
+        assert_eq!(parse_schedule("Mon,Thu 09:00"), Some(Schedule::Weekly { days: 0b1001, hour: 9, minute: 0 }));
+        assert_eq!(parse_schedule(" monday, sun 7:30 "), Some(Schedule::Weekly { days: 0b100_0001, hour: 7, minute: 30 }));
+        assert_eq!(parse_schedule("Mon 25:00"), None);
+        assert_eq!(parse_schedule("Month 09:00"), None);
+        assert_eq!(parse_schedule("Mon"), None);
+
+        // Host-local Wednesday 2026-07-01 12:00.
+        let local = |d: u32, h: u32, m: u32| Local.with_ymd_and_hms(2026, 7, d, h, m, 0).earliest().unwrap().with_timezone(&Utc);
+        let wed_noon = local(1, 12, 0);
+        let mon_thu = parse_schedule("Mon,Thu 09:00").unwrap();
+        // Next: Thursday 09:00; then the Monday after.
+        let next = next_run(mon_thu, None, wed_noon).unwrap().with_timezone(&Local);
+        assert_eq!((next.day(), next.weekday().num_days_from_monday(), next.hour()), (2, 3, 9));
+        let after = next_run(mon_thu, None, local(2, 9, 0)).unwrap().with_timezone(&Local);
+        assert_eq!((after.day(), after.weekday().num_days_from_monday()), (6, 0));
+        // Due: the latest instant was Monday 29 June 09:00.
+        assert_eq!(last_instant(mon_thu, wed_noon).unwrap().with_timezone(&Local).day(), 29);
+        assert!(is_due(mon_thu, None, wed_noon));
+        assert!(is_due(mon_thu, Some(local(1, 12, 0) - Duration::days(3)), wed_noon));
+        assert!(!is_due(mon_thu, Some(local(1, 8, 0)), wed_noon));
+        assert!(is_due(mon_thu, Some(local(1, 8, 0)), local(2, 9, 0)));
+        // Every and daily keep their meaning; Every's next run counts from its last.
+        let hourly = Schedule::Every(Duration::hours(1));
+        assert_eq!(next_run(hourly, Some(wed_noon), wed_noon), Some(wed_noon + Duration::hours(1)));
+        let daily = parse_schedule("07:00").unwrap();
+        assert_eq!(next_run(daily, None, wed_noon).unwrap().with_timezone(&Local).day(), 2);
     }
 
     #[test]

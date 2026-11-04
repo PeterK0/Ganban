@@ -11,7 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(mkdtempSync(join(tmpdir(), 'rec-')), 'rec.mjs');
 execSync(`npx esbuild src/lib/recur.pure.ts --format=esm --outfile=${out}`, { cwd: root, stdio: 'inherit' });
 
-const { expandOccurrences, buildRrule, describeRrule, canExpand, rruleToModel, modelToRrule, isWorkweek, seriesOccurrences, nextOccurrence, parseExdates, addExdates, endRuleOn, ruleEnd, splitRule, isoWeek, weekStart } = await import(out);
+const { expandOccurrences, buildRrule, describeRrule, canExpand, rruleToModel, modelToRrule, isWorkweek, seriesOccurrences, nextOccurrence, parseExdates, addExdates, endRuleOn, ruleEnd, splitRule, isoWeek, weekStart, endRuleAt, monthGridRange } = await import(out);
 let pass = 0, fail = 0;
 const ok = (c, m) => (c ? pass++ : (fail++, console.log('FAIL:', m)));
 const d = (s) => new Date(s);
@@ -176,6 +176,12 @@ ok(sp.head === 'FREQ=DAILY;UNTIL=20260604' && sp.tail === 'FREQ=DAILY;COUNT=6', 
 sp = splitRule('FREQ=MONTHLY', d('2026-01-15T10:00:00'), '2026-01-15');
 ok(sp.head === null && sp.tail === 'FREQ=MONTHLY', 'splitting at the first day is the whole series');
 
+// ---- "End today": a series that hasn't started has nothing left ----
+ok(endRuleAt('FREQ=WEEKLY;BYDAY=MO;COUNT=5', d('2026-11-02T09:00:00'), '2026-11-04') === 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20261104', 'a started series ends on the day');
+ok(endRuleAt('FREQ=DAILY', d('2026-11-04T18:00:00'), '2026-11-04') === 'FREQ=DAILY;UNTIL=20261104', 'a series whose first day is today keeps today');
+ok(endRuleAt('FREQ=DAILY', d('2026-11-05T09:00:00'), '2026-11-04') === null, 'a series starting tomorrow has nothing left');
+ok(endRuleAt('FREQ=WEEKLY;BYDAY=FR', d('2026-11-02T09:00:00'), '2026-11-04') === null, 'a series whose first occurrence is after the day has nothing left');
+
 // ---- ISO 8601 weeks ----
 const wk = (s) => isoWeek(d(`${s}T12:00:00`));
 ok(wk('2026-11-03').week === 45, `3 Nov 2026 is W45, got ${wk('2026-11-03').week}`);
@@ -184,6 +190,14 @@ ok(wk('2027-01-01').week === 53 && wk('2027-01-01').year === 2026, '1 Jan 2027 (
 ok(wk('2024-12-30').week === 1 && wk('2024-12-30').year === 2025, '30 Dec 2024 (Mon) is W1 of 2025');
 ok(wk('2026-11-08').week === 45 && wk('2026-11-09').week === 46, 'Sunday ends the week, Monday starts the next');
 ok(ymd(weekStart(d('2026-11-08T12:00:00'))) === '2026-11-02' && ymd(weekStart(d('2026-11-02T00:00:00'))) === '2026-11-02', 'weekStart is the Monday');
+
+// ---- The month grid's range, other months' days included ----
+let g = monthGridRange(2026, 10); // November 2026: the 1st is a Sunday
+ok(ymd(g.first) === '2026-10-26' && ymd(g.last) === '2026-12-06', `Nov 2026 grid ${ymd(g.first)}..${ymd(g.last)}`);
+g = monthGridRange(2026, 5); // June 2026: the 1st is a Monday
+ok(ymd(g.first) === '2026-06-01' && ymd(g.last) === '2026-07-12', `Jun 2026 grid ${ymd(g.first)}..${ymd(g.last)}`);
+occ = seriesOccurrences('FREQ=WEEKLY;BYDAY=TU', d('2026-05-05T09:00:00'), null, g.first, new Date(g.last.getFullYear(), g.last.getMonth(), g.last.getDate(), 23, 59, 59));
+ok(occ.some((o) => ymd(o) === '2026-07-07'), 'a trailing day of the grid gets its occurrence');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

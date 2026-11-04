@@ -745,6 +745,41 @@ pub async fn get_task_total_time(db: &Db, task_id: i64) -> Result<i64> {
     Ok(result.0.unwrap_or(0))
 }
 
+/// The finished seconds `user_id` tracked on a task since `since` (all users' when `None`;
+/// unattributed entries count as the user's, as for the running timer). An entry that
+/// started before `since` counts only from `since` on. The running entry isn't included:
+/// the timer adds it live. Behind the timer's "today" (the client passes its local midnight).
+pub async fn get_user_task_time_since(
+    db: &Db,
+    task_id: i64,
+    user_id: Option<i64>,
+    since: DateTime<Utc>,
+) -> Result<i64> {
+    let rows: Vec<(DateTime<Utc>, DateTime<Utc>, Option<i64>)> = sqlx::query_as(
+        "SELECT start_time, end_time, duration FROM time_entries \
+         WHERE task_id = ?1 AND end_time IS NOT NULL \
+           AND (?2 IS NULL OR user_id = ?2 OR user_id IS NULL)",
+    )
+    .bind(task_id)
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    // Compared here, not in SQL: stored timestamps aren't all in one text format.
+    Ok(rows
+        .into_iter()
+        .filter(|(_, end, _)| *end > since)
+        .map(|(start, end, duration)| {
+            let whole = duration.unwrap_or_else(|| (end - start).num_seconds()).max(0);
+            if start >= since {
+                whole
+            } else {
+                // Started before `since`: only the part after it, never more than the entry.
+                (end - since).num_seconds().clamp(0, whole)
+            }
+        })
+        .sum())
+}
+
 /// The running timer. With `user_id`, that user's (or an unattributed one, from before
 /// attribution existed): on a shared host a teammate's timer isn't yours. The newest wins
 /// when more than one runs.
@@ -1779,17 +1814,27 @@ pub async fn update_event(db: &Db, event_id: i64, input: UpdateEventInput) -> Re
     Ok(event)
 }
 
+/// Move an event to the Bin. A series takes its one-off copies (`series_id`) with it:
+/// they stand in for days of the series, so they'd be orphans in the calendar.
+/// They share the master's `updated_at`, which is how `restore_event` finds them.
 pub async fn delete_event(db: &Db, event_id: i64) -> Result<()> {
     println!("delete_event called with event_id: {} (archiving)", event_id);
 
     let now = Utc::now();
+    let mut tx = db.begin().await?;
 
     // Soft delete by setting archived = true
     let result = sqlx::query("UPDATE events SET archived = 1, updated_at = ? WHERE id = ?")
         .bind(now)
         .bind(event_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
+    sqlx::query("UPDATE events SET archived = 1, updated_at = ? WHERE series_id = ? AND archived = 0")
+        .bind(now)
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
 
     println!("delete_event affected {} rows", result.rows_affected());
     Ok(())
@@ -1813,14 +1858,26 @@ pub async fn archive_event(db: &Db, event_id: i64, archived: bool) -> Result<Eve
     Ok(event)
 }
 
+/// Bring an event back from the Bin, with the one-off copies `delete_event` binned
+/// alongside it (same `updated_at`); a copy binned on its own stays there.
 pub async fn restore_event(db: &Db, event_id: i64) -> Result<Event> {
     let now = Utc::now();
+    let mut tx = db.begin().await?;
 
+    sqlx::query(
+        "UPDATE events SET archived = 0, updated_at = ?1 WHERE series_id = ?2 AND archived = 1 \
+         AND updated_at = (SELECT updated_at FROM events WHERE id = ?2 AND archived = 1)",
+    )
+    .bind(now)
+    .bind(event_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE events SET archived = 0, updated_at = ? WHERE id = ?")
         .bind(now)
         .bind(event_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
 
     let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
         .bind(event_id)

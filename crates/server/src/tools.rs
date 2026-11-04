@@ -173,6 +173,11 @@ pub async fn execute_tool(
                 rows.into_iter().map(|(id, title, date)| json!({ "id": id, "title": title, "date": date })).collect();
             Ok(cap(Value::Array(v).to_string()))
         }
+        // Finance reads run only through `finance_tools::execute`, which checks their gate (the
+        // caller's own Personal chat on a local engine). Any other path refuses them.
+        other if crate::finance_tools::is_finance_tool(other) => {
+            Err("finance tools are only available in your Personal chats on a local model".into())
+        }
         // Tab-contributed reads (enablement re-checked inside; capped like ours).
         other if crate::tabs::is_tab_read_tool(other) => {
             crate::tabs::execute_read(db, project_id, other, args).await.map(cap)
@@ -379,6 +384,11 @@ pub fn tool_catalog(tab_ids: &[String]) -> Vec<ToolInfo> {
     // offers it when a personality's loadout names it.
     out.push(tool_info(&crate::delegate::delegate_tool_def(), "read", false, "builtin".into(), Some("loadout".into())));
 
+    // Finance reads: offered only in the caller's own Personal chats on a local model.
+    for def in crate::finance_tools::tool_defs() {
+        out.push(tool_info(&def, "read", false, "builtin".into(), Some("a Personal chat on a local model".into())));
+    }
+
     // Tab tools, attributed to their tab (Tier-1 tabs contribute none).
     for id in tab_ids {
         for def in crate::tabs::tool_defs_for(std::slice::from_ref(id)) {
@@ -418,6 +428,7 @@ fn is_builtin_tool_name(name: &str) -> bool {
         .filter_map(tool_name)
         .any(|n| n == name)
         || crate::tabs::is_tab_read_tool(name)
+        || crate::finance_tools::is_finance_tool(name)
         || crate::tabs::is_tab_write_tool(name)
 }
 
@@ -548,6 +559,8 @@ pub async fn registry_tool_defs(db: &Db, rag_on: bool, is_owner: bool) -> Vec<Va
         .await
         .unwrap_or_default()
         .into_iter()
+        // A row saved before the finance tools existed can't shadow one of their names.
+        .filter(|t| !crate::finance_tools::is_finance_tool(&t.name))
         // rag/mcp need the engine up; mcp + http are owner-only.
         .filter(|t| match t.binding_kind.as_str() {
             "rag" => rag_on,
@@ -563,6 +576,24 @@ pub async fn registry_tool_defs(db: &Db, rag_on: bool, is_owner: bool) -> Vec<Va
 }
 
 /// Catalog entries for the enabled registry tools (source "registry:<kind>").
+/// The names in `names` that aren't tools this host has: not a built-in or a
+/// compiled-in tab's tool, and not a registry tool (enabled or not). A loadout
+/// naming one would silently grant nothing, so saving it is refused.
+pub async fn unknown_tool_names(db: &Db, names: &[String]) -> Vec<String> {
+    let tab_ids: Vec<String> = crate::tabs::available_tabs().iter().map(|t| t.id.to_string()).collect();
+    let mut known: std::collections::HashSet<String> = tool_catalog(&tab_ids).into_iter().map(|t| t.name).collect();
+    known.extend(ops::list_registry_tools(db).await.unwrap_or_default().into_iter().map(|t| t.name));
+    let mut unknown: Vec<String> = names
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && !known.contains(*n))
+        .map(str::to_string)
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    unknown
+}
+
 pub async fn registry_tool_infos(db: &Db, is_owner: bool) -> Vec<ToolInfo> {
     ops::enabled_registry_tools(db)
         .await
@@ -716,23 +747,10 @@ async fn execute_registry_tool(
     }
 }
 
-/// Resolve a URL's host and refuse private/internal destinations (SSRF). Shared
-/// by the http connector and the page fetcher.
+/// Refuse private/internal destinations (SSRF). Shared by the http connector
+/// and the page fetcher; their clients re-check at connect time.
 async fn ssrf_check(url: &reqwest::Url) -> Result<(), String> {
-    let host = url.host_str().ok_or("url has no host")?;
-    let port = url.port_or_known_default().unwrap_or(443);
-    let mut resolved = false;
-    for addr in tokio::net::lookup_host((host, port)).await.map_err(|e| format!("DNS lookup failed: {e}"))? {
-        resolved = true;
-        if ip_is_blocked(addr.ip()) {
-            return Err("destination is not allowed (private/internal address)".into());
-        }
-    }
-    if resolved {
-        Ok(())
-    } else {
-        Err("host did not resolve".into())
-    }
+    crate::net_guard::check_url(url).await
 }
 
 /// One UTF-8 char's byte length, from its leading byte.
@@ -807,7 +825,7 @@ fn html_to_text(html: &str) -> String {
 /// model-controlled, so a secret could be exfiltrated; never inject one here.
 /// Owner-gated upstream. Result is untrusted (capped by the caller).
 async fn fetch_url(url_in: &str, as_text: bool) -> Result<String, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::net_guard::client_builder(0)
         .timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("Ganban/", env!("CARGO_PKG_VERSION"), " (fetch)"))
@@ -849,28 +867,6 @@ async fn fetch_url(url_in: &str, as_text: bool) -> Result<String, String> {
         return Ok(if as_text && html_like { html_to_text(&body) } else { body });
     }
     Err("too many redirects".into())
-}
-
-/// Block private/internal destinations (SSRF) for the http connector / fetcher.
-fn ip_is_blocked(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.octets()[0] == 0
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
-        }
-    }
 }
 
 /// Recursively substitute templates in a JSON body: every string LEAF is run
@@ -919,7 +915,7 @@ async fn http_connector_fetch(binding: &Value, args: &Value, secret: Option<&str
             }
         }
     }
-    let client = reqwest::Client::builder()
+    let client = crate::net_guard::client_builder(0)
         .timeout(std::time::Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none()) // close redirect-SSRF
         .user_agent(concat!("Ganban/", env!("CARGO_PKG_VERSION"), " (connector)"))
@@ -945,7 +941,9 @@ async fn http_connector_fetch(binding: &Value, args: &Value, secret: Option<&str
             }
         }
     }
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    // The URL can carry the connector's secret ({secret} in a query param), and
+    // this error goes back to the model: never quote it.
+    let resp = req.send().await.map_err(crate::net_guard::error_text)?;
     if let Some(len) = resp.content_length() {
         if len > 5_000_000 {
             return Err("connector response too large".into());
@@ -954,7 +952,7 @@ async fn http_connector_fetch(binding: &Value, args: &Value, secret: Option<&str
     if !resp.status().is_success() {
         return Err(format!("connector returned HTTP {}", resp.status().as_u16()));
     }
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let body = resp.text().await.map_err(crate::net_guard::error_text)?;
     // Optional response shaping: pull an array out of the JSON and keep only the
     // useful fields, so the model gets tidy rows instead of a huge payload.
     // Falls back to the raw body if the response isn't JSON or the path misses.
@@ -1294,6 +1292,65 @@ pub async fn apply_write(
     crate::dispatch(db, command, args).await
 }
 
+/// Re-check a proposal's scope at approval time, against the stored command
+/// and args. Scope was checked when the proposal was made, but the write lands
+/// later: the task may have moved to another project or out of the proposer's
+/// audience, an event may have been linked elsewhere, or the proposer may have
+/// left the project. Any of those refuses the write. Mirrors the checks in
+/// [`prepare_write`]; tab commands carry their own checks in their executors.
+pub async fn recheck_scope(db: &Db, command: &str, args: &Value, project_id: i64, proposer: i64) -> Result<(), String> {
+    let viewer = viewer_for(db, proposer).await;
+    if !viewer.is_owner {
+        let member: Option<i64> = sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
+            .bind(project_id)
+            .bind(proposer)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        if member.is_none() {
+            return Err("the proposer is no longer a member of this project".into());
+        }
+    }
+    let task_id = args.get("taskId").and_then(Value::as_i64).or_else(|| args.pointer("/input/task_id").and_then(Value::as_i64));
+    if let Some(task_id) = task_id {
+        ensure_task_in_project(db, task_id, project_id, viewer).await?;
+    }
+    if let Some(p) = args.get("projectId").and_then(Value::as_i64).or_else(|| args.pointer("/input/project_id").and_then(Value::as_i64)) {
+        if p != project_id {
+            return Err("that write targets another project".into());
+        }
+    }
+    match command {
+        "delete_event" => {
+            let event_id = args.get("eventId").and_then(Value::as_i64).ok_or("malformed proposal")?;
+            let links = event_project_links(db, event_id).await;
+            if !links.is_empty() && !links.contains(&project_id) {
+                return Err("that event is linked to another project".into());
+            }
+        }
+        "unlink_event_from_project" => {
+            let event_id = args.get("eventId").and_then(Value::as_i64).ok_or("malformed proposal")?;
+            if !event_project_links(db, event_id).await.contains(&project_id) {
+                return Err("that event is not linked to this project".into());
+            }
+        }
+        "assign_task" => {
+            let target = args.get("userId").and_then(Value::as_i64).ok_or("malformed proposal")?;
+            let member: Option<i64> = sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
+                .bind(project_id)
+                .bind(target)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            if member.is_none() {
+                return Err("that user is not a member of this project".into());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// A required string arg from a model tool call (trimmed, non-empty).
 fn arg_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
@@ -1349,10 +1406,17 @@ pub async fn run_tool_loop(
     project_id: i64,
     user_id: i64,
     is_owner: bool,
+    agent_run: &crate::agent_work::Run,
+    runner: &crate::Runner,
 ) -> (Vec<String>, Vec<PreparedWrite>, crate::ollama::Usage) {
     let mut used = Vec::new();
     let mut proposals: Vec<PreparedWrite> = Vec::new();
     let mut usage = crate::ollama::Usage::default();
+    // The turn's own cost (without its delegations') and its delegation rows,
+    // for the ledger tree written after the loop.
+    let mut own_usage = crate::ollama::Usage::default();
+    let mut delegations: Vec<i64> = Vec::new();
+    let mut delegated_to: Vec<String> = Vec::new();
     // The same write proposed twice in one turn (small models retry when told
     // "not yet done") must not produce duplicate approval cards.
     let mut seen_writes: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1363,6 +1427,7 @@ pub async fn run_tool_loop(
             _ => break, // timeout or transport error → answer with what we have
         };
         usage.add(turn.usage);
+        own_usage.add(turn.usage);
         if turn.tool_calls.is_empty() {
             break; // the model is ready to answer
         }
@@ -1374,6 +1439,8 @@ pub async fn run_tool_loop(
             .collect();
         messages.push(json!({ "role": "assistant", "content": turn.content, "tool_calls": raw_calls }));
         for tc in &turn.tool_calls {
+            // A call naming a task puts it on the live agent-work board.
+            agent_run.touch_args(db, &tc.arguments).await;
             if is_write_tool(&tc.name) {
                 // Writes are NEVER executed here — validate + surface as a proposal.
                 // The loop keeps going afterwards so a bulk request can propose
@@ -1403,6 +1470,7 @@ pub async fn run_tool_loop(
                     (Some(rc), Some(question)) => {
                         let answer = crate::librarian::ask_atlas(db, rc, ollama, params, question).await;
                         usage.add(answer.usage);
+                        own_usage.add(answer.usage);
                         answer.digest
                     }
                     (None, _) => json!({ "error": "the knowledge engine is not connected" }).to_string(),
@@ -1416,10 +1484,16 @@ pub async fn run_tool_loop(
                 // turn's proposals (one gate, one inbox, chain-attributed);
                 // its tokens bill into this turn's usage.
                 let outcome = crate::delegate::run_delegate(
-                    db, rag, ollama, tools, project_id, user_id, is_owner, None, &tc.arguments,
+                    db, rag, ollama, tools, project_id, user_id, is_owner, None, &tc.arguments, agent_run,
                 )
                 .await;
                 usage.add(outcome.usage);
+                if let Some(id) = outcome.action_id {
+                    delegations.push(id);
+                    if !delegated_to.contains(&outcome.agent_name) {
+                        delegated_to.push(outcome.agent_name.clone());
+                    }
+                }
                 // The "🔧 Looked up" breadcrumb gains the chain (§8).
                 let crumb = if outcome.agent_name.is_empty() {
                     tc.name.clone()
@@ -1440,13 +1514,27 @@ pub async fn run_tool_loop(
                 if !used.contains(&tc.name) {
                     used.push(tc.name.clone()); // distinct tools, first-seen order (UI breadcrumb)
                 }
-                let result = execute_tool(db, rag, project_id, &tc.name, &tc.arguments, Viewer { user_id, is_owner })
-                    .await
-                    .unwrap_or_else(|e| json!({ "error": e }).to_string());
+                let result = if crate::finance_tools::is_finance_tool(&tc.name) {
+                    // Only a finance tool this turn offered (a loadout may have left it out), and
+                    // the finance gate again, on this loop's own engine.
+                    if tools.iter().any(|d| tool_name(d).as_deref() == Some(tc.name.as_str())) {
+                        let today = chrono::Local::now().date_naive();
+                        crate::finance_tools::execute(
+                            db, user_id, project_id, runner, params, &ollama.config().base_url, &tc.name, &tc.arguments, today,
+                        )
+                        .await
+                    } else {
+                        Err(format!("tool '{}' is not available in this conversation", tc.name))
+                    }
+                } else {
+                    execute_tool(db, rag, project_id, &tc.name, &tc.arguments, Viewer { user_id, is_owner }).await
+                }
+                .unwrap_or_else(|e| json!({ "error": e }).to_string());
                 messages.push(json!({ "role": "tool", "content": result, "name": tc.name }));
             }
         }
     }
+    crate::delegate::ledger_delegating_turn(db, user_id, project_id, &params.model, own_usage, &delegated_to, &delegations).await;
     (used, proposals, usage)
 }
 
@@ -1488,7 +1576,7 @@ async fn task_project(db: &Db, task_id: i64) -> Option<i64> {
         .flatten()
 }
 
-fn cap(s: String) -> String {
+pub(crate) fn cap(s: String) -> String {
     if s.chars().count() <= RESULT_CAP {
         s
     } else {
@@ -1513,6 +1601,16 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         init_db(&path).await.unwrap()
+    }
+
+    /// Loadouts name real tools: built-ins, tab tools and registry tools pass,
+    /// a typo or a stale name doesn't.
+    #[tokio::test]
+    async fn unknown_loadout_tool_names_are_caught() {
+        let db = test_db("loadout_names").await;
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(unknown_tool_names(&db, &names(&["get_tasks", "create_task", "delegate", " "])).await.is_empty());
+        assert_eq!(unknown_tool_names(&db, &names(&["get_taks", "get_tasks", "nope", "nope"])).await, names(&["get_taks", "nope"]));
     }
 
     // ---- registry ----------------------------------------------------------
@@ -1556,10 +1654,12 @@ mod tests {
 
         // The catalog is exactly every builtin read + write, plus `delegate`
         // (the Teamwork skill — in the catalog so a loadout can grant it,
-        // offered to the model only when one does).
+        // offered to the model only when one does) and the finance reads.
         let reads = cat.iter().filter(|t| t.class == "read").count();
         let writes = cat.iter().filter(|t| t.class == "write").count();
-        assert_eq!(reads, ollama_tools(true, true).len() + 1);
+        assert_eq!(reads, ollama_tools(true, true).len() + 1 + crate::finance_tools::TOOL_NAMES.len());
+        let balances = cat.iter().find(|t| t.name == "finance_balances").expect("finance reads listed");
+        assert_eq!(balances.requires.as_deref(), Some("a Personal chat on a local model"));
         assert_eq!(writes, ollama_write_tools().len());
         let delegate = cat.iter().find(|t| t.name == "delegate").expect("delegate listed");
         assert_eq!(delegate.requires.as_deref(), Some("loadout"), "off by default — a loadout is its gate");
@@ -1649,18 +1749,6 @@ mod tests {
         let mut insecure = http.clone();
         insecure.binding_json = r#"{"url":"http://api.example.com/w"}"#.into();
         assert!(validate_new_registry_tool(&insecure).is_err(), "http:// refused");
-    }
-
-    #[test]
-    fn ssrf_guard_blocks_internal_and_allows_public() {
-        use std::net::IpAddr;
-        let blocked = ["127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254", "0.0.0.0", "::1", "fc00::1", "fe80::1"];
-        for s in blocked {
-            assert!(ip_is_blocked(s.parse::<IpAddr>().unwrap()), "{s} must be blocked (SSRF)");
-        }
-        for s in ["1.1.1.1", "93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"] {
-            assert!(!ip_is_blocked(s.parse::<IpAddr>().unwrap()), "{s} is public");
-        }
     }
 
     #[test]

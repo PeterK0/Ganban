@@ -28,7 +28,10 @@ import {
 import { getGlobalActiveTimeEntry, stopTimeEntry } from "../lib/api";
 import { DATA_PULSE_EVENT } from "../lib/livePulse";
 import type { Task, TimeEntry } from "../types";
-import { NavContext, TabBar, Torii, type Nav } from "./nav";
+import { HeaderExtraContext, NavContext, TabBar, Torii, type Nav } from "./nav";
+import { Bell } from "./screens/NotificationsScreen";
+import { pullServerNotifications } from "../lib/notificationFeed";
+import { useRailTabs } from "../store/railTabs";
 import { Button, Field, Spinner, TextInput, errMsg } from "./ui";
 import ProjectsScreen from "./screens/ProjectsScreen";
 import CalendarScreen from "./screens/CalendarScreen";
@@ -459,6 +462,8 @@ function Shell({ onDisconnect }: { onDisconnect: () => void }) {
       pendingKind = undefined;
     };
     const kick = (what?: string) => {
+      // Live agent work changes no data, and the phone has no timer dropdown.
+      if (what === 'agents') return;
       // Trailing debounce with a max-wait: a sustained write burst must not
       // defer the refetch until it ends.
       const now = Date.now();
@@ -480,6 +485,24 @@ function Shell({ onDisconnect }: { onDisconnect: () => void }) {
   }, []);
   // The phone's self-update (Android only): check at launch and on resume.
   useEffect(() => watchApkUpdates(), []);
+  // The bell: the host's notifications (mentions, the weekly bank-import reminder), pulled like the
+  // desktop's notification center does, and again when the app comes back to the front. Also the
+  // signed-in user's rail switches, so a notification can open Finance from any tab.
+  useEffect(() => {
+    void pullServerNotifications();
+    getMe()
+      .then((me) => useRailTabs.getState().load(me.user.id))
+      .catch(() => {});
+    const t = window.setInterval(() => void pullServerNotifications(), 60000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void pullServerNotifications();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
   const [stack, setStack] = useState<{ id: number; node: ReactNode }[]>([]);
   const idRef = useRef(0);
   const stackLenRef = useRef(0);
@@ -552,6 +575,7 @@ function Shell({ onDisconnect }: { onDisconnect: () => void }) {
 
   return (
     <NavContext.Provider value={nav}>
+      <HeaderExtraContext.Provider value={<Bell />}>
       <div className="gm-app fixed inset-0 flex flex-col bg-mantle">
         <div className="flex-1 min-h-0 relative">
           {/* Active tab root stays mounted (just hidden) while a stack is open. */}
@@ -583,6 +607,7 @@ function Shell({ onDisconnect }: { onDisconnect: () => void }) {
           }}
         />
       </div>
+      </HeaderExtraContext.Provider>
     </NavContext.Provider>
   );
 }

@@ -46,6 +46,7 @@ eq(F.isFormSavable({ ...f0, title: '  ' }), false, 'a blank title is not saved')
 const u = F.formToUpdate({ ...f0, description: '', prefix: '' });
 eq([u.description, u.prefix, u.title, u.cost, u.area_id], ['', '', 'Photograph the pieces', 12.5, 3], 'clearing text is sent');
 eq('pinned' in u, false, 'the pin has its own save');
+eq(Object.keys(u).sort().join(), [...F.FORM_FIELDS].sort().join(), 'FORM_FIELDS names what a form save writes');
 eq(F.formToUpdate({ ...f0, deadline: '' }).deadline, null, 'no deadline clears it');
 
 // ----- the task as it will read once saved

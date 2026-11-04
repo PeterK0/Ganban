@@ -22,6 +22,7 @@ import {
   flattenToc,
   getPageLabelMap,
   nestFlat,
+  renumberToc,
   newFlatId,
   openPdf,
   romanToInt,
@@ -29,6 +30,7 @@ import {
   type FlatEntry,
   type TocEntry,
 } from "./pdf/pdfUtils";
+import { SECTION_KINDS, numberSections, type SectionKind } from "./pdf/sectionKinds";
 import ScrollArea from "../components/ScrollArea";
 
 const isPdfFile = (name: string, mime?: string | null) =>
@@ -190,7 +192,7 @@ export default function PdfTab({ projectId }: { projectId: number }) {
         let book = books[file.id];
         if (!book || book.pageCount !== doc.numPages) {
           const outline = await doc.getOutline();
-          const toc = outline ? await buildTocTree(doc, outline, { value: 0 }) : [];
+          const toc = outline ? renumberToc(await buildTocTree(doc, outline, { value: 0 })) : [];
           assignEndPages(toc, doc.numPages);
           book = {
             fileId: file.id,
@@ -765,7 +767,8 @@ ${pageText || "(No text layer found — this may be a scanned PDF)"}`;
       {/* Stacks on phone widths (the 320px sidebar would leave no room). */}
       <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
         {/* LEFT: documents / contents / merge */}
-        <div className="w-full max-h-[45%] sm:max-h-none sm:w-80 shrink-0 border-b sm:border-b-0 sm:border-r border-gilt-a flex flex-col min-h-0 bg-mantle">
+        {/* Wider while the structure is edited: each row holds a title, its kind, a page and five buttons. */}
+        <div className={`w-full max-h-[45%] sm:max-h-none ${editingStructure ? "sm:w-[26rem]" : "sm:w-80"} shrink-0 border-b sm:border-b-0 sm:border-r border-gilt-a flex flex-col min-h-0 bg-mantle`}>
           <div className="flex border-b border-gilt-b shrink-0">
             {TABS.map((t) => (
               <button
@@ -1539,6 +1542,8 @@ function StructureEditor({
   const btn =
     "shrink-0 px-1.5 py-1 text-xs bg-surface-0 hover:bg-surface-1 text-subtext-1 rounded disabled:opacity-30";
   const [shift, setShift] = useState(0);
+  // Kinds and chapter numbers as they'll be saved: only chapters are numbered.
+  const numbered = useMemo(() => numberSections(entries), [entries]);
 
   return (
     <div className="space-y-1.5">
@@ -1601,6 +1606,27 @@ function StructureEditor({
             spellCheck={false}
             className="g-field g-field-sm flex-1 min-w-0 !w-auto !px-2"
           />
+          {entry.level === 0 && (
+            <select
+              value={numbered[i].kind}
+              onChange={(e) => onUpdate(entry.id, { kind: e.target.value as SectionKind })}
+              title={
+                numbered[i].kind === "chapter"
+                  ? `Chapter ${numbered[i].chapterNum}. Only chapters are numbered.`
+                  : `${SECTION_KINDS.find((k) => k.value === numbered[i].kind)?.label}: not numbered. Only chapters are numbered.`
+              }
+              aria-label="Section kind"
+              className="g-field g-field-sm !w-16 shrink-0 !pl-1.5 !pr-4 ![background-position:right_3px_center]"
+            >
+              {SECTION_KINDS.map((k) => (
+                <option key={k.value} value={k.value}>
+                  {k.value === "chapter" && numbered[i].kind === "chapter"
+                    ? `Ch. ${numbered[i].chapterNum}`
+                    : k.short}
+                </option>
+              ))}
+            </select>
+          )}
           <input
             type="number"
             min={1}

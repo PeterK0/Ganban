@@ -29,6 +29,63 @@ pub fn blob_path(root: &Path, attachment_id: i64) -> PathBuf {
     root.join(attachment_id.to_string())
 }
 
+/// Which store a file's bytes live in on the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlobKind {
+    /// A task attachment: `<root>/<id>`.
+    Attachment,
+    /// A project file: `<root>/pf/<id>`.
+    Project,
+}
+
+/// Where "Show in folder" should go for a file, on THIS machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Location {
+    /// The file itself: reveal it.
+    Found(PathBuf),
+    /// A local-only file that isn't at its saved path: the nearest folder of that path
+    /// is the best help (it may have moved).
+    SavedPathMissing(PathBuf),
+    /// Nothing of it here. A file with a host copy is fetched and opened instead.
+    Nowhere,
+}
+
+/// Where a file can be found on THIS machine, for "Show in folder".
+///
+/// `saved_path` is what the attacher's machine recorded (`file_path`): empty for files
+/// uploaded to the host, and another machine's path for files shared from someone else's
+/// desktop. So the saved path wins only when it exists here; otherwise a shared file is
+/// found in the blob store, which is only meaningful when this machine is the host
+/// (`host_root` is `None` on a client: the same id in a local store would be an unrelated
+/// file). A shared file found nowhere is `Nowhere`, never its saved path's folder: the
+/// host copy is the file, so the client opens that.
+pub fn locate_on_this_machine(
+    host_root: Option<&Path>,
+    kind: BlobKind,
+    id: i64,
+    shared: bool,
+    saved_path: Option<&Path>,
+) -> Location {
+    let saved = saved_path.filter(|p| !p.as_os_str().is_empty());
+    if let Some(p) = saved.filter(|p| p.is_file()) {
+        return Location::Found(p.to_path_buf());
+    }
+    let has_host_copy = shared || kind == BlobKind::Project;
+    if let Some(root) = host_root.filter(|_| has_host_copy) {
+        let blob = match kind {
+            BlobKind::Attachment => blob_path(root, id),
+            BlobKind::Project => project_blob_path(root, id),
+        };
+        if blob.is_file() {
+            return Location::Found(blob);
+        }
+    }
+    match saved {
+        Some(p) if !has_host_copy => Location::SavedPathMissing(p.to_path_buf()),
+        _ => Location::Nowhere,
+    }
+}
+
 /// The project a task belongs to.
 pub async fn task_project(db: &Db, task_id: i64) -> Result<i64> {
     sqlx::query_scalar::<_, i64>("SELECT project_id FROM tasks WHERE id = ?")
@@ -759,9 +816,20 @@ pub async fn list_project_folders(db: &Db, project_id: i64) -> Result<Vec<String
     Ok(rows.into_iter().map(|(p,)| p).collect())
 }
 
+/// Two paths name the same place, ignoring case: "Report.pdf" and "report.pdf" can't sit
+/// side by side (a case-insensitive disk, macOS's or Windows', couldn't hold both).
+fn same_path(a: &str, b: &str) -> bool {
+    a == b || a.to_lowercase() == b.to_lowercase()
+}
+
+/// `path` lies inside the folder `dir`, ignoring case.
+fn inside(path: &str, dir: &str) -> bool {
+    path.to_lowercase().starts_with(&format!("{}/", dir.to_lowercase()))
+}
+
 /// A new folder can't sit where a file is, or below one.
 fn refuse_folder_over_file(files: &[(i64, String)], path: &str) -> Result<()> {
-    if files.iter().any(|(_, p)| p == path) {
+    if files.iter().any(|(_, p)| same_path(p, path)) {
         let leaf = path.rsplit('/').next().unwrap_or(path);
         return Err(AppError::InvalidInput(format!("'{leaf}' is already a file there")));
     }
@@ -793,7 +861,7 @@ async fn task_paths(db: &Db, task_id: i64) -> Result<(Vec<(i64, String)>, Vec<St
 fn refuse_file_above(files: &[(i64, String)], path: &str, except: &[i64]) -> Result<()> {
     let mut at = path;
     while let Some((up, _)) = at.rsplit_once('/') {
-        if files.iter().any(|(id, p)| p == up && !except.contains(id)) {
+        if files.iter().any(|(id, p)| same_path(p, up) && !except.contains(id)) {
             return Err(AppError::InvalidInput(format!("'{up}' is a file, not a folder")));
         }
         at = up;
@@ -805,9 +873,9 @@ fn refuse_file_above(files: &[(i64, String)], path: &str, except: &[i64]) -> Res
 /// sits where one of its folders would be.
 fn refuse_clash(files: &[(i64, String)], folders: &[String], path: &str, except: &[i64]) -> Result<()> {
     refuse_file_above(files, path, except)?;
-    let taken_by_file = files.iter().any(|(id, p)| p == path && !except.contains(id));
-    let taken_by_folder = folders.iter().any(|f| f == path)
-        || files.iter().any(|(id, p)| !except.contains(id) && p.starts_with(&format!("{path}/")));
+    let taken_by_file = files.iter().any(|(id, p)| same_path(p, path) && !except.contains(id));
+    let taken_by_folder = folders.iter().any(|f| same_path(f, path))
+        || files.iter().any(|(id, p)| !except.contains(id) && inside(p, path));
     if taken_by_file || taken_by_folder {
         let leaf = path.rsplit('/').next().unwrap_or(path);
         let dir = dir_of(Some(path));
@@ -934,11 +1002,11 @@ fn dedupe(ids: &[i64]) -> Vec<i64> {
     ids.iter().copied().filter(|id| seen.insert(*id)).collect()
 }
 
-/// Two moved files with the same name can't land in one folder.
+/// Two moved files with the same name (in any case) can't land in one folder.
 fn refuse_duplicates(moves: &[(i64, String)]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for (_, to) in moves {
-        if !seen.insert(to.as_str()) {
+        if !seen.insert(to.to_lowercase()) {
             let leaf = to.rsplit('/').next().unwrap_or(to);
             return Err(AppError::InvalidInput(format!("two of the files are called '{leaf}'")));
         }
@@ -982,7 +1050,9 @@ pub async fn rename_folder(db: &Db, scope: FolderScope, from: &str, to: &str) ->
         return Err(AppError::NotFound(format!("folder '{from}'")));
     }
     let moving: Vec<i64> = under.iter().map(|(id, _)| *id).collect();
-    refuse_clash(&files, &folders, &to, &moving)?;
+    // The folders that move are no obstacle: "Docs" may become "docs".
+    let staying: Vec<String> = folders.iter().filter(|f| reprefix(f, &from, &to).is_none()).cloned().collect();
+    refuse_clash(&files, &staying, &to, &moving)?;
     let (file_table, folder_table, owner_col, owner) = match scope {
         FolderScope::Project(pid) => ("project_files", "project_folders", "project_id", pid),
         FolderScope::Task(tid) => ("file_attachments", "task_folders", "task_id", tid),
@@ -1124,11 +1194,14 @@ pub fn ai_flag(size: i64, included: bool, force: bool, max: i64) -> Result<i64> 
     if force {
         return Ok(AI_FORCED);
     }
-    Err(AppError::InvalidInput(format!(
-        "This file is {}, over the {} limit for the AI overview. Indexing it can take hours; pass force to index it anyway.",
-        mb_label(size),
-        mb_label(max)
-    )))
+    Err(AppError::Refused {
+        code: crate::error::codes::AI_FILE_TOO_LARGE,
+        message: format!(
+            "This file is {}, over the {} limit for the AI overview. Indexing it can take hours; pass force to index it anyway.",
+            mb_label(size),
+            mb_label(max)
+        ),
+    })
 }
 
 /// Put a task attachment in or out of the AI overview. A host-stored copy counts by its
@@ -1260,4 +1333,69 @@ pub async fn delete_event_files(db: &Db, root: &Path, event_id: i64) -> Result<(
         delete_event_file(db, root, id).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod locate_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ganban_locate_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("pf")).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_file_uploaded_to_the_host_is_found_in_the_blob_store_on_the_host() {
+        let root = tmp("upload");
+        std::fs::write(blob_path(&root, 7), b"x").unwrap();
+        // `create_shared_attachment` stores file_path = ''.
+        let got = locate_on_this_machine(Some(&root), BlobKind::Attachment, 7, true, Some(Path::new("")));
+        assert_eq!(got, Location::Found(blob_path(&root, 7)));
+        // A client has no host store: nothing to reveal (it downloads instead).
+        assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 7, true, Some(Path::new(""))), Location::Nowhere);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_shared_from_another_desktop_is_found_in_the_blob_store() {
+        let root = tmp("shared");
+        std::fs::write(blob_path(&root, 8), b"x").unwrap();
+        let theirs = Path::new("/Users/someone-else-xyz/Documents/report.pdf");
+        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 8, true, Some(theirs)), Location::Found(blob_path(&root, 8)));
+        assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 8, true, Some(theirs)), Location::Nowhere);
+        // Its folder exists here but the file does not: still the host copy, not a folder.
+        let near = root.join("gone.pdf");
+        assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 8, true, Some(&near)), Location::Nowhere);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_saved_path_that_exists_here_wins_and_local_files_keep_theirs() {
+        let root = tmp("mine");
+        std::fs::write(blob_path(&root, 9), b"x").unwrap();
+        let mine = root.join("mine.pdf");
+        std::fs::write(&mine, b"x").unwrap();
+        // Shared by this machine's own desktop: its original folder is the useful one.
+        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 9, true, Some(&mine)), Location::Found(mine.clone()));
+        // Local-only: its path, on host or client alike.
+        assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 10, false, Some(&mine)), Location::Found(mine.clone()));
+        // Local-only and missing here: never falls into the blob store (no host copy);
+        // the nearest folder of its saved path is the help.
+        std::fs::write(blob_path(&root, 11), b"stale").unwrap();
+        let gone = root.join("gone.pdf");
+        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 11, false, Some(&gone)), Location::SavedPathMissing(gone.clone()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_files_live_under_pf() {
+        let root = tmp("pf");
+        std::fs::write(project_blob_path(&root, 3), b"x").unwrap();
+        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Project, 3, true, None), Location::Found(project_blob_path(&root, 3)));
+        // A missing blob is not found.
+        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Project, 4, true, None), Location::Nowhere);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

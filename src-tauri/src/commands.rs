@@ -16,6 +16,9 @@ use crate::daemon_control::DaemonState;
 /// Run a command of the host's command table in-process: the frontend's local path
 /// (`invokeLocal` in `src/lib/api.ts`). The desktop is the owner, so no access rule or
 /// result filter applies; authorship is the profile id the app sends in `args`.
+///
+/// An error is its message, or `{ error, code }` for a refusal with a code
+/// (`AppError::Refused`), the same shape the HTTP surface sends.
 #[tauri::command]
 pub async fn run_command(
     pool: State<'_, Db>,
@@ -23,9 +26,12 @@ pub async fn run_command(
     daemon: State<'_, DaemonState>,
     command: String,
     args: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<Value, Value> {
     let args = args.unwrap_or(Value::Null);
-    Ok(ganban_server::run_in_process(pool.inner(), &root.0, daemon.shares(), &command, args).await?)
+    ganban_server::run_in_process(pool.inner(), &root.0, daemon.shares(), &command, args).await.map_err(|e| match e.code() {
+        Some(code) => serde_json::json!({ "error": e.to_string(), "code": code }),
+        None => Value::String(e.to_string()),
+    })
 }
 
 /// Resolve the desktop database location (`<app_data_dir>/gansty.db`, exactly as
@@ -42,8 +48,12 @@ pub async fn init_desktop_db(app: &tauri::AppHandle) -> Result<Db, String> {
     let db = ganban_core::init_db_role(&db_path, ganban_core::Role::Replica).await?;
     // The desktop runs the command table as the owner (`run_command`), so flag one
     // now instead of relying on the embedded daemon's bootstrap: local mode must
-    // work when the daemon is down. Best effort — the bootstrap retries and logs.
-    let _ = ganban_core::auth::ensure_owner(&db).await;
+    // work when the daemon is down. The membership repair runs here too, so the
+    // owner is a member of every project even if the daemon never starts. Best
+    // effort — the bootstrap retries and logs.
+    if let Ok(owner) = ganban_core::auth::ensure_owner(&db).await {
+        let _ = ganban_core::auth::ensure_owner_memberships(&db, owner).await;
+    }
     Ok(db)
 }
 

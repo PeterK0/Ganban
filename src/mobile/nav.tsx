@@ -12,6 +12,9 @@ export interface Nav {
 
 export const NavContext = createContext<Nav | null>(null);
 
+/** What the shell adds to every root screen's header, right of the screen's own controls (the bell). */
+export const HeaderExtraContext = createContext<ReactNode>(null);
+
 export function useNav(): Nav {
   const nav = useContext(NavContext);
   if (!nav) throw new Error("useNav must be used inside the mobile app");
@@ -46,6 +49,7 @@ export function TopBar({
   onBack?: () => void;
   right?: ReactNode;
 }) {
+  const extra = useContext(HeaderExtraContext);
   return (
     <header
       className="sticky top-0 z-10 bg-crust border-b border-gilt-a text-text"
@@ -70,6 +74,7 @@ export function TopBar({
           {subtitle && <div className="gm-mut text-xs truncate">{subtitle}</div>}
         </div>
         {right}
+        {!onBack && extra}
       </div>
     </header>
   );

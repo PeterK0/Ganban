@@ -21,6 +21,8 @@ mod storage_cmds;
 #[cfg(desktop)]
 mod sync_cmds;
 mod text_substitution;
+#[cfg(desktop)]
+mod window_close;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -109,7 +111,21 @@ pub fn run() {
                 // Settings → Start engines after every host restart.
                 ai_engine::autostart(app.handle().clone());
 
+                // Closing a window or quitting runs the pages' saves, and a hung
+                // page can't keep a window open (window_close.rs).
+                app.manage(window_close::WindowGenerations::default());
+                #[cfg(target_os = "macos")]
+                if let Err(e) = window_close::install_menu(app.handle()) {
+                    eprintln!("couldn't install the app menu's Quit (Cmd+Q won't save open editors first): {e}");
+                }
+
                 Ok(())
+            })
+            .on_window_event(window_close::on_window_event)
+            .on_menu_event(|app, event| {
+                if event.id() == window_close::QUIT_MENU_ID {
+                    window_close::quit_gracefully(app);
+                }
             })
             .invoke_handler(tauri::generate_handler![
                 // The host's command table, in-process (ADR 0001).
@@ -132,6 +148,7 @@ pub fn run() {
                 file_sync::daemon_upload_from_disk,
                 file_sync::daemon_upload_from_disk_cancel,
                 file_sync::reveal_local_path,
+                file_sync::reveal_file,
                 commands::set_user_profile,
                 commands::read_local_file,
                 commands::export_database,

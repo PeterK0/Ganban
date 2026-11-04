@@ -47,10 +47,57 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
+/// Which addresses a mailbox connection may reach. The host owner's own
+/// mailboxes may sit on the LAN or on this machine (a local IMAP bridge), but
+/// not on a cloud metadata endpoint;
+/// anyone else's go through the SSRF guard, so a member can't use a mailbox
+/// to make the host probe its network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    Any,
+    PublicOnly,
+}
+
+impl Reach {
+    pub fn for_caller(is_owner: bool) -> Self {
+        if is_owner {
+            Reach::Any
+        } else {
+            Reach::PublicOnly
+        }
+    }
+
+    /// A stored mailbox's reach: the owner's (or a legacy unowned one) may go
+    /// anywhere, a member's only to public addresses.
+    pub async fn for_account(db: &Db, account: &EmailAccount) -> Self {
+        let Some(uid) = account.user_id else { return Reach::Any };
+        let is_owner: bool = sqlx::query_scalar("SELECT is_owner FROM users WHERE id = ?")
+            .bind(uid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+        Reach::for_caller(is_owner)
+    }
+}
+
+/// The addresses to connect to for `host:port`, checked against `reach`.
+/// Resolved once here and connected to as-is, so a DNS rebind can't swap them.
+pub async fn resolve_mail_host(host: &str, port: i64, reach: Reach) -> Result<Vec<std::net::SocketAddr>, String> {
+    let port = u16::try_from(port).map_err(|_| format!("{port} is not a valid port"))?;
+    match reach {
+        Reach::PublicOnly => crate::net_guard::resolve_public(host, port).await.map_err(|e| format!("{host}:{port}: {e}")),
+        Reach::Any => crate::net_guard::resolve(host, port, crate::net_guard::Scope::OwnerNetwork)
+            .await
+            .map_err(|e| format!("{host}:{port}: {e}")),
+    }
+}
+
 /// TCP+TLS to the mailbox, no auth yet (shared by both auth paths).
-async fn open_tls(account: &EmailAccount) -> Result<async_imap::Client<async_native_tls::TlsStream<tokio::net::TcpStream>>, String> {
-    let addr = (account.host.as_str(), account.port as u16);
-    let tcp = tokio::time::timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS), tokio::net::TcpStream::connect(addr))
+async fn open_tls(account: &EmailAccount, reach: Reach) -> Result<async_imap::Client<async_native_tls::TlsStream<tokio::net::TcpStream>>, String> {
+    let addrs = resolve_mail_host(&account.host, account.port, reach).await?;
+    let tcp = tokio::time::timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS), tokio::net::TcpStream::connect(&addrs[..]))
         .await
         .map_err(|_| format!("timed out connecting to {}:{}", account.host, account.port))?
         .map_err(|e| format!("could not reach {}:{} — {e}", account.host, account.port))?;
@@ -63,8 +110,8 @@ async fn open_tls(account: &EmailAccount) -> Result<async_imap::Client<async_nat
 
 /// Connect + authenticate. App password (`login`) or OAuth (XOAUTH2 with a
 /// freshly-minted access token from the stored refresh token).
-async fn connect(account: &EmailAccount) -> Result<Session, String> {
-    let client = open_tls(account).await?;
+async fn connect(account: &EmailAccount, reach: Reach) -> Result<Session, String> {
+    let client = open_tls(account, reach).await?;
     if account.auth_type == "oauth" {
         let client_id = account.oauth_client_id.as_deref().ok_or("OAuth account is missing its client id")?;
         let refresh = account.oauth_refresh_token.as_deref().ok_or("OAuth account is not signed in — reconnect it")?;
@@ -83,8 +130,8 @@ async fn connect(account: &EmailAccount) -> Result<Session, String> {
 }
 
 /// Try the account's credentials and list its folders (the Plug-ins "Test").
-pub async fn test_account(account: &EmailAccount) -> Result<Vec<String>, String> {
-    let mut session = connect(account).await?;
+pub async fn test_account(account: &EmailAccount, reach: Reach) -> Result<Vec<String>, String> {
+    let mut session = connect(account, reach).await?;
     let names: Vec<_> = session
         .list(Some(""), Some("*"))
         .await
@@ -194,7 +241,7 @@ pub struct SyncSummary {
 /// haven't seen (UID-window reconciliation — works on every server; CONDSTORE/
 /// QRESYNC fast paths are a later optimization) and store their envelopes.
 pub async fn sync_account(db: &Db, account: &EmailAccount) -> Result<SyncSummary, String> {
-    let mut session = connect(account).await?;
+    let mut session = connect(account, Reach::for_account(db, account).await).await?;
     let mut summary = SyncSummary::default();
 
     // Detect the Drafts folder once while we're here (manual override wins).
@@ -456,7 +503,7 @@ pub async fn apply_draft(db: &Db, args: &Value) -> Result<Value, AppError> {
     .map_err(AppError::InvalidInput)?;
 
     let folder = if account.drafts_folder.is_empty() { "Drafts".to_string() } else { account.drafts_folder.clone() };
-    let mut session = connect(&account).await.map_err(AppError::InvalidInput)?;
+    let mut session = connect(&account, Reach::for_account(db, &account).await).await.map_err(AppError::InvalidInput)?;
     session
         .append(&folder, Some("(\\Draft)"), None, &bytes)
         .await
@@ -504,6 +551,68 @@ pub fn spawn_sync(db: Db, mut stop: tokio::sync::watch::Receiver<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe(user_id: Option<i64>, host: &str, port: i64) -> EmailAccount {
+        EmailAccount {
+            id: 0,
+            user_id,
+            auth_type: "password".into(),
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            oauth_refresh_token: None,
+            label: String::new(),
+            host: host.into(),
+            port,
+            username: "u".into(),
+            password: "p".into(),
+            folders: String::new(),
+            drafts_folder: String::new(),
+            horizon_days: 90,
+            enabled: true,
+            last_sync_at: None,
+            last_result: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// A member's mailbox can't make the host connect inside its network: the
+    /// probe is refused before any socket opens, even with a listener there.
+    #[tokio::test]
+    async fn a_members_mailbox_cannot_reach_internal_addresses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port() as i64;
+        for host in ["127.0.0.1", "localhost", "10.1.2.3", "100.64.0.7", "[::1]"] {
+            let err = test_account(&probe(Some(2), host, port), Reach::PublicOnly).await.unwrap_err();
+            assert!(err.contains("not allowed"), "{host}: {err}");
+        }
+        assert!(resolve_mail_host("1.1.1.1", 993, Reach::PublicOnly).await.is_ok());
+        assert!(resolve_mail_host("127.0.0.1", 70000, Reach::Any).await.is_err(), "port out of range");
+        // The owner may reach a mailbox on this machine (a local IMAP bridge).
+        let addrs = resolve_mail_host("127.0.0.1", port, Reach::Any).await.unwrap();
+        assert_eq!(addrs[0].port() as i64, port);
+        assert!(resolve_mail_host("169.254.169.254", 993, Reach::Any).await.is_err(), "never a metadata endpoint");
+    }
+
+    #[tokio::test]
+    async fn a_stored_mailbox_reaches_by_its_users_role() {
+        let path = std::env::temp_dir().join(format!("ganban_email_reach_{}.db", std::process::id()));
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+        let db = ganban_core::init_db(&path).await.unwrap();
+        let owner = ganban_core::auth::ensure_owner(&db).await.unwrap();
+        let member = ops::create_user(
+            &db,
+            ganban_core::models::CreateUserInput { username: "mia".into(), full_name: "Mia".into(), email: None },
+        )
+        .await
+        .unwrap()
+        .id;
+        assert_eq!(Reach::for_account(&db, &probe(Some(owner), "h", 993)).await, Reach::Any);
+        assert_eq!(Reach::for_account(&db, &probe(None, "h", 993)).await, Reach::Any, "legacy rows were the owner's");
+        assert_eq!(Reach::for_account(&db, &probe(Some(member), "h", 993)).await, Reach::PublicOnly);
+        assert_eq!(Reach::for_account(&db, &probe(Some(9999), "h", 993)).await, Reach::PublicOnly, "unknown user");
+    }
 
     #[test]
     fn thread_keys_cluster_reply_chains_and_fall_back_to_subject() {

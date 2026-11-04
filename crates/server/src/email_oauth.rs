@@ -49,29 +49,52 @@ pub enum FlowState {
     Error(String),
 }
 
+/// Sign-ins in progress. Each flow belongs to the user who began it: only they
+/// can poll it or claim its token, and each user has at most one loopback
+/// listener open (a new sign-in cancels their previous one).
 #[derive(Default)]
 pub struct OAuthFlows {
-    inner: Mutex<HashMap<String, FlowState>>,
+    inner: Mutex<HashMap<String, (i64, FlowState)>>,
+    listeners: Mutex<HashMap<i64, tokio::task::AbortHandle>>,
 }
 
 impl OAuthFlows {
-    fn set(&self, id: &str, state: FlowState) {
-        self.inner.lock().unwrap().insert(id.to_string(), state);
+    fn set(&self, id: &str, user_id: i64, state: FlowState) {
+        self.inner.lock().unwrap().insert(id.to_string(), (user_id, state));
     }
-    fn peek(&self, id: &str) -> Option<FlowState> {
-        self.inner.lock().unwrap().get(id).cloned()
+    /// Update a flow's state, keeping its owner (a no-op once it's gone).
+    fn update(&self, id: &str, state: FlowState) {
+        if let Some(entry) = self.inner.lock().unwrap().get_mut(id) {
+            entry.1 = state;
+        }
+    }
+    fn peek(&self, id: &str, user_id: i64) -> Option<FlowState> {
+        match self.inner.lock().unwrap().get(id) {
+            Some((owner, state)) if *owner == user_id => Some(state.clone()),
+            _ => None,
+        }
     }
     /// Consume a completed flow's refresh token (one-shot, at account create).
-    pub fn take_done(&self, id: &str) -> Option<(String, String)> {
+    /// Only the user who began the flow can claim it.
+    pub fn take_done(&self, id: &str, user_id: i64) -> Option<(String, String)> {
         let mut map = self.inner.lock().unwrap();
         match map.get(id) {
-            Some(FlowState::Done { email, refresh_token }) => {
+            Some((owner, FlowState::Done { email, refresh_token })) if *owner == user_id => {
                 let out = (email.clone(), refresh_token.clone());
                 map.remove(id);
                 Some(out)
             }
             _ => None,
         }
+    }
+    /// Cancel `user_id`'s sign-ins: close the listener and forget their flows,
+    /// including a finished one whose token was never claimed (a new sign-in
+    /// supersedes it, so it doesn't sit in memory).
+    fn cancel_pending(&self, user_id: i64) {
+        if let Some(task) = self.listeners.lock().unwrap().remove(&user_id) {
+            task.abort();
+        }
+        self.inner.lock().unwrap().retain(|_, (owner, _)| *owner != user_id);
     }
 }
 
@@ -86,7 +109,8 @@ pub struct Begun {
 /// Start a sign-in: bind a loopback listener on an ephemeral port, build the
 /// PKCE auth URL pointing back at it, and spawn the catcher. Returns
 /// immediately; the browser dance completes in the background.
-pub async fn begin(flows: SharedFlows, client_id: String, client_secret: Option<String>) -> Result<Begun, String> {
+pub async fn begin(flows: SharedFlows, user_id: i64, client_id: String, client_secret: Option<String>) -> Result<Begun, String> {
+    flows.cancel_pending(user_id);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("could not open a loopback port for sign-in: {e}"))?;
@@ -107,11 +131,12 @@ pub async fn begin(flows: SharedFlows, client_id: String, client_secret: Option<
         state,
     );
 
-    flows.set(&flow_id, FlowState::Pending);
+    flows.set(&flow_id, user_id, FlowState::Pending);
     let flow_id_bg = flow_id.clone();
-    tokio::spawn(async move {
+    let flows_bg = flows.clone();
+    let task = tokio::spawn(async move {
         let outcome = run_callback(listener, &redirect_uri, &client_id, client_secret.as_deref(), &verifier, &state).await;
-        flows.set(
+        flows_bg.update(
             &flow_id_bg,
             match outcome {
                 Ok((email, refresh_token)) => FlowState::Done { email, refresh_token },
@@ -119,6 +144,7 @@ pub async fn begin(flows: SharedFlows, client_id: String, client_secret: Option<
             },
         );
     });
+    flows.listeners.lock().unwrap().insert(user_id, task.abort_handle());
 
     Ok(Begun { flow_id, auth_url })
 }
@@ -239,9 +265,10 @@ pub async fn access_token(client_id: &str, client_secret: Option<&str>, refresh_
 }
 
 /// The UI's poll view of a flow.
-pub fn poll(flows: &OAuthFlows, flow_id: &str) -> serde_json::Value {
-    match flows.peek(flow_id) {
-        Some(FlowState::Pending) | None => serde_json::json!({ "status": "pending" }),
+pub fn poll(flows: &OAuthFlows, flow_id: &str, user_id: i64) -> serde_json::Value {
+    match flows.peek(flow_id, user_id) {
+        Some(FlowState::Pending) => serde_json::json!({ "status": "pending" }),
+        None => serde_json::json!({ "status": "error", "error": "no sign-in in progress — start again" }),
         Some(FlowState::Done { email, .. }) => serde_json::json!({ "status": "done", "email": email }),
         Some(FlowState::Error(e)) => serde_json::json!({ "status": "error", "error": e }),
     }
@@ -330,10 +357,36 @@ mod tests {
     #[test]
     fn flow_store_take_done_is_one_shot() {
         let flows = OAuthFlows::default();
-        flows.set("f1", FlowState::Pending);
-        assert!(flows.take_done("f1").is_none(), "a pending flow yields nothing");
-        flows.set("f1", FlowState::Done { email: "me@gmail.com".into(), refresh_token: "RT".into() });
-        assert_eq!(flows.take_done("f1"), Some(("me@gmail.com".to_string(), "RT".to_string())));
-        assert!(flows.take_done("f1").is_none(), "consumed — second take is empty");
+        flows.set("f1", 7, FlowState::Pending);
+        assert!(flows.take_done("f1", 7).is_none(), "a pending flow yields nothing");
+        flows.update("f1", FlowState::Done { email: "me@gmail.com".into(), refresh_token: "RT".into() });
+        assert_eq!(flows.take_done("f1", 7), Some(("me@gmail.com".to_string(), "RT".to_string())));
+        assert!(flows.take_done("f1", 7).is_none(), "consumed — second take is empty");
+    }
+
+    /// A sign-in is its starter's own: another member can neither poll it nor
+    /// claim the refresh token, even knowing the flow id.
+    #[test]
+    fn a_flow_belongs_to_the_user_who_began_it() {
+        let flows = OAuthFlows::default();
+        flows.set("f1", 7, FlowState::Done { email: "me@gmail.com".into(), refresh_token: "RT".into() });
+        assert_eq!(poll(&flows, "f1", 8)["status"], "error", "someone else's flow is invisible");
+        assert!(flows.take_done("f1", 8).is_none(), "someone else can't claim it");
+        assert_eq!(poll(&flows, "f1", 7)["status"], "done");
+        assert!(flows.take_done("f1", 7).is_some(), "the starter still can");
+    }
+
+    /// Beginning again cancels the user's unfinished sign-in (one listener
+    /// each), and leaves other users' flows alone.
+    #[tokio::test]
+    async fn a_new_sign_in_cancels_the_users_previous_one() {
+        let flows: SharedFlows = std::sync::Arc::new(OAuthFlows::default());
+        let first = begin(flows.clone(), 7, "client".into(), None).await.unwrap();
+        let other = begin(flows.clone(), 8, "client".into(), None).await.unwrap();
+        let second = begin(flows.clone(), 7, "client".into(), None).await.unwrap();
+        assert_eq!(poll(&flows, &first.flow_id, 7)["status"], "error", "the first flow is gone");
+        assert_eq!(poll(&flows, &second.flow_id, 7)["status"], "pending");
+        assert_eq!(poll(&flows, &other.flow_id, 8)["status"], "pending", "user 8's flow is untouched");
+        assert_eq!(flows.listeners.lock().unwrap().len(), 2, "one listener per user");
     }
 }

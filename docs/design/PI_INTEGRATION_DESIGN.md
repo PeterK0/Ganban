@@ -236,7 +236,7 @@ is the whole point of the branch.
   with `tools:["read"]`, sends a prompt, collects events until `agent_end`,
   returns `{text, model, prompt_tokens, completion_tokens, duration_ms}`. 5 unit
   tests (text extraction, sandbox profile, pi binary resolution).
-- **Sandbox (macOS MVP)**: `sandbox-exec` profile uses `(allow default)` +
+- **Sandbox (macOS MVP, superseded by the deny-read sandbox below)**: `sandbox-exec` profile used `(allow default)` +
   `(deny file-write*)` + re-allow tempdir only. Network is allowed (pi must
   reach the LLM API). The defense against agent exfiltration is the read-only
   toolset (`tools:["read"]` — no bash), not the sandbox. The sandbox's job is
@@ -287,17 +287,21 @@ is the whole point of the branch.
   model pattern). pi binary path setting. Error messages guide the user when a
   model isn't pulled or pi isn't installed.
 
-### Sandbox: Linux / Windows equivalents (implement before closing branch)
+### Sandbox: deny-read by default (`pi_sandbox.rs`)
 
 | Platform | Method | Profile |
 |---|---|---|
-| **macOS** (MVP, done) | `sandbox-exec -p <profile> pi ...` | allow default; deny file-write*; re-allow tempdir + /tmp + /private/var/folder. Network allowed. |
-| **Linux** | `bwrap --unshare-all --share-net --ro-bind / / --bind <tempdir> <tempdir> --dev /dev pi ...` | Bubblewrap: full FS readonly except tempdir, network shared (for LLM API), no new namespace |
-| **Windows** | `AppContainer` or `Job Object` with restricted token | Deny write to non-tempdir paths; allow network. More complex — may defer to WSL + bwrap. |
+| **macOS** | `sandbox-exec -p <profile> pi ...` | Deny every file read and write; allow the run's folder (read/write), pi's install and node runtime, system libraries, certificates and time zones (read). Outbound network: TLS on 443, DNS, and the chosen provider's explicit ports. No keychain or clipboard service. |
+| **Linux** | `bwrap --unshare-all --share-net ... pi ...` | An empty root with only the system allowlist, pi's runtime and the run's folder bound in; `/tmp` is a fresh tmpfs. Network shared (bwrap has no port filter). No `bwrap`: the run is refused unless `GANBAN_PI_UNSANDBOXED=1`. |
+| **Windows** | none yet | Runs are refused; route the task class to Ollama. |
 
-The `build_command` function in `pi_rpc.rs` already has the `sandbox: bool`
-switch; platform detection selects the wrapper. For Linux/Windows, add the
-equivalent command construction behind `#[cfg(target_os = ...)]`.
+Every run gets a clean environment and a staged pi config in its own folder
+(`.ganban-pi/agent`, via `PI_CODING_AGENT_DIR`): model settings, and only the
+chosen provider's `models.json` and `auth.json` entries. The owner's
+`~/.pi/agent` (session transcripts, every key, extensions) is never readable
+or writable from a run; an OAuth refresh inside a run is copied back. Gate
+tests: `cargo test -p ganban-server --lib pi_ -- --ignored` with
+`GANBAN_GATE_MODEL=anthropic/claude-haiku-4-5`.
 
 ### Update: protocols
 

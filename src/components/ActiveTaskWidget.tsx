@@ -5,6 +5,7 @@ import {
   useTimer,
   useAgentWork,
   liveTotal,
+  liveToday,
   sessionSeconds,
   startTimerSync,
   startTimer,
@@ -107,7 +108,8 @@ export default function ActiveTaskWidget({ onOpenTask }: { onOpenTask?: (task: T
     }
   };
 
-  const total = liveTotal(timer, now);
+  // The pill shows my time on the task today; the dropdown adds this run and the task's total.
+  const today = liveToday(timer, now);
   const ctl = 'w-8 h-8 grid place-items-center rounded text-success hover:bg-success/15 transition-colors disabled:opacity-50 shrink-0';
 
   let trigger;
@@ -144,14 +146,14 @@ export default function ActiveTaskWidget({ onOpenTask }: { onOpenTask?: (task: T
           onKeyDown={onTriggerKey}
           aria-haspopup="dialog"
           aria-expanded={open}
-          aria-label={`Timer: ${activeTask.title}, ${running ? 'running' : 'paused'}, ${clock(total)}`}
+          aria-label={`Timer: ${activeTask.title}, ${running ? 'running' : 'paused'}, ${clock(today)} today`}
           className="inline-flex items-center gap-2.5 min-h-[38px] min-w-0 pl-3.5 pr-1.5 rounded hover:bg-success/10 transition-colors"
         >
           <span className={`w-[7px] h-[7px] rounded-full bg-success shrink-0 ${running ? 'g-pulse' : 'opacity-50'}`} aria-hidden="true" />
           <span data-topbar-title className="min-w-0 max-w-[clamp(220px,18vw,480px)] truncate">
             {activeTask.title}
           </span>
-          <span className="tabular-nums shrink-0">{clock(total)}</span>
+          <span className="tabular-nums shrink-0" title="Your time on this task today">{clock(today)}</span>
         </button>
         <span className="flex items-center shrink-0">
           {running ? (
@@ -288,10 +290,15 @@ function TimerDropdown({ now, onOpenTask }: { now: number; onOpenTask?: (task: T
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <div className="tabular-nums font-semibold text-success">{clock(liveTotal(timer, now))}</div>
+                <div className="tabular-nums font-semibold text-success" title="Your time on this task today">{clock(liveToday(timer, now))} today</div>
                 <div className="text-[11px] text-subtext-0 tabular-nums">
                   {running ? `this run ${clock(sessionSeconds(timer.entry!, now))}` : timer.totalBase ? 'paused' : 'not started'}
                 </div>
+                {liveTotal(timer, now) > 0 && (
+                  <div className="text-[11px] text-subtext-0 tabular-nums" title="Everyone's time on this task, all days">
+                    task total {short(liveTotal(timer, now))}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -353,7 +360,7 @@ function TimerDropdown({ now, onOpenTask }: { now: number; onOpenTask?: (task: T
         )}
       </section>
 
-      {/* Agents: only when a member agent reports work on a task. */}
+      {/* Agents: the tasks my assistants are working on right now (lib/timer). */}
       {agents.length > 0 && (
         <section>
           <h3 className="g-cap px-1 mb-1">Agents</h3>
@@ -363,7 +370,9 @@ function TimerDropdown({ now, onOpenTask }: { now: number; onOpenTask?: (task: T
                 <Gem t={a.task} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate" title={a.task.title}>{a.task.title}</div>
-                  <div className="truncate text-[11px] text-subtext-0">{a.who}</div>
+                  <div className="truncate text-[11px] text-subtext-0" title={`Since ${new Date(a.since).toLocaleTimeString()}`}>
+                    {a.who} · {short(Math.max(0, Math.floor((now - a.since) / 1000)))}
+                  </div>
                 </div>
                 {onOpenTask && (
                   <button data-timer-item type="button" onClick={() => onOpenTask(a.task)} className="g-btn g-btn-ghost g-btn-sm shrink-0">

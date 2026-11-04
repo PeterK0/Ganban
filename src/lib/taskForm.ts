@@ -52,6 +52,11 @@ export const isFormSavable = (form: TaskForm): boolean => form.title.trim() !== 
 /** What a save sends. Text goes as typed and a cleared cost, deadline or area
  * as `null`, so clearing a field saves the clearing; `pinned` is left out (the
  * pin has its own save). */
+/** The fields formToUpdate writes: a form save supersedes an older save of these. */
+export const FORM_FIELDS: ReadonlySet<string> = new Set([
+  'title', 'description', 'status', 'priority', 'prefix', 'cost', 'currency', 'deadline', 'area_id',
+]);
+
 export function formToUpdate(form: TaskForm): UpdateTaskInput {
   return {
     title: form.title,

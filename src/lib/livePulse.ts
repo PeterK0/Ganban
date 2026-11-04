@@ -27,6 +27,9 @@ export type PulseKind =
   | 'models' | 'quiz'
   | 'users'
   | 'entities'
+  // Live agent work changed (the timer's "Agents"); no data did, so the app
+  // refreshes only that and never re-dispatches it as a data pulse.
+  | 'agents'
   | 'lagged';
 
 /** The custom event detail. `kind` is the server-reported "what changed";

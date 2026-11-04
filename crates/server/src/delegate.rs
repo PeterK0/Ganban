@@ -114,6 +114,8 @@ pub struct DelegateOutcome {
     pub usage: Usage,
     /// Resolved personality name (for the breadcrumb / chain attribution).
     pub agent_name: String,
+    /// This delegation's ledger row, for the caller to link to its own turn.
+    pub action_id: Option<i64>,
 }
 
 /// Run one delegation: resolve the personality by name/slug, assemble the
@@ -133,9 +135,10 @@ pub async fn run_delegate(
     is_owner: bool,
     parent_action_id: Option<i64>,
     args: &Value,
+    caller_run: &crate::agent_work::Run,
 ) -> DelegateOutcome {
     let mut usage = Usage::default();
-    let fail = |msg: String| DelegateOutcome { digest: json!({ "error": msg }).to_string(), proposals: Vec::new(), usage: Usage::default(), agent_name: String::new() };
+    let fail = |msg: String| DelegateOutcome { digest: json!({ "error": msg }).to_string(), proposals: Vec::new(), usage: Usage::default(), agent_name: String::new(), action_id: None };
 
     let Some(agent) = args.get("agent").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
         return fail("agent (string) is required".into());
@@ -169,7 +172,10 @@ pub async fn run_delegate(
         .iter()
         .filter_map(|d| d.get("function").and_then(|f| f.get("name")).and_then(Value::as_str).map(String::from))
         .collect();
-    let effective = effective_toolset(&granted, &caller_offered);
+    let mut effective = effective_toolset(&granted, &caller_offered);
+    // Finance reads never travel with a delegation: it runs on another personality's engine,
+    // outside the Personal chat's gate (finance_tools.rs).
+    effective.retain(|n| !crate::finance_tools::is_finance_tool(n));
     let defs: Vec<Value> = caller_defs
         .iter()
         .filter(|d| {
@@ -203,6 +209,8 @@ pub async fn run_delegate(
         json!({ "role": "user", "content": task }),
     ];
 
+    // The tasks this delegate's tools touch show under its own name while it works.
+    let agent_run = caller_run.child(&profile.name);
     let timeout = std::time::Duration::from_secs(ROUND_TIMEOUT_SECS);
     let mut last_content = String::new();
     let mut proposals: Vec<PreparedWrite> = Vec::new();
@@ -212,7 +220,7 @@ pub async fn run_delegate(
             Ok(Ok(t)) => t,
             Ok(Err(e)) if e.contains("unreachable") => {
                 let note = profile.fallback_note.clone().unwrap_or_else(|| format!("{}'s engine is unreachable right now", profile.name));
-                return DelegateOutcome { digest: format!("(delegation unavailable: {note})"), proposals, usage, agent_name: profile.name };
+                return DelegateOutcome { digest: format!("(delegation unavailable: {note})"), proposals, usage, agent_name: profile.name, action_id: None };
             }
             _ => break, // timeout / transport error → digest what we have
         };
@@ -228,6 +236,9 @@ pub async fn run_delegate(
             .collect();
         messages.push(json!({ "role": "assistant", "content": turn.content, "tool_calls": raw_calls }));
         for tc in &turn.tool_calls {
+            if effective.contains(&tc.name) {
+                agent_run.touch_args(db, &tc.arguments).await;
+            }
             // EXECUTION-side enforcement: even if a def slipped through,
             // effective-set membership is re-checked here, and execute_tool
             // gets the CALLER's ownership (owner-only bindings re-checked).
@@ -262,7 +273,7 @@ pub async fn run_delegate(
     // Every delegation is its own ledger row, linked to the caller's row
     // where one exists (conformance: `tree_ledgered`). Cost roll-up = a
     // query over parent_action_id + the capacity-meter columns.
-    if let Err(e) = ops::record_agent_action(db, ops::NewAgentAction {
+    let action_id = match ops::record_agent_action(db, ops::NewAgentAction {
         status: "applied",
         user_id,
         profile_id: Some(profile.id),
@@ -285,10 +296,65 @@ pub async fn run_delegate(
     })
     .await
     {
-        tracing::warn!("delegation to '{}' completed but could not ledger it: {e}", profile.name);
-    }
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!("delegation to '{}' completed but could not ledger it: {e}", profile.name);
+            None
+        }
+    };
 
-    DelegateOutcome { digest, proposals, usage, agent_name: profile.name }
+    DelegateOutcome { digest, proposals, usage, agent_name: profile.name, action_id }
+}
+
+/// Ledger the chat turn that delegated, and hang its delegations under it
+/// (the ledger tree, DELEGATE.md § 3). Written after the turn, once its own
+/// cost is known: `own` is the turn's usage without its delegations', so a
+/// roll-up over the tree (parent + children) counts each token once. Returns
+/// the turn's row, or None when nothing was delegated.
+#[allow(clippy::too_many_arguments)]
+pub async fn ledger_delegating_turn(
+    db: &Db,
+    user_id: i64,
+    project_id: i64,
+    model: &str,
+    own: Usage,
+    agents: &[String],
+    children: &[i64],
+) -> Option<i64> {
+    if children.is_empty() {
+        return None;
+    }
+    let summary = format!("Chat turn delegated to {}", agents.join(", "));
+    let parent = ops::record_agent_action(db, ops::NewAgentAction {
+        status: "applied",
+        user_id,
+        profile_id: None,
+        project_id: Some(project_id),
+        chat_id: None,
+        routine_id: None,
+        tool: "chat_turn",
+        summary: &summary,
+        args_json: &json!({ "delegations": children.len() }).to_string(),
+        result_json: None,
+        model: Some(model),
+        prompt_tokens: Some(own.prompt_tokens),
+        completion_tokens: Some(own.completion_tokens),
+        duration_ms: Some(own.duration_ms),
+        protocol_slug: None,
+        protocol_version: None,
+        content_hash: None,
+        parent_action_id: None,
+        approver_id: None,
+    })
+    .await
+    .map_err(|e| tracing::warn!("could not ledger a delegating turn: {e}"))
+    .ok()?;
+    for child in children {
+        if let Err(e) = sqlx::query("UPDATE agent_actions SET parent_action_id = ? WHERE id = ?").bind(parent).bind(child).execute(db).await {
+            tracing::warn!("could not link delegation {child} to its turn: {e}");
+        }
+    }
+    Some(parent)
 }
 
 #[cfg(test)]
@@ -371,5 +437,43 @@ mod tests {
         .unwrap();
         assert_eq!(children, 2);
         assert_eq!(tokens, 200);
+    }
+
+    /// A delegating chat turn gets its own row, and its delegations point at
+    /// it; the turn's row carries only its own tokens, so the tree sums right.
+    #[tokio::test]
+    async fn a_delegating_turn_parents_its_delegations() {
+        let path = std::env::temp_dir().join(format!("ganban_deleg_turn_{}.db", std::process::id()));
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+        let db = ganban_core::init_db(&path).await.unwrap();
+        let child = |tokens: i64| ops::NewAgentAction {
+            status: "applied", user_id: 1, profile_id: None, project_id: Some(1), chat_id: None,
+            routine_id: None, tool: "delegate", summary: "s", args_json: "{}", result_json: None,
+            model: Some("m"), prompt_tokens: Some(tokens), completion_tokens: Some(0),
+            duration_ms: Some(10), protocol_slug: None, protocol_version: None, content_hash: None,
+            parent_action_id: None, approver_id: None,
+        };
+        let a = ops::record_agent_action(&db, child(40)).await.unwrap();
+        let b = ops::record_agent_action(&db, child(60)).await.unwrap();
+        assert_eq!(ledger_delegating_turn(&db, 1, 1, "m", Usage::default(), &[], &[]).await, None, "no delegation, no row");
+
+        let own = Usage { prompt_tokens: 100, completion_tokens: 0, duration_ms: 5 };
+        let agents = vec!["Scout".to_string(), "Worker".to_string()];
+        let parent = ledger_delegating_turn(&db, 1, 1, "m", own, &agents, &[a, b]).await.expect("the turn is ledgered");
+        let (children, tokens): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0) FROM agent_actions WHERE parent_action_id = ?",
+        )
+        .bind(parent)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!((children, tokens), (2, 100));
+        let (tool, summary, turn_tokens): (String, String, i64) =
+            sqlx::query_as("SELECT tool, summary, prompt_tokens FROM agent_actions WHERE id = ?").bind(parent).fetch_one(&db).await.unwrap();
+        assert_eq!(tool, "chat_turn");
+        assert!(summary.contains("Scout, Worker"), "{summary}");
+        assert_eq!(turn_tokens, 100, "the turn's own tokens only");
     }
 }

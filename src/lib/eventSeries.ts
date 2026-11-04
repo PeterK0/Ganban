@@ -8,7 +8,7 @@
 //   - "All events": the master itself.
 import { deleteEvent, getEvent, setEventDone, updateEvent } from './api';
 import { copyEvent, localDay, movedEventDate } from './eventCopy';
-import { addExdates, endRuleOn, parseExdates, splitRule } from './recur.pure';
+import { addExdates, endRuleAt, parseExdates, splitRule } from './recur.pure';
 import type { CreateEventInput, Event } from '../types';
 
 export type SeriesScope = 'this' | 'following' | 'all';
@@ -76,8 +76,14 @@ export async function splitAt(stale: Event, day: string, change: Partial<CreateE
   return event;
 }
 
-/** End the series on `day` (its last possible day), COUNT dropped. */
-export const endSeriesOn = (master: Event, day: string) => updateEvent(master.id, { rrule: endRuleOn(master.rrule ?? '', day) });
+/** End the series on `day` (its last possible day), COUNT dropped. A series
+ * that starts after `day` has nothing left, so it goes to the Bin instead of
+ * staying as a rule with no days. */
+export async function endSeriesOn(master: Event, day: string): Promise<void> {
+  const rrule = endRuleAt(master.rrule ?? '', new Date(master.event_date), day);
+  if (rrule) await updateEvent(master.id, { rrule });
+  else await deleteEvent(master.id);
+}
 
 /** Delete days of a series as `scope` says. `days` are the picked days of this master. */
 export async function deleteDays(stale: Event, days: string[], scope: SeriesScope): Promise<void> {

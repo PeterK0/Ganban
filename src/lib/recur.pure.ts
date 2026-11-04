@@ -365,6 +365,18 @@ export function endRuleOn(rrule: string, day: string): string {
   return withPart(withPart(rrule, 'COUNT', null), 'UNTIL', day.replace(/-/g, ''));
 }
 
+/**
+ * The rule ending on `day`, or null when the series has no day on or before it
+ * (it starts later), so ending it there leaves nothing. Skipped days count as
+ * days here: a one-off copy may stand in for them.
+ */
+export function endRuleAt(rrule: string, start: Date, day: string): string | null {
+  const end = dayAt(day);
+  const from = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const through = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, -1);
+  return expandOccurrences(rrule, start, from, through, 1).length ? endRuleOn(rrule, day) : null;
+}
+
 /** How the series ends: never, on a date (YYYY-MM-DD), or after N times. */
 export function ruleEnd(rrule: string): RepeatEnd {
   const p = parseRrule(rrule);
@@ -403,4 +415,12 @@ export function isoWeek(d: Date): { year: number; week: number } {
 /** The Monday that starts `d`'s week (local midnight). */
 export function weekStart(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+}
+
+/** The month grid's six Monday-to-Sunday rows from the week that holds the 1st:
+ * its first and last days (local midnight), the other months' days included.
+ * `month` is 0-based. */
+export function monthGridRange(year: number, month: number): { first: Date; last: Date } {
+  const first = weekStart(new Date(year, month, 1));
+  return { first, last: new Date(first.getFullYear(), first.getMonth(), first.getDate() + 41) };
 }

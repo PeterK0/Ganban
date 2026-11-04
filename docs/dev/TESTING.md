@@ -27,7 +27,17 @@ None needs a running server, a browser or network access.
 | `npm run test:nav` | Back and forward history, its shortcuts and its limits. |
 | `npm run test:recur` | The repeat-rule (RRULE) expander behind recurring events. |
 | `npm run test:atlasfiles` | Atlas › Files' listing: which files show, and which are marked as stored only on this device. |
+| `npm run test:filelocation` | "Show in folder": when it's offered for a file, and opening the host copy when the file isn't on this machine. |
+| `npm run test:hosterror` | Host error codes: the client matches a refusal by its code (`AI_FILE_TOO_LARGE`), over HTTP and in local mode. |
 | `npm run test:taskform` | The task editor's form: what counts as an edit, what a save sends, and the saved copies that keep an edit made on close from showing (and being re-saved) as the old text. |
+| `npm run test:inflight` | The editors' in-flight saves: a save still on its way when the page goes is sent again (as keepalive), once, and only until it lands. |
+| `npm run test:timerday` | The timer pill's "today": local midnight, and the running entry counted from it. |
+| `npm run test:agentwork` | The timer's "Agents": every workspace's live agent work merged into one row per task. |
+| `npm run test:finmoney` | Finance money: minor units to display and back in several locales, split checks, debits and credits. |
+| `npm run test:finreports` | Finance reports: months and periods, statement rows with subtotals and comparatives, net worth, budget progress, the forecast band's scale and a statement's PDF. |
+| `npm run test:fincash` | Finance quick-add of a cash expense: which cash account it posts to and the balanced entry it makes. |
+| `npm run test:pdfsections` | PDF Studio's section kinds (front matter, chapters, back matter) and the chapter numbering in extracted file names. |
+| `npm run test:cadence` | An automation's schedule: interval, daily and weekly (`Mon,Thu 09:00`), read and written as the host parses them. |
 | `npm run test:update` | The version compare behind the host-served update check. |
 | `npm run test:apkupdate` | The phone app's self-update decisions. |
 | `npm run test:ops` | The host service scripts in `ops/` (install, backup, update), in a sandbox with fake system tools. They target macOS and launchd, so run this suite on a Mac. |

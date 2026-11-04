@@ -327,6 +327,47 @@ async fn renames_and_moves_refuse_clashes() {
     assert_eq!(storage::move_project_files(&db, pid, &[b.id, b.id], "notes").await.unwrap(), 1);
 }
 
+/// Names clash regardless of case: "Report.pdf" can't sit next to "report.pdf" (and a
+/// case-insensitive disk, macOS or Windows, couldn't hold both when downloaded). A file or
+/// folder may still change its own case.
+#[tokio::test]
+async fn names_clash_regardless_of_case() {
+    let dir = temp_dir("caseclash");
+    let db = init_db_role(&dir.join("t.db"), Role::Server).await.unwrap();
+    let root = dir.join("storage");
+    let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
+    let r = storage::store_project_file(&db, &root, pid, "report.pdf", None, Some("Docs/report.pdf"), None, b"r").await.unwrap();
+    let s = storage::store_project_file(&db, &root, pid, "other.pdf", None, Some("Docs/other.pdf"), None, b"s").await.unwrap();
+    let loose = storage::store_project_file(&db, &root, pid, "Report.PDF", None, None, None, b"l").await.unwrap();
+    let scope = storage::FolderScope::Project(pid);
+
+    let err = storage::rename_project_file(&db, s.id, "Report.pdf").await.unwrap_err();
+    assert!(err.to_string().contains("already exists"), "rename: {err}");
+    let err = storage::move_project_files(&db, pid, &[loose.id], "Docs").await.unwrap_err();
+    assert!(err.to_string().contains("already exists"), "move: {err}");
+    assert!(storage::move_project_files(&db, pid, &[loose.id], "docs").await.is_err(), "the folder, by another case");
+    assert!(storage::create_project_folder(&db, pid, "report.pdf").await.is_err(), "a folder over a file, by case");
+    assert!(storage::create_project_folder(&db, pid, "REPORT.pdf/inner").await.is_err(), "below a file, by case");
+    storage::create_project_folder(&db, pid, "Notes").await.unwrap();
+    assert!(storage::rename_project_file(&db, loose.id, "notes").await.is_err(), "a folder's name, by case");
+    assert!(storage::rename_folder(&db, scope, "Notes", "docs").await.is_err(), "a folder onto another, by case");
+
+    // Changing one's own case is no clash.
+    assert_eq!(storage::rename_project_file(&db, r.id, "Report.pdf").await.unwrap().rel_path.as_deref(), Some("Docs/Report.pdf"));
+    assert_eq!(storage::rename_folder(&db, scope, "Docs", "docs").await.unwrap(), 2);
+    assert!(storage::list_project_folders(&db, pid).await.unwrap().iter().all(|f| f != "Docs"));
+
+    // Task files follow the same rule.
+    let tid = ops::create_task(&db, CreateTaskInput {
+        project_id: pid, area_id: None, title: "T".into(), description: None,
+        status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
+    }).await.unwrap().id;
+    let a = storage::create_shared_attachment(&db, tid, "Plan.md", None, None).await.unwrap();
+    let b = storage::create_shared_attachment(&db, tid, "notes.md", None, None).await.unwrap();
+    assert!(storage::rename_attachment(&db, b.id, "plan.MD").await.is_err(), "task file rename, by case");
+    storage::rename_attachment(&db, a.id, "plan.md").await.unwrap();
+}
+
 /// Renaming a folder moves every file and sub-folder under it; it can't land on a taken
 /// name or inside itself.
 #[tokio::test]

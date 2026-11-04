@@ -54,7 +54,10 @@ How the pieces meet:
 
 A bigger tab can live in a folder, `src/tabs/<folder>/`, and register itself with a `module.tsx` whose default
 export is a `TabModule` (`src/tabs/modules.ts`): its panel, icon, pinnable sub-views, `?pane=` pages of its own,
-its pin window and owner cards for Settings → Plug-ins. `modules.ts` finds every `module.tsx` at build time with
+its pin window and owner cards for Settings → Plug-ins. A module can also bring a `rail` view: a top-level view
+with its own sidebar entry (and a row in the phone's More screen), shown when the host reports the tab and the user
+turned it on in Settings → Plug-ins (a per-user host setting, `RAIL_SETTING`). A module with only a rail view has no
+`panel` and isn't offered per project; Finance is one. `modules.ts` finds every `module.tsx` at build time with
 `import.meta.glob`, so a build without the folder has no such tab, and nothing else imports from the folder. The
 host side of such a tab can go in `crates/server/src/extra_tabs.rs`, which `build.rs` compiles in only when the file
 exists (`cfg(extra_tabs)`). This is how a build carries a tab the public tree doesn't.

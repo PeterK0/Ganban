@@ -1,6 +1,6 @@
 [package]
 name = "ganban-server"
-version = "1.0.6"
+version = "1.0.7"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Headless HTTP daemon exposing the Ganban core over the trusted tailnet"
@@ -67,7 +67,7 @@ zip = { version = "2", default-features = false }
 # loading, ever. Dropping a tab from `default` removes its panel registration,
 # its tools, and its dependencies from the binary.
 [features]
-default = ["tab-nato", "tab-pdf", "tab-email", "tab-atlas", "tab-kanban", "tab-models", "tab-quiz"]
+default = ["tab-nato", "tab-pdf", "tab-email", "tab-atlas", "tab-kanban", "tab-models", "tab-quiz", "tab-finance"]
 # Compile the built frontend (../../dist) into the binary. Off by default so
 # `cargo test` works on a checkout that never ran `npm run build`; the desktop
 # shell enables it (tauri's beforeBuildCommand guarantees dist/ exists first).
@@ -77,5 +77,7 @@ tab-atlas = []
 tab-kanban = []
 tab-models = []
 tab-quiz = []
+# Finance (docs/design/FINANCE.md): the ledger always builds; this flag reports the tab.
+tab-finance = []
 tab-pdf = ["dep:lopdf"]
 tab-email = ["dep:async-imap", "dep:async-native-tls", "dep:mail-parser", "dep:mail-builder"]

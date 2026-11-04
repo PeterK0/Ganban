@@ -75,6 +75,7 @@ import { UPDATE_CHANNEL } from '../lib/updateChannel';
 import { aiEngineStatus, aiEngineStart, aiEngineStop, aiEngineReclaimRagrat, type AiEngineStatus } from '../lib/aiEngine';
 import { getGiphyKey, setGiphyKey, searchGifs } from '../lib/giphy';
 import { TAB_MODULES } from '../tabs/modules';
+import RailSwitches from './RailSwitches';
 import { getTimezone, setTimezone, timezoneList, resolvedTimezone } from '../lib/clock';
 import type { Project } from '../types';
 import UserSwitcher from './UserSwitcher';
@@ -1227,6 +1228,8 @@ function isWindowsHost(): boolean {
         return (
           <div className="space-y-4">
             <H>Plug-ins</H>
+            {/* Your switches for tab modules' sidebar views (Finance) */}
+            <RailSwitches />
             <div className="g-card p-5 space-y-2">
               <div className="font-medium text-text">GIPHY</div>
               <p className="text-sm text-subtext-0">A free GIPHY API key enables GIF search in comments for <span className="text-text">every member</span> — it's stored on the host and injected server-side, so phones never need their own key (giphy.com → Developers → Create an App).</p>

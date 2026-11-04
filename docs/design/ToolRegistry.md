@@ -92,20 +92,30 @@ Knowledge scope stays **orthogonal** in v1 (loadouts don't carry a corpus scope)
 2. **Owner-gating** for `mcp`/`http`/`fetch` is enforced **twice**: filtered out
    of a non-owner's assembled tool set *and* refused in execution (`is_owner`
    threaded `chat_handler → run_tool_loop → execute_tool → execute_registry_tool`).
-3. **SSRF**: `ssrf_check` resolves the host and refuses private/loopback/
-   link-local/ULA addresses; `https`-only for `http`, `http(s)` for `fetch`;
-   redirects on `fetch` are followed **manually and re-checked every hop**; size +
-   time caps. *(A real browser would bypass this — see §6.)*
+3. **SSRF**: the guard (`crates/server/src/net_guard.rs`) refuses private,
+   loopback, link-local, CGNAT (`100.64.0.0/10`, the tailnet), ULA and the IPv6
+   forms that embed one of those IPv4 addresses. Guarded clients resolve through
+   it at connect time, so the checked address is the one connected to (no DNS
+   rebind window). `https`-only for `http`, `http(s)` for `fetch`; redirects on
+   `fetch` are followed **manually and re-checked every hop**; size + time caps.
+   Oracle's `fetch.http` and members' mailboxes go through the same guard.
+   Calendar subscriptions and the owner's mailboxes, which only the owner can
+   enter, may reach the owner's LAN, tailnet and machine, but never a cloud
+   metadata endpoint (`Scope::OwnerNetwork`). *(A real browser would bypass this — see §6.)*
 4. **Secrets** live host-only, referenced by name, never returned, never synced.
 5. **Fetched/external content is maximally untrusted** — capped, collapsed, never
    authorizes a write. Prompt-injection from page content is the #1 agent risk.
-6. **Capability honesty**: with tools on, the model is told its tools are LIVE and
+6. **Finance reads** (`finance_*`) are offered only in the caller's own Personal chat on a local Ollama model, and
+   checked again at execution (`docs/design/FINANCE.md` § Assistant, `SECURITY_MODEL.md` § 8). Registry tools can't
+   take their names, and a delegation never carries them.
+7. **Capability honesty**: with tools on, the model is told its tools are LIVE and
    override stale persona claims ("I have no live access") — call the tool instead
    of refusing. (A personality's static prompt can go *false* once you grant it a
    tool; fix the prompt at the source, the note is a backstop.)
 
-Tests: `crates/server/src/tools.rs` (registry validation/scope-forcing, SSRF
-allow/deny, template substitution, response shaping, `html_to_text`),
+Tests: `crates/server/src/net_guard.rs` (SSRF allow/deny, connect-time
+pinning) and `crates/server/src/tools.rs` (registry validation/scope-forcing,
+template substitution, response shaping, `html_to_text`),
 `crates/core/tests/loadouts.rs`.
 
 ## 6. Web intake — decisions & phases

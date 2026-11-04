@@ -1,7 +1,7 @@
 {
   "name": "ganban",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.0.7",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -28,7 +28,17 @@
     "test:doclinks": "node scripts/check-doc-links.mjs",
     "test:recur": "node scripts/test-recur.mjs",
     "test:atlasfiles": "node scripts/test-atlas-files.mjs",
-    "test:taskform": "node scripts/test-taskform.mjs"
+    "test:filelocation": "node scripts/test-file-location.mjs",
+    "test:hosterror": "node scripts/test-host-error.mjs",
+    "test:taskform": "node scripts/test-taskform.mjs",
+    "test:timerday": "node scripts/test-timer-day.mjs",
+    "test:agentwork": "node scripts/test-agent-work.mjs",
+    "test:finmoney": "node scripts/test-finance-money.mjs",
+    "test:pdfsections": "node scripts/test-pdf-sections.mjs",
+    "test:inflight": "node scripts/test-inflight-saves.mjs",
+    "test:cadence": "node scripts/test-schedule-cadence.mjs",
+    "test:finreports": "node scripts/test-finance-reports.mjs",
+    "test:fincash": "node scripts/test-finance-cash.mjs"
   },
   "dependencies": {
     "@fontsource/figtree": "^5.3.0",

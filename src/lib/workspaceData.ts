@@ -12,6 +12,7 @@ import { invokeLocal } from './api';
 import { invokeOnHost, isWebClient, getDeviceToken } from './daemon';
 import { LOCAL_ID, type Workspace } from './workspaces';
 import type { HostPin } from './pinnedTabs.pure';
+import type { AgentWorkRow } from './agentWork.pure';
 import type { Project, Task, Area, Event, ProjectStats, Comment, CommentBoard, CreateCommentInput, CreateTaskInput, MyAssignment, User, TimeEntry } from '../types';
 
 async function call<T>(ws: Workspace, command: string, args?: Record<string, unknown>): Promise<T> {
@@ -121,11 +122,27 @@ export const wsStopTimeEntry = (ws: Workspace, entryId: number): Promise<TimeEnt
 export const wsGetTaskTotalTime = (ws: Workspace, taskId: number): Promise<number> =>
   call<number>(ws, 'get_task_total_time', { taskId });
 
+/** My finished seconds on a task since `since` (ISO instant): the timer pill's "today". */
+export const wsGetMyTaskTimeSince = (ws: Workspace, taskId: number, since: string): Promise<number> =>
+  call<number>(ws, 'get_my_task_time_since', { taskId, since, userId: actingUser() });
+
 /** My running timer on this workspace, its task tagged with the workspace. */
 export const wsGetMyRunningTimer = async (ws: Workspace): Promise<{ entry: TimeEntry; task: Task } | null> => {
   // The host serializes Option<(TimeEntry, Task)> as [entry, task].
   const r = await call<[TimeEntry, Task] | null>(ws, 'get_global_active_time_entry', { userId: actingUser() });
   return Array.isArray(r) && r.length === 2 ? { entry: r[0], task: { ...r[1], workspaceId: ws.id } } : null;
+};
+
+/** The tasks my assistants are working on right now on this workspace (the timer's
+ * "Agents"). Chats run on the host, so on the desktop the local workspace asks its
+ * embedded host, not the in-process table (which has no live runs). */
+export const wsGetAgentWork = async (ws: Workspace): Promise<AgentWorkRow<Task>[]> => {
+  const args = { userId: actingUser() };
+  if (ws.id === LOCAL_ID && !isWebClient()) {
+    // No embedded host running yet: no chat can be running either.
+    return ws.url ? invokeOnHost<AgentWorkRow<Task>[]>(ws.url, ws.token, 'get_agent_work', args) : [];
+  }
+  return call<AgentWorkRow<Task>[]>(ws, 'get_agent_work', args);
 };
 
 export interface RecentTimeTask {

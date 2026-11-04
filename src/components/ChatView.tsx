@@ -32,6 +32,7 @@ import {
   rejectProposal,
   hasDaemon,
   listChats,
+  personalSpaceId,
   getChatMessages,
   binChat,
   restoreChat,
@@ -201,6 +202,9 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
   const { projects } = useAppStore();
   const active = projects.filter((p) => !p.archived && (scopeProjectId == null || p.id === scopeProjectId));
   const [openProject, setOpenProject] = useState<number | null>(scopeProjectId ?? null);
+  // The Personal lane: chats in the caller's own hidden container, which only they reach.
+  // With Tools on and a local model, the assistant can read their Finance there.
+  const [personalId, setPersonalId] = useState<number | null>(null);
   const [chatsByProject, setChatsByProject] = useState<Record<number, Chat[]>>({});
   const [activeChat, setActiveChat] = useState<{ projectId: number; chatId?: number } | null>(null);
   // Author avatar/name per user id — so user messages show WHO wrote them
@@ -226,6 +230,16 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const connected = hasDaemon();
   const [tab, setTab] = useState<AssistantTab>("chats");
+
+  useEffect(() => {
+    if (!connected || scopeProjectId != null) return;
+    personalSpaceId().then(setPersonalId).catch(() => {/* an older host has no personal containers */});
+  }, [connected, scopeProjectId]);
+  const groups = [
+    ...(personalId != null ? [{ id: personalId, name: "Personal", personal: true }] : []),
+    ...active.map((p) => ({ id: p.id, name: p.name, personal: false })),
+  ];
+  const isPersonal = activeChat != null && activeChat.projectId === personalId;
 
   // Deep-link: outside surfaces (the hot-bar Bridge dropdown) can request a
   // specific assistant tab — via sessionStorage when we're not mounted yet
@@ -516,7 +530,7 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
     void rejectProposal(id).catch(() => {});
   };
 
-  const activeProjectName = activeChat ? active.find((p) => p.id === activeChat.projectId)?.name : undefined;
+  const activeProjectName = activeChat ? groups.find((p) => p.id === activeChat.projectId)?.name : undefined;
 
   // Who actually answers in THIS chat: the project's configured personality if
   // set, else the globally-active one — mirroring the server's resolution, so
@@ -551,18 +565,28 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
           <span className="g-deco text-[11px] font-semibold text-gold">Chats</span>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-          {active.length === 0 && <p className="px-2 py-2 text-sm text-[color:var(--g-mut)] italic">No projects yet.</p>}
-          {active.map((p) => {
+          {groups.length === 0 && <p className="px-2 py-2 text-sm text-[color:var(--g-mut)] italic">No projects yet.</p>}
+          {groups.map((p) => {
             const isOpen = openProject === p.id;
             const chats = chatsByProject[p.id] ?? [];
             return (
               <div key={p.id}>
                 {/* Project = group header (Tasks-rail style) */}
-                <button onClick={() => toggleProject(p.id)} className="w-full flex items-center gap-1.5 min-h-8 px-1 mb-0.5 text-left group">
+                <button
+                  onClick={() => toggleProject(p.id)}
+                  title={p.personal ? "Private to you: no one else sees these chats, the host owner included" : undefined}
+                  className="w-full flex items-center gap-1.5 min-h-8 px-1 mb-0.5 text-left group"
+                >
                   <svg className={`w-3 h-3 text-[color:var(--g-mut)] transition-transform shrink-0 ${isOpen ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                   <span className="g-deco text-[11px] font-semibold tracking-[0.22em] text-[color:var(--g-mut)] group-hover:text-[color:var(--g-fg2)] truncate flex-1">{p.name}</span>
+                  {p.personal && (
+                    <svg className="w-3 h-3 text-[color:var(--g-mut)] shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-label="Private">
+                      <rect x="5" y="11" width="14" height="10" rx="2" />
+                      <path strokeLinecap="round" d="M8 11V7a4 4 0 018 0v4" />
+                    </svg>
+                  )}
                   {chats.length > 0 && <span className="text-[11px] text-[color:var(--g-mut)] tabular-nums shrink-0">{chats.length}</span>}
                 </button>
                 {isOpen && (
@@ -570,7 +594,11 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
                     <button onClick={() => newChat(p.id)} className="w-full text-left min-h-8 px-2.5 text-xs font-semibold text-gold hover:bg-gilt-b rounded">
                       + New chat
                     </button>
-                    {chats.length === 0 && <div className="px-2.5 py-1 text-xs text-subtext-0 italic">No chats yet</div>}
+                    {chats.length === 0 && (
+                      <div className="px-2.5 py-1 text-xs text-subtext-0 italic">
+                        {p.personal ? "No chats yet. Only you see these; with Tools on and a local model, the assistant can read your Finance here." : "No chats yet"}
+                      </div>
+                    )}
                     {chats.map((c) => {
                       const sel = activeChat?.chatId === c.id;
                       return (
@@ -694,11 +722,13 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
                   <div className="text-xs text-[color:var(--g-mut)]">
                     {readOnly
                       ? "Shared by a teammate — read-only"
-                      : `${activeProjectName ?? "This project"} · grounded in its tasks, events, notes & files`}
+                      : isPersonal
+                        ? "Personal · private to you"
+                        : `${activeProjectName ?? "This project"} · grounded in its tasks, events, notes & files`}
                   </div>
                 </div>
               </div>
-              {activeChatMeta && !readOnly && (
+              {activeChatMeta && !readOnly && !isPersonal && (
                 <button
                   onClick={togglePublic}
                   title={activeChatMeta.is_public ? "Make private again" : "Let the whole team read this chat"}
@@ -710,7 +740,9 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
             </div>
             <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
               {messages.length === 0 && (
-                <div className="text-center text-[color:var(--g-mut)] text-sm mt-10">Ask anything about this project.</div>
+                <div className="text-center text-[color:var(--g-mut)] text-sm mt-10">
+                  {isPersonal ? "Ask anything. Turn Tools on to ask about your finances (local models only)." : "Ask anything about this project."}
+                </div>
               )}
               {messages.map((m, i) => {
                 const isLast = i === messages.length - 1;
@@ -829,7 +861,11 @@ export default function ChatView({ scopeProjectId, initialChatId }: { scopeProje
                     >
                       🔧 Tools {useTools ? "on" : "off"}
                     </button>
-                    {useTools && <span className="text-[color:var(--g-mut)]">The assistant can look up this project's data.</span>}
+                    {useTools && (
+                      <span className="text-[color:var(--g-mut)]">
+                        {isPersonal ? "The assistant can read your finances (on a local model)." : "The assistant can look up this project's data."}
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-2 items-end">
                   <textarea

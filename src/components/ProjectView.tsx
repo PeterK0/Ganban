@@ -31,6 +31,7 @@ import { notify } from '../store/notifications';
 import { ResizablePane } from './gilt';
 import { dueTag, statusMark } from './taskMarks';
 import { projectColorClass, projectInitial } from '../lib/projectColor';
+import { isProjectTab } from '../tabs/modules';
 
 /** A unified tab entry — built-in (TABS) and stash tabs merged so the user can
  * drag-reorder them as one set. */
@@ -664,7 +665,7 @@ function ProjectView() {
   const [tabsFor, setTabsFor] = useState<string | null>(null);
   const [availableLoaded, setAvailableLoaded] = useState(!hasDaemon());
   useEffect(() => {
-    if (hasDaemon()) listAvailableTabs().then(setAvailableTabs).catch(() => {}).finally(() => setAvailableLoaded(true));
+    if (hasDaemon()) listAvailableTabs().then((t) => setAvailableTabs(t.filter((d) => isProjectTab(d.id)))).catch(() => {}).finally(() => setAvailableLoaded(true));
   }, []);
   useEffect(() => {
     const k = pkey;

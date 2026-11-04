@@ -76,6 +76,10 @@ function iconFor(name: string): string {
   return '📄';
 }
 
+/** The list's name column: it grows with the pane up to a readable width, so on an
+ * ultrawide the details sit beside the names and the spare width ends the row. */
+const NAME_COL = 'flex-1 min-w-0 max-w-[60rem]';
+
 /** Kind used for the Type column + sorting — the lowercased extension. */
 function extOf(name: string): string {
   const i = name.lastIndexOf('.');
@@ -522,7 +526,7 @@ export default function AtlasFilesTab() {
         {view === 'list' && (
           <div className="shrink-0 flex items-center gap-2.5 px-6 py-1.5 border-b border-gilt-b g-deco text-[10px] font-semibold tracking-[0.18em] text-[color:var(--g-mut)] select-none">
             <span className="w-5" />
-            <button onClick={() => setSortPersist('name')} className="flex-1 text-left hover:text-text">Name{sortArrow('name')}</button>
+            <button onClick={() => setSortPersist('name')} className={`${NAME_COL} text-left hover:text-text`}>Name{sortArrow('name')}</button>
             <button onClick={() => setSortPersist('type')} className="w-14 text-right hover:text-text">Kind{sortArrow('type')}</button>
             <button onClick={() => setSortPersist('date')} className="w-20 text-right hover:text-text">Added{sortArrow('date')}</button>
             <button onClick={() => setSortPersist('size')} className="w-16 text-right hover:text-text">Size{sortArrow('size')}</button>
@@ -588,9 +592,12 @@ export default function AtlasFilesTab() {
                     onClick={() => setCwd([...cwd, f])}
                     className="w-full flex items-center gap-2.5 min-h-10 px-3 py-2 rounded hover:bg-surface-0 text-left"
                   >
-                    <span>📂</span>
-                    <span className="text-sm font-medium text-text truncate flex-1">{f}</span>
-                    <span className="text-[11px] text-subtext-0">folder</span>
+                    <span className="w-5 shrink-0 text-center">📂</span>
+                    <span className={`text-sm font-medium text-text truncate ${NAME_COL}`}>{f}</span>
+                    {/* The same column slots as a file row, so "folder" sits under Size. */}
+                    <span className="shrink-0 w-14" />
+                    <span className="shrink-0 w-20" />
+                    <span className="text-[11px] text-subtext-0 shrink-0 w-16 text-right">folder</span>
                   </button>
                 ))}
                 {files.map((e) => (
@@ -606,8 +613,8 @@ export default function AtlasFilesTab() {
                       selected.has(e.key) ? 'g-sel' : 'hover:bg-surface-0'
                     }`}
                   >
-                    <span>{iconFor(e.name)}</span>
-                    <span className="text-sm text-text truncate flex-1">
+                    <span className="w-5 shrink-0 text-center">{iconFor(e.name)}</span>
+                    <span className={`text-sm text-text truncate ${NAME_COL}`}>
                       {searching ? e.relPath : e.name}
                       {e.taskTitle && <span className="text-subtext-0 text-xs"> · 📎 {e.taskTitle}</span>}
                     </span>

@@ -11,7 +11,8 @@
 //
 // Keeping them apart is what lets a member open the real Ganban in a tab.
 
-import { isMobilePlatform, isTauri } from './daemon';
+import { isMobilePlatform, isTauri, servingFromThisMachine } from './daemon';
+import { showInFolderOffered, type Locatable } from './fileLocation.pure';
 
 export type Shell = 'desktop' | 'touch';
 
@@ -106,6 +107,25 @@ export interface RevealResult {
 export async function revealLocalPath(path: string): Promise<RevealResult> {
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<RevealResult>('reveal_local_path', { path });
+}
+
+/** "Show in folder" for a Ganban file (see lib/fileLocation.pure.ts): the
+ * desktop resolves where it is on this machine, the saved path or, on the
+ * host, the blob store. */
+export async function revealFile(f: Locatable & { id: number }): Promise<RevealResult> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RevealResult>('reveal_file', {
+    kind: f.kind,
+    id: f.id,
+    shared: f.shared,
+    path: f.localPath ?? null,
+    onHost: servingFromThisMachine(),
+  });
+}
+
+/** Whether to offer "Show in folder" for this file in this client. */
+export function canShowInFolder(f: Locatable): boolean {
+  return showInFolderOffered(f, { hasPaths: hasFilePaths() && !isMobilePlatform(), onHost: servingFromThisMachine() });
 }
 
 /**

@@ -9,6 +9,56 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-04
+
+### Added
+
+- **Finance:** a personal ledger for your money. It's optional: turn it on in Settings → Plug-ins → Sections, and
+  it appears in the sidebar and in the phone's More screen. Only you see it, the host's owner included.
+  - Import statements from CSV or Excel. Revolut and Piraeus exports are recognised as they are, and any other bank
+    goes through a column-mapping wizard that remembers the layout. Re-importing an overlapping export adds nothing.
+  - Transfers between your own accounts and currency exchanges are paired automatically. Refunds count against
+    the category of what you bought. Split a transaction across categories. Rules learn from your corrections.
+  - Budgets per category, a forecast of the month's end balance with a likely range, recurring and planned items.
+  - Double-entry accounting on IFRS principles underneath, with an Accounting view: the journal, manual journals
+    in any currency, the trial balance, the chart of accounts, month-end close with currency revaluation (IAS 21),
+    and costs spread over months.
+  - Four statements (financial position, profit or loss, cash flows, changes in net worth), monthly or yearly with
+    comparatives, exportable to PDF and CSV.
+  - Exchange rates come from the European Central Bank, cached on the host.
+  - A weekly reminder to import your statements (Monday 09:00 by default, adjustable).
+  - The full Finance tab on the phone, with a quick way to log a cash expense.
+  - Personal chats: the assistant can answer questions about your finances, read-only, in a chat only you see,
+    and only on a local model. It can also suggest categories for new transactions.
+- **Notifications on the phone:** a bell and a notifications screen in the phone app (while the app is open).
+- **Weekly automations:** schedules can run on chosen weekdays at a set time.
+- **The timer's Agents section** shows which tasks your assistants are working on, live.
+- PDF Studio: sections have a kind (front matter, chapter, back matter), and only chapters are numbered.
+
+### Changed
+
+- The timer pill shows your time on the task today, not the task's all-time total.
+- On very wide screens, file lists keep their details beside the names.
+
+### Fixed
+
+- "Show in folder" and Open work for shared files, instead of erroring.
+- Files refuses names that differ only by case.
+- Calendar: ending a future series, deleting a series with edited occurrences, and the month grid's days from the
+  neighbouring months.
+- Desktop: a window whose page hangs still closes, and Cmd+Q saves open edits first.
+- Local mode repairs your project memberships even when the background service isn't running.
+
+### Security
+
+- The host refuses to fetch addresses inside your own network for anything a model or a member can supply.
+  Calendar feeds and mailboxes that the owner adds keep their local reach.
+- Mailbox tests and Gmail sign-in are limited to the mailbox's own user.
+- Keys, tokens and passwords are kept out of logs and error messages.
+- Cloud-model agent runs (pi) run in a sandbox that can't read your data or the rest of the disk.
+- Approving an assistant's proposal re-checks that it's still within the chat's project.
+- Dependency updates for the security advisories that had a non-breaking fix.
+
 ## [1.0.6] - 2026-11-04
 
 - fix(tasks): review fixes for the unload save

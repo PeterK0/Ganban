@@ -97,11 +97,20 @@ fn sse_json(body: &str) -> Option<Value> {
     }
 }
 
+/// How long a mount's MCP tool list is reused before asking ragrat again.
+const MCP_TOOLS_TTL: Duration = Duration::from_secs(60);
+
+/// MCP tool lists by mount URL, with when they were fetched.
+type McpToolsCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<Value>)>>>;
+
 /// HTTP client for the ragrat control plane (search + ingest).
 #[derive(Clone)]
 pub struct RagClient {
     http: reqwest::Client,
     cfg: RagConfig,
+    /// Shared by clones, so every request sees the same cache; a new client
+    /// (the engine reconfigured) starts empty.
+    mcp_tools_cache: McpToolsCache,
 }
 
 impl RagClient {
@@ -110,7 +119,7 @@ impl RagClient {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        Self { http, cfg }
+        Self { http, cfg, mcp_tools_cache: Default::default() }
     }
 
     pub fn config(&self) -> &RagConfig {
@@ -171,12 +180,23 @@ impl RagClient {
     /// Best-effort (None if unreachable or not an MCP build). This is what makes
     /// ragrat a VISIBLE provider in the Tools inspector rather than a side door
     /// — Ganban brokers it; the tools still go through ragrat, not around it.
+    ///
+    /// A list is reused for [`MCP_TOOLS_TTL`]: the tool catalogue asks on every
+    /// open, and a handshake per request is wasted work for a list that changes
+    /// only when ragrat's mounts do. Failures aren't cached.
     pub async fn mcp_tools(&self, mount: &str) -> Option<Vec<Value>> {
         let url = format!("{}{}", self.cfg.base_url, mount);
+        if let Some((at, tools)) = self.mcp_tools_cache.lock().unwrap().get(&url) {
+            if at.elapsed() < MCP_TOOLS_TTL {
+                return Some(tools.clone());
+            }
+        }
         let sid = self.mcp_session(&url).await?;
         let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
         let body = self.mcp_post(&url, &list, Some(&sid)).await?.text().await.ok()?;
-        sse_json(&body)?.get("result").and_then(|r| r.get("tools")).and_then(Value::as_array).cloned()
+        let tools = sse_json(&body)?.get("result").and_then(|r| r.get("tools")).and_then(Value::as_array).cloned()?;
+        self.mcp_tools_cache.lock().unwrap().insert(url, (std::time::Instant::now(), tools.clone()));
+        Some(tools)
     }
 
     /// Call a tool on an MCP mount and return its text payload. Used by the
@@ -1319,5 +1339,51 @@ mod facets_tests {
         // Corrupt file → empty object, not a crash.
         std::fs::write(out.join("ganban-1").join("facets.json"), "not json").unwrap();
         assert_eq!(client.read_facets("ganban-1"), json!({}));
+    }
+
+    /// The MCP tool list is fetched once and then served from the cache, by
+    /// every clone of the client, until it goes stale.
+    #[tokio::test]
+    async fn mcp_tool_lists_are_cached_for_a_minute() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let lists = std::sync::Arc::new(AtomicUsize::new(0));
+        let lists_srv = lists.clone();
+        // A minimal MCP mount: a session id on initialize, one tool on tools/list.
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let lists = lists_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if req.contains("tools/list") {
+                        lists.fetch_add(1, Ordering::SeqCst);
+                        r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search_corpus"}]}}"#
+                    } else {
+                        r#"{"jsonrpc":"2.0","id":1,"result":{}}"#
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: s1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let (mut client, _out) = client_with_out("mcp");
+        client.cfg.base_url = base_url;
+        let first = client.mcp_tools("/mcp/").await.expect("lists the mount's tools");
+        assert_eq!(first[0]["name"], "search_corpus");
+        assert_eq!(client.clone().mcp_tools("/mcp/").await, Some(first), "a clone reads the same cache");
+        assert_eq!(lists.load(Ordering::SeqCst), 1, "asked ragrat once");
+        // Age the entry past the TTL: the next call asks again.
+        for entry in client.mcp_tools_cache.lock().unwrap().values_mut() {
+            entry.0 = entry.0.checked_sub(MCP_TOOLS_TTL).expect("the clock has run for a minute");
+        }
+        client.mcp_tools("/mcp/").await.unwrap();
+        assert_eq!(lists.load(Ordering::SeqCst), 2, "a stale list is refetched");
     }
 }

@@ -68,7 +68,7 @@ had used them since the clients moved to `/invoke` in June; their commands (`get
 `create_task`, …) are in the command table, where members get the same access rules as every
 other command. `/snapshot` stays for the Sync view.
 
-Errors: `NotFound`/row-missing → 404, `InvalidInput` → 400, else 500, body `{ "error": "..." }`.
+Errors: `NotFound`/row-missing → 404, `InvalidInput` → 400, else 500, body `{ "error": "..." }`. A refusal the client acts on (`Refused`, also 400) adds a stable `code`, e.g. `{ "error": "...", "code": "AI_FILE_TOO_LARGE" }`.
 
 ## The transport seam (`src/lib/`)
 

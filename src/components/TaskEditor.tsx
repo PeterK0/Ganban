@@ -12,8 +12,9 @@ import MarkdownPreview from './MarkdownPreview';
 import MultiSelectDropdown from './MultiSelectDropdown';
 import { open } from '@tauri-apps/plugin-dialog';
 import { openPath } from '@tauri-apps/plugin-opener';
-import { isTauri, hasDaemon, restoreSharedFile, runLocalAgentTask, submitProposal, downloadSharedFile } from '../lib/daemon';
-import { hasFilePaths, revealLocalPath, type RevealResult } from '../lib/shell';
+import { isTauri, isUnloading, hasDaemon, restoreSharedFile, runLocalAgentTask, submitProposal, downloadSharedFile, openSharedFile } from '../lib/daemon';
+import { canShowInFolder, hasFilePaths, revealFile, type RevealResult } from '../lib/shell';
+import { afterReveal, type Locatable } from '../lib/fileLocation.pure';
 import TaskVisibilityField from './TaskVisibilityField';
 import TaskVisibilityBadge, { isRestricted } from './TaskVisibilityBadge';
 import { Modal } from './gilt';
@@ -23,10 +24,16 @@ import FileBrowser, { type FileEntry } from './files/FileBrowser';
 import type { TaskUploadHandle } from './TaskUploadArea';
 import { useProjectRole } from '../lib/projectRole';
 import { onBeforeRestart } from '../lib/restartFlush';
+import { inflightSaves } from '../lib/inflightSaves';
 import {
-  applyForm, forgetPending, formFromTask, formsEqual, formToUpdate, freshest, isFormDirty, isFormSavable,
+  applyForm, FORM_FIELDS, forgetPending, formFromTask, formsEqual, formToUpdate, freshest, isFormDirty, isFormSavable,
   beginSave, rememberPending, rememberSaved, type TaskForm,
 } from '../lib/taskForm';
+
+/** A task attachment as "Show in folder" sees it. */
+function locatable(a: FileAttachment): Locatable & { id: number } {
+  return { kind: 'attachment', id: a.id, shared: !!a.is_shared, localPath: a.file_path || undefined };
+}
 
 /** Strip markdown control chars from a filename so it can sit safely inside a
  * `[text](/files/N)` link without breaking the link syntax. */
@@ -260,10 +267,12 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   const isDeleting = (taskId: number, f: TaskForm) =>
     deletingRef.current?.taskId === taskId && formsEqual(f, deletingRef.current.form);
 
+  // Saves on their way, sent again as keepalive if the page goes before they land.
+  const inflightRef = useRef(inflightSaves<UpdateTaskInput>());
   /** Send `input` for `base` to the host and remember the answer, so an editor
    * that reopens from an older copy shows it (lib/taskForm.ts, saved copies). */
   const saveToHost = async (base: Task, input: UpdateTaskInput, seq = beginSave()): Promise<Task> =>
-    rememberSaved(base, await updateTaskApi(base.id, input), seq);
+    rememberSaved(base, await inflightRef.current.track(() => updateTaskApi(base.id, input), input), seq);
   // The last form the save on close sent, so ✕ then unmount sends it once even
   // when the pending copy can't show it (a cleared cost, deadline or area).
   const sentRef = useRef<{ taskId: number; form: TaskForm } | null>(null);
@@ -274,6 +283,24 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
    * has its own save below. Rejects when the save fails. */
   const flushRef = useRef<() => Promise<void>>(async () => {});
   flushRef.current = async () => {
+    // The page is going away: a save still in flight would be cut off, so it
+    // goes out again (as keepalive). flushForm runs up to its request at once;
+    // when it sends the form, that supersedes the older form saves, which stay
+    // out (the two could land in either order). Other fields (pinned…) go again.
+    const unloading = isUnloading();
+    const sentBefore = sentRef.current;
+    const flushing = flushForm();
+    const sendsForm = sentRef.current !== sentBefore;
+    const again = unloading
+      ? inflightRef.current.resend((input) => !sendsForm || !input || !Object.keys(input).some((k) => FORM_FIELDS.has(k)))
+      : null;
+    try {
+      await flushing;
+    } finally {
+      await again;
+    }
+  };
+  const flushForm = async () => {
     const { taskId, form: f } = latestFormRef.current;
     const base = prevTaskSnapshot.current;
     // The form must belong to the task the snapshot is of: mid-switch it holds
@@ -830,10 +857,14 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   const [revealNote, setRevealNote] = useState<Record<number, RevealResult & { path: string }>>({});
   const handleShowInFolder = async (attachment: FileAttachment) => {
     try {
-      const r = await revealLocalPath(attachment.file_path);
+      const f = locatable(attachment);
+      const r = await revealFile(f);
+      const then = afterReveal(r.outcome, f);
+      // Nothing of it here, but the host has a copy: open that, not an error.
+      if (then === 'open-host-copy') await openSharedFile(attachment.id, attachment.file_name);
       setRevealNote((m) => {
         const next = { ...m };
-        if (r.outcome === 'file') delete next[attachment.id];
+        if (then !== 'note') delete next[attachment.id];
         else next[attachment.id] = { ...r, path: attachment.file_path };
         return next;
       });
@@ -1654,7 +1685,7 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
                       icon: '⇪',
                       onClick: () => void handleToggleShare(a),
                     },
-                    ...(hasFilePaths() && a.file_path
+                    ...(canShowInFolder(locatable(a))
                       ? [{ label: 'Show in folder', icon: '📂', onClick: () => void handleShowInFolder(a) }]
                       : []),
                   ];
@@ -1673,7 +1704,7 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
                         >
                           {a.is_shared ? 'Stop sharing' : 'Share with the team'}
                         </button>
-                        {hasFilePaths() && a.file_path && (
+                        {canShowInFolder(locatable(a)) && (
                           <button onClick={() => void handleShowInFolder(a)} className="g-btn g-btn-sm g-btn-ghost flex-1" title="Show in folder on this machine">
                             Show in folder
                           </button>

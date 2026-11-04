@@ -57,6 +57,23 @@ export function createCandidate(query: string, titles: string[]): string | null 
   return titles.some((t) => t.trim().replace(/\s+/g, ' ').toLowerCase() === key) ? null : q;
 }
 
+/** The tag picker's "Create task": create it, then add it to the tags as they are by
+ * then (`current`, read after the await). A refusal tags nothing and gives back the
+ * host's message for the picker to show. */
+export async function createAndTag(
+  create: (title: string) => Promise<{ id: number }>,
+  title: string,
+  current: () => number[]
+): Promise<{ tags: number[] } | { error: string }> {
+  try {
+    const task = await create(title);
+    const now = current();
+    return { tags: now.includes(task.id) ? now : [...now, task.id] };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Move a highlighted row by `delta`, wrapping; -1 when there are no rows. */
 export function moveCursor(cursor: number, delta: number, count: number): number {
   if (count <= 0) return -1;

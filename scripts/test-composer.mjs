@@ -12,7 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(mkdtempSync(join(tmpdir(), 'composer-')), 'composer.mjs');
 execSync(`npx esbuild src/lib/composer.pure.ts --format=esm --outfile=${out} --log-level=error`, { cwd: root, stdio: 'inherit' });
 
-const { fieldHeight, clampDrag, parseHeight, createCandidate, moveCursor, DRAG_MIN } = await import(out);
+const { fieldHeight, clampDrag, parseHeight, createCandidate, createAndTag, moveCursor, DRAG_MIN } = await import(out);
 let pass = 0, fail = 0;
 const eq = (got, want, m) => {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -56,6 +56,15 @@ eq(moveCursor(2, 1, 3), 0, 'down wraps');
 eq(moveCursor(0, -1, 3), 2, 'up wraps');
 eq(moveCursor(-1, 1, 3), 0, 'down from nothing lands on the first row');
 eq(moveCursor(0, 1, 0), -1, 'no rows');
+
+// "Create task" then tag it; a host refusal tags nothing and shows the host's message.
+let tags = [3];
+eq(await createAndTag(async () => ({ id: 9 }), 'New', () => tags), { tags: [3, 9] }, 'created and tagged');
+eq(await createAndTag(async () => { tags = [3, 4]; return { id: 9 }; }, 'New', () => tags), { tags: [3, 4, 9] }, 'tags picked meanwhile are kept');
+eq(await createAndTag(async () => ({ id: 3 }), 'New', () => [3]), { tags: [3] }, 'never tagged twice');
+const refuse = async () => { throw new Error('Not found: project'); };
+eq(await createAndTag(refuse, 'New', () => [3]), { error: 'Not found: project' }, 'the host refuses: its message, no tags');
+eq(await createAndTag(async () => { throw 'Forbidden: owner only'; }, 'New', () => [3]), { error: 'Forbidden: owner only' }, 'a string refusal (local mode) too');
 
 console.log(`composer: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

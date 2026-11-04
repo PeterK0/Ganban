@@ -16,6 +16,8 @@ import {
   getEvent,
 } from '../lib/api';
 import { onBeforeRestart } from '../lib/restartFlush';
+import { inflightSaves } from '../lib/inflightSaves';
+import { isUnloading } from '../lib/daemon';
 import { copyEvent, movedEventDate, singleDayOf } from '../lib/eventCopy';
 import { deleteDays, detachDay, markDays, splitAt, type SeriesScope } from '../lib/eventSeries';
 import { parseExdates } from '../lib/recur.pure';
@@ -217,6 +219,8 @@ export default function EventEditor({ event, occurrence = null, onReplaced, onSa
     return askingRef.current ?? Promise.resolve(null);
   };
   const chain = useRef<Promise<unknown>>(Promise.resolve());
+  // Updates on their way, sent again as keepalive if the page goes before they land.
+  const inflightRef = useRef(inflightSaves());
   const [saveState, setSaveState] = useState<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -268,7 +272,7 @@ export default function EventEditor({ event, occurrence = null, onReplaced, onSa
         // The whole series moves: its skipped days move with it.
         input.exdates = parseExdates(latest.exdates).map((d) => shiftDay(d, occ, f.eventDate)).join(',') || null;
       }
-      const updated = await updateEventApi(base.id, input);
+      const updated = await inflightRef.current.track(() => updateEventApi(base.id, input));
       if (baseRef.current?.id === base.id) {
         baseRef.current = updated;
         if (occ && input.event_date) {
@@ -326,8 +330,16 @@ export default function EventEditor({ event, occurrence = null, onReplaced, onSa
   // Closing the editor (or the app restarting into an update) saves what's open.
   useEffect(() => {
     const flush = async () => {
-      const base = baseRef.current;
-      if (base) await persist(base, formRef.current, true);
+      // The page is going away: an update still in flight would be cut off,
+      // and this save queues behind it, so the update goes out again (as
+      // keepalive) now. Days split off a series aren't re-sent: not idempotent.
+      const again = isUnloading() ? inflightRef.current.resend() : null;
+      try {
+        const base = baseRef.current;
+        if (base) await persist(base, formRef.current, true);
+      } finally {
+        await again;
+      }
     };
     const offRestart = onBeforeRestart(flush);
     return () => {

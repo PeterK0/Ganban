@@ -3,6 +3,16 @@ import { confirmDialog } from '../lib/confirm';
 import { listRules, createRule, updateRule, deleteRule, type Rule } from '../lib/api';
 import { useAppStore } from '../store/appStore';
 import { getActiveWorkspaceId, LOCAL_ID } from '../lib/workspaces';
+import {
+  WEEKDAYS,
+  cadenceProblem,
+  defaultCadence,
+  describeCadence,
+  formatCadence,
+  parseCadence,
+  type Cadence,
+  type CadenceMode,
+} from '../lib/scheduleCadence';
 
 // Settings → Automations: the owner's native rules (Epoch M(a)). A rule is
 // "When <trigger> [filters], <action>" — executed by the host engine on the
@@ -33,8 +43,8 @@ interface Draft {
   id: number | null;
   name: string;
   triggerKind: string;
-  /** For 'schedule': the cadence ("30 min" / "2 hours" / "07:00" daily). */
-  every: string;
+  /** For 'schedule': interval, daily or weekly (lib/scheduleCadence.ts). */
+  cadence: Cadence;
   status: string; // '' = any (for status_changed)
   projectId: number | ''; // '' = any project
   actionKind: string;
@@ -48,7 +58,7 @@ const blankDraft = (): Draft => ({
   id: null,
   name: '',
   triggerKind: 'task.status_changed',
-  every: '1 hour',
+  cadence: defaultCadence(),
   status: 'Blocked',
   projectId: '',
   actionKind: 'comment',
@@ -64,7 +74,7 @@ function describe(rule: Rule, projectName: (id: number) => string): string {
   try { t = JSON.parse(rule.trigger_json); } catch { /* */ }
   try { a = JSON.parse(rule.action_json); } catch { /* */ }
   const trig = t.kind === 'schedule'
-    ? (/^\d{1,2}:\d{2}$/.test(t.every ?? '') ? `daily at ${t.every}` : `every ${t.every ?? '?'}`)
+    ? describeCadence(t.every)
     : TRIGGERS.find((x) => x.kind === t.kind)?.label ?? t.kind ?? '?';
   const status = t.kind === 'task.status_changed' && t.status ? ` to ${t.status}` : '';
   const scope = t.project_id ? ` in ${projectName(t.project_id)}` : '';
@@ -109,7 +119,7 @@ export default function AutomationsPanel() {
       id: rule.id,
       name: rule.name,
       triggerKind: t.kind ?? 'task.status_changed',
-      every: t.every ?? '1 hour',
+      cadence: parseCadence(t.every),
       status: t.status ?? '',
       projectId: t.project_id ?? '',
       actionKind: a.kind ?? 'comment',
@@ -122,11 +132,12 @@ export default function AutomationsPanel() {
 
   const save = async () => {
     if (!draft || !draft.name.trim() || busy) return;
+    if (draft.triggerKind === 'schedule' && cadenceProblem(draft.cadence)) return;
     setBusy(true);
     setError(null);
     const trigger: any = { kind: draft.triggerKind };
     if (draft.triggerKind === 'task.status_changed' && draft.status) trigger.status = draft.status;
-    if (draft.triggerKind === 'schedule') trigger.every = draft.every.trim();
+    if (draft.triggerKind === 'schedule') trigger.every = formatCadence(draft.cadence);
     // event.created has no project at creation (events link to projects after),
     // so a project filter there could never match — don't write one.
     if (draft.projectId !== '' && draft.triggerKind !== 'event.created' && draft.triggerKind !== 'schedule') trigger.project_id = draft.projectId;
@@ -204,13 +215,8 @@ export default function AutomationsPanel() {
               )}
             </div>
             {draft.triggerKind === 'schedule' && (
-              <div>
-                <input
-                  value={draft.every}
-                  onChange={(e) => setDraft({ ...draft, every: e.target.value })}
-                  placeholder="e.g. 1 hour · 30 min · 07:00 (daily)"
-                  className={input}
-                />
+              <div className="space-y-2">
+                <ScheduleField cadence={draft.cadence} onChange={(cadence) => setDraft({ ...draft, cadence })} />
                 <p className="text-xs text-subtext-0 mt-1">
                   Fires on the host's clock (5-minute floor). Scheduled rules can only notify — a clock tick has no task or event behind it.
                 </p>
@@ -261,7 +267,7 @@ export default function AutomationsPanel() {
             </label>
             <div className="flex gap-2">
               <button onClick={() => setDraft(null)} className="g-btn g-btn-ghost">Cancel</button>
-              <button onClick={save} disabled={!draft.name.trim() || busy} className="g-btn g-btn-pri">{busy ? 'Saving…' : draft.id == null ? 'Create rule' : 'Save'}</button>
+              <button onClick={save} disabled={!draft.name.trim() || busy || (draft.triggerKind === 'schedule' && !!cadenceProblem(draft.cadence))} className="g-btn g-btn-pri">{busy ? 'Saving…' : draft.id == null ? 'Create rule' : 'Save'}</button>
             </div>
           </div>
         </div>
@@ -294,6 +300,70 @@ export default function AutomationsPanel() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+const DAY_NAMES: Record<string, string> = {
+  Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday',
+};
+
+/** The schedule trigger's cadence: every N (interval), daily at a time, or
+ * weekly on picked days at a time. */
+function ScheduleField({ cadence, onChange }: { cadence: Cadence; onChange: (c: Cadence) => void }) {
+  const set = (patch: Partial<Cadence>) => onChange({ ...cadence, ...patch });
+  const toggleDay = (d: Cadence['days'][number]) =>
+    set({ days: cadence.days.includes(d) ? cadence.days.filter((x) => x !== d) : WEEKDAYS.filter((x) => x === d || cadence.days.includes(x)) });
+  const problem = cadenceProblem(cadence);
+  return (
+    <div className="space-y-2">
+      <div className="g-seg" role="group" aria-label="Repeats">
+        {(
+          [
+            ['interval', 'Every…'],
+            ['daily', 'Daily'],
+            ['weekly', 'Weekly'],
+          ] as [CadenceMode, string][]
+        ).map(([mode, label]) => (
+          <button key={mode} type="button" aria-pressed={cadence.mode === mode} onClick={() => set({ mode })} className="g-chip">
+            {label}
+          </button>
+        ))}
+      </div>
+      {cadence.mode === 'interval' ? (
+        <input
+          value={cadence.interval}
+          onChange={(e) => set({ interval: e.target.value })}
+          placeholder="e.g. 1 hour · 30 min · 2 days"
+          aria-label="How often"
+          className="g-field"
+        />
+      ) : (
+        <div className="flex items-center gap-3 flex-wrap">
+          {cadence.mode === 'weekly' && (
+            <div className="g-seg" role="group" aria-label="Days of the week">
+              {WEEKDAYS.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  aria-pressed={cadence.days.includes(d)}
+                  aria-label={DAY_NAMES[d]}
+                  title={DAY_NAMES[d]}
+                  onClick={() => toggleDay(d)}
+                  className="g-chip !px-0 w-9 justify-center"
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm text-subtext-0">
+            at
+            <input type="time" value={cadence.time} onChange={(e) => set({ time: e.target.value })} className="g-field !w-auto" />
+          </label>
+        </div>
+      )}
+      {problem && <p className="text-xs text-error">{problem}</p>}
     </div>
   );
 }

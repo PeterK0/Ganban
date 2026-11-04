@@ -6,6 +6,7 @@
 //! per line, `{"message":{"content":…},"done":bool}`) — simpler + more robust to
 //! parse than OpenAI SSE framing, and it exposes Ollama's options cleanly.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_stream::stream;
@@ -36,17 +37,40 @@ impl OllamaConfig {
     /// `{"base_url":…}` — written from Settings; falls back to env, then the
     /// localhost default. Always yields a config (Ollama is the local default).
     pub async fn from_db(db: &ganban_core::Db) -> Self {
-        let from_settings = ganban_core::ops::get_app_setting(db, "ollama_connection")
+        let setting = ganban_core::ops::get_app_setting(db, "ollama_connection")
             .await
             .ok()
             .flatten()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.get("base_url").and_then(|b| b.as_str()).and_then(Self::norm));
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        let env_timeout = std::env::var("GANBAN_OLLAMA_TIMEOUT_SECS").ok();
+        GENERATION_TIMEOUT_SECS.store(generation_timeout_from(setting.as_ref(), env_timeout.as_deref()), Ordering::Relaxed);
+        let from_settings = setting.and_then(|v| v.get("base_url").and_then(|b| b.as_str()).and_then(Self::norm));
         let base = from_settings
             .or_else(|| std::env::var("GANBAN_OLLAMA_URL").ok().and_then(|s| Self::norm(&s)))
             .unwrap_or_else(|| Self::DEFAULT.to_string());
         Self { base_url: base }
     }
+}
+
+/// Default cap on one generation (a chat turn or a whole streamed answer):
+/// long enough for a slow machine writing thousands of tokens, short enough
+/// that a stuck model frees its caller.
+const DEFAULT_GENERATION_TIMEOUT_SECS: u64 = 20 * 60;
+/// Cap on the quick calls (model list, model info, embedding probe).
+const QUICK_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The generation cap in force, set from `ollama_connection.timeout_secs` (or
+/// `GANBAN_OLLAMA_TIMEOUT_SECS`) whenever the config is read from the database.
+static GENERATION_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_GENERATION_TIMEOUT_SECS);
+
+/// The generation timeout a setting asks for: whole seconds, at least a minute.
+fn generation_timeout_from(setting: Option<&Value>, env: Option<&str>) -> u64 {
+    setting
+        .and_then(|v| v.get("timeout_secs"))
+        .and_then(Value::as_u64)
+        .or_else(|| env.and_then(|e| e.trim().parse::<u64>().ok()))
+        .map(|s| s.max(60))
+        .unwrap_or(DEFAULT_GENERATION_TIMEOUT_SECS)
 }
 
 /// Per-request generation parameters (from the active model profile).
@@ -122,6 +146,8 @@ pub type SharedOllama = std::sync::Arc<tokio::sync::RwLock<Option<OllamaClient>>
 pub struct OllamaClient {
     http: reqwest::Client,
     cfg: OllamaConfig,
+    /// Overall cap on one generation request, body included.
+    generation_timeout: Duration,
 }
 
 impl OllamaClient {
@@ -137,13 +163,28 @@ impl OllamaClient {
     }
 
     pub fn new(cfg: OllamaConfig) -> Self {
-        // No overall timeout: chat streams can run for minutes. A connect timeout
-        // still bounds "Ollama isn't there".
+        Self::with_timeout(cfg, Duration::from_secs(GENERATION_TIMEOUT_SECS.load(Ordering::Relaxed)))
+    }
+
+    /// A client whose generations give up after `generation_timeout`. The
+    /// client itself has only a connect timeout ("Ollama isn't there"); each
+    /// request sets its own overall cap, because a model pull is a download
+    /// that may rightly take far longer than any generation.
+    pub fn with_timeout(cfg: OllamaConfig, generation_timeout: Duration) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default();
-        Self { http, cfg }
+        Self { http, cfg, generation_timeout }
+    }
+
+    /// A send error as the user should read it: a timeout says so.
+    fn describe(&self, e: reqwest::Error) -> String {
+        if e.is_timeout() && !e.is_connect() {
+            format!("Ollama gave no answer within {} s (the generation timeout)", self.generation_timeout.as_secs())
+        } else {
+            format!("Ollama unreachable: {e}")
+        }
     }
 
     pub fn config(&self) -> &OllamaConfig {
@@ -153,7 +194,7 @@ impl OllamaClient {
     /// Names of locally-available models (`GET /api/tags`). Doubles as a reachability probe.
     pub async fn list_models(&self) -> Result<Vec<String>, String> {
         let url = format!("{}/api/tags", self.cfg.base_url);
-        let resp = self.http.get(&url).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp = self.http.get(&url).timeout(QUICK_TIMEOUT).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("Ollama {}", resp.status()));
         }
@@ -176,6 +217,7 @@ impl OllamaClient {
             .http
             .post(&url)
             .json(&json!({ "model": model, "name": model }))
+            .timeout(QUICK_TIMEOUT)
             .send()
             .await
             .map_err(|e| format!("Ollama unreachable: {e}"))?;
@@ -214,7 +256,14 @@ impl OllamaClient {
         });
 
         let url = format!("{}/api/chat", self.cfg.base_url);
-        let resp = self.http.post(&url).json(&body).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(self.generation_timeout)
+            .send()
+            .await
+            .map_err(|e| self.describe(e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let detail = resp.text().await.unwrap_or_default();
@@ -284,7 +333,14 @@ impl OllamaClient {
             body["tools"] = Value::Array(tools.to_vec());
         }
         let url = format!("{}/api/chat", self.cfg.base_url);
-        let resp = self.http.post(&url).json(&body).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(self.generation_timeout)
+            .send()
+            .await
+            .map_err(|e| self.describe(e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             return Err(format!("Ollama {status}: {}", resp.text().await.unwrap_or_default().trim()));
@@ -298,6 +354,47 @@ impl OllamaClient {
             .map(|arr| arr.iter().filter_map(parse_tool_call).collect())
             .unwrap_or_default();
         Ok(ChatTurn { content, tool_calls, usage: parse_usage(&v) })
+    }
+
+    /// One non-streamed answer constrained to a JSON object (`format: "json"`), with no
+    /// thinking phase (`think: false`): a thinking model would otherwise spend the token budget
+    /// before it answers. An engine that refuses `think` is asked again without it. Returns the
+    /// answer's text.
+    pub async fn chat_json(&self, params: &ChatParams, messages: &[Value]) -> Result<String, String> {
+        let mut options = serde_json::Map::new();
+        if let Some(t) = params.temperature {
+            options.insert("temperature".into(), json!(t));
+        }
+        if let Some(n) = params.max_tokens {
+            options.insert("num_predict".into(), json!(n));
+        }
+        if let Some(c) = params.num_ctx {
+            options.insert("num_ctx".into(), json!(c));
+        }
+        let mut body = json!({
+            "model": params.model,
+            "messages": messages,
+            "stream": false,
+            "format": "json",
+            "think": false,
+            "options": Value::Object(options),
+        });
+        let url = format!("{}/api/chat", self.cfg.base_url);
+        for attempt in 0..2 {
+            let resp = self.http.post(&url).json(&body).timeout(self.generation_timeout).send().await.map_err(|e| self.describe(e))?;
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                if attempt == 0 && text.contains("think") {
+                    body.as_object_mut().map(|o| o.remove("think"));
+                    continue;
+                }
+                return Err(format!("Ollama {status}: {}", text.trim()));
+            }
+            let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+            return Ok(v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or("").to_string());
+        }
+        Err("Ollama refused the request".into())
     }
 
     /// Pull a model (`POST /api/pull`), streaming Ollama's NDJSON progress
@@ -339,7 +436,7 @@ impl OllamaClient {
     pub async fn embed_dimensions(&self, model: &str) -> Result<usize, String> {
         let body = json!({ "model": model, "input": "dimension probe" });
         let url = format!("{}/v1/embeddings", self.cfg.base_url);
-        let resp = self.http.post(&url).json(&body).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp = self.http.post(&url).json(&body).timeout(QUICK_TIMEOUT).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             return Err(format!("Ollama {status}: {}", resp.text().await.unwrap_or_default().trim()));
@@ -423,6 +520,38 @@ fn parse_tool_call(v: &Value) -> Option<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_generation_timeout_is_configurable() {
+        assert_eq!(generation_timeout_from(None, None), DEFAULT_GENERATION_TIMEOUT_SECS);
+        assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 3600 })), None), 3600);
+        assert_eq!(generation_timeout_from(None, Some("1800")), 1800);
+        assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 600 })), Some("1800")), 600, "the setting wins");
+        assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 5 })), None), 60, "at least a minute");
+        assert_eq!(generation_timeout_from(Some(&json!({ "base_url": "x" })), Some("nope")), DEFAULT_GENERATION_TIMEOUT_SECS);
+    }
+
+    /// A model that accepts the request and then never answers frees its
+    /// caller once the overall timeout passes (a connect timeout alone would
+    /// wait for ever).
+    #[tokio::test]
+    async fn a_stuck_model_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock); // read nothing, answer nothing
+            }
+        });
+        let client = OllamaClient::with_timeout(OllamaConfig { base_url }, Duration::from_millis(300));
+        let params = ChatParams { model: "m".into(), temperature: None, max_tokens: None, num_ctx: None, endpoint: None };
+        let started = std::time::Instant::now();
+        let err = client.chat_once(&params, &[], &[]).await.err().expect("must give up");
+        assert!(err.contains("generation timeout"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(client.chat_stream(&params, vec![]).await.is_err(), "the stream's request is capped too");
+    }
 
     #[test]
     fn parses_a_tool_call_with_object_args() {

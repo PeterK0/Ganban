@@ -24,6 +24,7 @@ import {
   type PDFRef,
   type PDFDict,
 } from "pdf-lib";
+import { numberSections, type SectionKind } from "./sectionKinds";
 
 (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = pdfjsWorker;
 
@@ -37,7 +38,11 @@ export interface TocEntry {
   startPage: number;
   endPage: number;
   level: number;
+  /** 1-based among chapters only; 0 for front and back matter. */
   chapterNum: number;
+  kind: SectionKind;
+  /** The user's choice of kind, kept so a re-edit doesn't re-guess it. */
+  kindOverride?: SectionKind;
   children: TocEntry[];
 }
 
@@ -47,6 +52,8 @@ export interface FlatEntry {
   title: string;
   startPage: number;
   level: number;
+  /** Set when the user picked a kind; absent means guessed from the title. */
+  kind?: SectionKind;
 }
 
 /** The shape pdf.js getOutline() returns (just the fields we read). */
@@ -143,7 +150,8 @@ export async function buildTocTree(
       startPage,
       endPage: 0, // second pass
       level,
-      chapterNum,
+      chapterNum, // provisional: renumberToc assigns the real one
+      kind: "chapter",
       children,
     });
   }
@@ -171,7 +179,7 @@ export function assignEndPages(entries: TocEntry[], parentEnd: number): void {
 
 export function flattenToc(entries: TocEntry[], level = 0, out: FlatEntry[] = []): FlatEntry[] {
   for (const e of entries) {
-    out.push({ id: e.id, title: e.title, startPage: e.startPage, level });
+    out.push({ id: e.id, title: e.title, startPage: e.startPage, level, kind: e.kindOverride });
     if (e.children.length > 0) flattenToc(e.children, level + 1, out);
   }
   return out;
@@ -188,25 +196,32 @@ export function nestFlat(flat: FlatEntry[]): TocEntry[] {
 
   const root: TocEntry[] = [];
   const childArrays: TocEntry[][] = [root];
-  let counter = 0;
+  const numbered = numberSections(normalized);
 
-  for (const e of normalized) {
-    counter += 1;
+  normalized.forEach((e, i) => {
     const entry: TocEntry = {
       id: e.id,
       title: e.title.trim() || "Untitled",
       startPage: e.startPage,
       endPage: 0,
       level: e.level,
-      chapterNum: counter,
+      chapterNum: numbered[i].chapterNum,
+      kind: numbered[i].kind,
+      kindOverride: e.level === 0 ? e.kind : undefined,
       children: [],
     };
     childArrays[e.level].push(entry);
     childArrays.length = e.level + 1;
     childArrays.push(entry.children);
-  }
+  });
 
   return root;
+}
+
+/** Give a tree read from a PDF outline its kinds and chapter numbers
+ * (end pages are left for assignEndPages). */
+export function renumberToc(entries: TocEntry[]): TocEntry[] {
+  return nestFlat(flattenToc(entries));
 }
 
 export function newFlatId(): string {

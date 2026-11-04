@@ -313,6 +313,36 @@ mod tests {
         assert!(run(&cx, "get_event", json!({ "eventId": ea })).await.unwrap()["series_id"].is_null());
     }
 
+    #[tokio::test]
+    async fn deleting_a_series_bins_its_one_off_copies_and_restoring_brings_them_back() {
+        let db = test_db("events_series_bin").await;
+        let (_, _, ea, _, _) = world(&db).await;
+        let cx = Ctx::in_process(&db);
+        run(&cx, "update_event", json!({ "eventId": ea, "input": { "rrule": "FREQ=DAILY", "exdates": "2026-10-14,2026-10-15" } })).await.unwrap();
+        let copy = |title: &str| {
+            let mut c = event(title);
+            c["input"]["series_id"] = json!(ea);
+            c
+        };
+        let kept = run(&cx, "create_event", copy("Moved day")).await.unwrap()["id"].as_i64().unwrap();
+        let alone = run(&cx, "create_event", copy("Binned on its own")).await.unwrap()["id"].as_i64().unwrap();
+        let other = run(&cx, "create_event", event("Unrelated")).await.unwrap()["id"].as_i64().unwrap();
+        let archived = |id: i64| {
+            let db = db.clone();
+            async move { sqlx::query_scalar::<_, bool>("SELECT archived FROM events WHERE id = ?").bind(id).fetch_one(&db).await.unwrap() }
+        };
+
+        run(&cx, "delete_event", json!({ "eventId": alone })).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        run(&cx, "delete_event", json!({ "eventId": ea })).await.unwrap();
+        assert!(archived(ea).await && archived(kept).await, "the copy goes to the Bin with its series");
+        assert!(!archived(other).await, "an unrelated event stays");
+
+        run(&cx, "restore_event", json!({ "eventId": ea })).await.unwrap();
+        assert!(!archived(ea).await && !archived(kept).await, "restoring the series brings its copy back");
+        assert!(archived(alone).await, "a copy binned on its own stays in the Bin");
+    }
+
     fn temp_root(tag: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("ganban_event_files_{}_{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

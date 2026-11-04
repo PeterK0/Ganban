@@ -529,6 +529,8 @@ let unloading = false;
 /** Browsers allow 64 KiB of keepalive bodies in flight per page, in bytes. */
 const KEEPALIVE_BUDGET = 60_000;
 let keepaliveBytes = 0;
+/** Whether the page is going away (setUnloading). */
+export const isUnloading = (): boolean => unloading;
 export function setUnloading(on: boolean): void {
   unloading = on;
   keepaliveBytes = 0;
@@ -588,9 +590,11 @@ export async function daemonFetch<T>(
 
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let code: string | undefined;
     try {
       const body = await res.json();
       if (body && typeof body.error === "string") msg = body.error;
+      if (body && typeof body.code === "string") code = body.code;
     } catch {
       /* non-JSON error body */
     }
@@ -598,7 +602,7 @@ export async function daemonFetch<T>(
     if (res.status === 401) {
       handleUnauthorized();
     }
-    throw new DaemonError(msg, res.status);
+    throw new DaemonError(msg, res.status, code);
   }
 
   if (res.status === 204) return undefined as T;
@@ -1851,6 +1855,11 @@ export async function setActiveProfile(id: number): Promise<void> {
   await daemonFetch("/ai/active-profile", { method: "POST", body: JSON.stringify({ id }) });
 }
 
+/** The caller's personal container (hidden from project lists), made on first ask: where
+ * their Personal chats live. Only they reach it, the host owner included. */
+export async function personalSpaceId(): Promise<number> {
+  return (await daemonInvoke<{ projectId: number }>("ensure_personal_space")).projectId;
+}
 /** A member's chat threads in a project (their own). */
 export async function listChats(projectId: number): Promise<Chat[]> {
   return daemonFetch<Chat[]>(`/chats?project_id=${projectId}`, { method: "GET" });

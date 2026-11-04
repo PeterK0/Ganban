@@ -20,10 +20,28 @@ export interface TabPane {
   render: (params: URLSearchParams) => ReactNode | null;
 }
 
+/**
+ * A top-level view of its own, beside Home and Projects in the sidebar. It shows only when the host
+ * reports the tab at `GET /tabs` and the user turned it on in Settings → Plug-ins (a per-user host
+ * setting, `RAIL_SETTING`), so a part of the app nobody asked for stays out of the way.
+ */
+export interface TabRail {
+  label: string;
+  icon: TabIconName;
+  view: LazyExoticComponent<ComponentType>;
+  /** One line for the Plug-ins switch. */
+  description?: string;
+}
+
+/** The user setting that turns a module's rail view on (`"on"`), per user, on the host. */
+export const RAIL_SETTING = (id: string) => `rail:${id}`;
+
 export interface TabModule {
   /** The host catalog's tab id. */
   id: string;
-  panel: LazyExoticComponent<ComponentType<TabPanelProps>>;
+  /** The project tab. A module with only a `rail` view has none, and isn't offered per project. */
+  panel?: LazyExoticComponent<ComponentType<TabPanelProps>>;
+  rail?: TabRail;
   icon?: TabIconName;
   /** Lower-case catalog names that also map to `icon` (a host that sends no id match). */
   names?: string[];
@@ -43,6 +61,12 @@ export const TAB_MODULES: TabModule[] = Object.keys(found)
   .map((k) => found[k].default);
 
 for (const m of TAB_MODULES) if (m.subViews) registerSubView(m.id, m.subViews);
+
+/** The modules with a rail view. */
+export const RAIL_MODULES = TAB_MODULES.filter((m) => m.rail);
+
+/** Whether a host tab id is a project tab: everything but a module that is only a rail view. */
+export const isProjectTab = (id: string): boolean => !TAB_MODULES.some((m) => m.id === id && m.rail && !m.panel);
 
 /** The module page for `?pane=<name>`, if a tab owns one. */
 export const tabPane = (pane: string | null): TabPane | undefined =>

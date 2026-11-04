@@ -16,8 +16,8 @@ _Avoid_: endpoint, RPC, action
 The declaration of who may run a command: the owner only, a project admin, a member of the project the arguments point
 at, or any member with the results filtered. A few commands need more: an admin of any project (the shared calendar and
 address book), or the user the arguments name, themselves (personal settings and PINs, which the owner may also reset).
-On a task, or anything on one, the caller must also be in the task's audience. A command without an access rule is
-refused.
+On a task, or anything on one, the caller must also be in the task's audience. Finance commands reach only the caller's
+own entity, with no owner bypass. A command without an access rule is refused.
 _Avoid_: permission check, policy, authorize arm
 
 **Result filter**:
@@ -106,3 +106,55 @@ _Avoid_: save file, blob
 A tab in its own folder that registers itself through `src/tabs/<folder>/module.tsx` (`src/tabs/modules.ts`): panel,
 icon, sub-views, pages and settings cards. A build without the folder has no such tab and nothing breaks.
 _Avoid_: plugin (tabs are compiled in; nothing installs at run time)
+
+### Finance
+
+**Entity**:
+The personal reporting entity whose books Finance keeps: one per user, private to them (ADR 0009). Its functional
+currency, chart and entries belong to it alone.
+_Avoid_: ledger, book, finance account
+
+**Functional currency**:
+The currency an entity's books balance in (euros unless the user picks another). Amounts in other currencies are
+translated into it at the spot rate of their date.
+_Avoid_: base currency, home currency
+
+**Ledger account**:
+One account of an entity's chart: an asset, a liability, equity, income or an expense. Every line of a journal entry
+posts to one.
+_Avoid_: GL account, account (alone, it means a financial account)
+
+**Category**:
+An income or expense ledger account, as everyday screens show it ("Groceries", "Salary"). Categorising a bank line
+picks the ledger accounts on its other side.
+_Avoid_: tag, label, bucket
+
+**Financial account**:
+A bank, savings, card, cash or loan account the user holds, with its own ledger account: an asset, or a liability
+for a card or a loan.
+_Avoid_: bank account (it may be a card or cash), wallet
+
+**Source line**:
+One row of an imported statement, kept as it came. It is the evidence a journal entry is built from, and how a
+re-import knows the row is already in.
+_Avoid_: transaction, statement row (in code), import row
+
+**Journal entry**:
+A dated set of lines, debits and credits, that balances in the functional currency. An imported one starts as a
+draft in the inbox and is posted once the user has checked it.
+_Avoid_: transaction, booking, posting (posting is the step from draft to posted)
+
+**Transfer pair**:
+Two journal entries that are the two sides of one move between the user's own financial accounts (or one currency
+exchange), matched so the move nets to zero instead of counting as income and spending.
+_Avoid_: match, link, internal transaction
+
+**Personal chat**:
+A chat in the user's personal container, listed under "Personal" in the chat list. Only its user sees it, the host
+owner included, and it's the one place the assistant may read their finances, on a local model.
+_Avoid_: private chat (a project chat is private to its author until shared), finance chat
+
+**Period close**:
+Locking a month of an entity's books once it's reported. Entries in a closed period can't be edited or deleted; a
+correction is a dated reversal in an open period.
+_Avoid_: lock, freeze, month end (month end is the date; closing is the act)

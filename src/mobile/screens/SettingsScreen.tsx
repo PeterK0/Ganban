@@ -8,6 +8,8 @@ import AccountScreen from "./AccountScreen";
 import { buildLabel } from "../../lib/build";
 import UsersScreen from "./UsersScreen";
 import { UpdateSection } from "../AppUpdate";
+import RailSwitches from "../../components/RailSwitches";
+import { offeredRails, useRailTabs } from "../../store/railTabs";
 
 export default function SettingsScreen({ onDisconnect }: { onDisconnect: () => void }) {
   const nav = useNav();
@@ -17,6 +19,7 @@ export default function SettingsScreen({ onDisconnect }: { onDisconnect: () => v
   // let anyone "activate" anyone — a switch that changed labels and nothing
   // else, while hiding the real account and its devices one screen away.
   const { data: me, loading } = useAsync<MeResponse>(() => getMe(), []);
+  const hasSections = useRailTabs((s) => offeredRails(s.hostTabs).length > 0);
 
   return (
     <Screen title="Settings" onBack={nav.pop}>
@@ -82,6 +85,17 @@ export default function SettingsScreen({ onDisconnect }: { onDisconnect: () => v
             </button>
           )}
         </div>
+      )}
+
+      {/* Optional parts of the app (Finance): the same per-user switches as the desktop's
+          Settings → Plug-ins → Sections. */}
+      {hasSections && (
+        <>
+          <SectionHeader>Sections</SectionHeader>
+          <div className="px-4 gm-touch">
+            <RailSwitches bare />
+          </div>
+        </>
       )}
 
       {/* Android only (renders nothing elsewhere). */}

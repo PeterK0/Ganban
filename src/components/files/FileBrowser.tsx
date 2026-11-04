@@ -25,6 +25,7 @@ import {
   servingFromThisMachine,
 } from '../../lib/daemon';
 import { confirmDialog } from '../../lib/confirm';
+import { AI_FILE_TOO_LARGE, hostErrorCode } from '../../lib/hostError.pure';
 import { hasFilePaths } from '../../lib/shell';
 import { openInProjectTasks } from '../../lib/gotoTask';
 import { useProjectRole } from '../../lib/projectRole';
@@ -127,6 +128,9 @@ const THUMB_CAP = 8 * 1024 * 1024;
 const PREVIEW_CAP = 20 * 1024 * 1024;
 
 const blobPath = (e: FileEntry) => (e.kind === 'project' ? `/projects/files/${e.id}/download` : `/files/${e.id}`);
+/** The list's name column: it grows with the pane up to a readable width, so on an
+ * ultrawide the details sit beside the names and the spare width ends the row. */
+const NAME_COL = 'flex-1 min-w-0 max-w-[60rem]';
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const dirOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 
@@ -588,9 +592,8 @@ export default function FileBrowser({
       try {
         await setFileAiIncluded(e.kind, e.id, on);
       } catch (x) {
-        const size = /This file is ([^,]+), over/.exec(errText(x));
-        if (!on || !size) throw x;
-        if (await confirmDialog(`This file is ${size[1]}; index it anyway? Indexing a file this big can take hours.`)) {
+        if (!on || hostErrorCode(x) !== AI_FILE_TOO_LARGE) throw x;
+        if (await confirmDialog(`This file is ${fmtSize(e.size)}; index it anyway? Indexing a file this big can take hours.`)) {
           await setFileAiIncluded(e.kind, e.id, true, true);
         }
       }
@@ -906,10 +909,14 @@ export default function FileBrowser({
             className={`g-row !min-h-10 !py-1.5 cursor-pointer ${cursor === `d:${f}` ? 'g-sel' : ''}`}
           >
             <span className="w-6 text-center">📂</span>
-            {renameField(`d:${f}`, 'g-field g-field-sm flex-1') ?? (
-              <span className="text-sm font-medium text-text truncate flex-1">{folderLabel(f)}</span>
+            {renameField(`d:${f}`, `g-field g-field-sm ${NAME_COL}`) ?? (
+              <span className={`text-sm font-medium text-text truncate ${NAME_COL}`}>{folderLabel(f)}</span>
             )}
-            <span className="text-[11px] text-subtext-0">folder</span>
+            {/* The same column slots as a file row, so "folder" sits under Size. */}
+            {!narrow && <span className="shrink-0 w-28" />}
+            {!narrow && <span className="shrink-0 w-14" />}
+            <span className="shrink-0 w-20" />
+            <span className="text-[11px] text-subtext-0 shrink-0 w-16 text-right">folder</span>
           </div>
         ))}
         {files.map((e) => (
@@ -927,7 +934,7 @@ export default function FileBrowser({
             className={`g-row !min-h-10 !py-1.5 cursor-pointer select-none ${selected.has(e.key) ? 'g-sel' : ''}`}
           >
             <span className="w-6 text-center shrink-0">{iconFor(e.name, e.type)}</span>
-            <span className="flex-1 min-w-0 flex items-center gap-1.5">
+            <span className={`${NAME_COL} flex items-center gap-1.5`}>
               <span className="text-sm text-text truncate">{flat ? treePath(e) : e.name}</span>
               {tags(e)}
             </span>
@@ -1165,7 +1172,7 @@ export default function FileBrowser({
   const header = view === 'list' && !narrow && (
     <div className="shrink-0 flex items-center gap-2.5 px-6 py-1.5 border-b border-gilt-b g-deco text-[10px] font-semibold tracking-[0.18em] text-[color:var(--g-mut)] select-none">
       <span className="w-6" />
-      <button onClick={() => setSortPersist('name')} className="flex-1 text-left hover:text-text">
+      <button onClick={() => setSortPersist('name')} className={`${NAME_COL} text-left hover:text-text`}>
         Name{arrow('name')}
       </button>
       <span className="w-28 text-right">Uploader</span>

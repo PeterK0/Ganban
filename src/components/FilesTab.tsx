@@ -7,7 +7,8 @@ import { ProjectShareLinks } from './ShareLinks';
 import { useProjectRole } from '../lib/projectRole';
 import { capturePageToProject } from '../lib/daemon';
 import { isAbortError, useUploadSummary } from '../lib/uploads';
-import { revealLocalPath } from '../lib/shell';
+import { canShowInFolder, revealFile } from '../lib/shell';
+import { afterReveal, type Locatable } from '../lib/fileLocation.pure';
 import { notify, updateNotif } from '../store/notifications';
 import { useAppStore } from '../store/appStore';
 import {
@@ -32,6 +33,8 @@ import {
   clearMissingFiles,
   restoreProjectFile,
   restoreSharedFile,
+  openProjectFile,
+  openSharedFile,
   isTauri,
   canUploadFromDisk,
   listUploadFiles,
@@ -115,6 +118,11 @@ function toRow(e: FileEntry): Row {
   };
 }
 
+/** A row as "Show in folder" sees it. */
+function rowLocatable(r: Row): Locatable & { id: number } {
+  return { kind: r.kind === 'project' ? 'project' : 'attachment', id: r.id, shared: r.shared !== false, localPath: r.path };
+}
+
 export default function FilesTab() {
   const { selectedProject } = useAppStore();
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -194,7 +202,7 @@ export default function FilesTab() {
   const extraMenu = (e: FileEntry): MenuItem[] => {
     const r = toRow(e);
     const items: MenuItem[] = [];
-    if (r.path && isTauri() && !isMobilePlatform()) {
+    if (canShowInFolder(rowLocatable(r))) {
       items.push({ label: 'Show in folder', icon: '📂', onClick: () => void onShowInFolder(r) });
     }
     if (r.kind === 'task' && r.shared === false) {
@@ -652,11 +660,14 @@ export default function FilesTab() {
    * they were attached from) — the member-side way to find a project's local
    * folders. Falls back to the nearest folder that still exists. */
   async function onShowInFolder(r: Row) {
-    if (!r.path) return;
     try {
-      const res = await revealLocalPath(r.path);
+      const f = rowLocatable(r);
+      const res = await revealFile(f);
+      const then = afterReveal(res.outcome, f);
+      // Nothing of it here, but the host has a copy: open that, not an error.
+      if (then === 'open-host-copy') await (r.kind === 'project' ? openProjectFile(r.id, r.name) : openSharedFile(r.id, r.name));
       setNotice(
-        res.outcome === 'file'
+        then !== 'note'
           ? null
           : res.outcome === 'folder'
             ? `${r.name} isn't at its saved path on this machine — opened the nearest folder: ${res.opened}`
@@ -933,7 +944,7 @@ export default function FilesTab() {
               onPush={() => void pushOne(toRow(e))}
               onAllocate={(taskId) => void allocateToTask(toRow(e), taskId)}
               onDetach={() => void detachFromTask(toRow(e))}
-              onShowInFolder={e.localPath && isTauri() && !isMobilePlatform() ? () => void onShowInFolder(toRow(e)) : null}
+              onShowInFolder={canShowInFolder(rowLocatable(toRow(e))) ? () => void onShowInFolder(toRow(e)) : null}
               onAddToMyAtlas={
                 memberAtlas && e.kind === 'project' && localDaemonBase() != null ? () => void onAddToMyAtlas(toRow(e)) : null
               }

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import ScrollArea from '../ScrollArea';
 import type { Area, Task } from '../../types';
-import { createCandidate, moveCursor } from '../../lib/composer.pure';
+import { createAndTag, createCandidate, moveCursor } from '../../lib/composer.pure';
 
 export const STATUS_DOT: Record<string, string> = {
   'To Do': 'bg-overlay-0',
@@ -151,16 +151,11 @@ export default function TaskTagPicker({
     if (!onCreate || !candidate || creating) return;
     setCreating(true);
     setCreateError(null);
-    try {
-      const task = await onCreate(candidate);
-      const now = latest.current;
-      onChange(now.includes(task.id) ? now : [...now, task.id]);
-      setQuery('');
-    } catch (e) {
-      setCreateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
+    const done = await createAndTag(onCreate, candidate, () => latest.current);
+    setCreating(false);
+    if ('error' in done) return setCreateError(done.error);
+    onChange(done.tags);
+    setQuery('');
   };
 
   const pick = (row: number) => {

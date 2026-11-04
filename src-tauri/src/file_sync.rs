@@ -312,6 +312,40 @@ pub async fn reveal_local_path(app: tauri::AppHandle, path: String) -> Result<Re
     }
 }
 
+/// "Show in folder" for a Ganban file. A file's saved path is only the
+/// attacher's: empty for host uploads, another machine's for files shared from
+/// someone else's desktop. So it is resolved here first
+/// (`storage::locate_on_this_machine`): the saved path when it exists on this
+/// machine, else the host's blob store when this machine is the host
+/// (`on_host`, which the client knows: a desktop connected to a remote host has
+/// an unrelated local store). A local-only file that isn't at its path keeps the
+/// nearest-folder behaviour of `reveal_local_path`; a shared file found nowhere is
+/// "none", and the client opens the host copy.
+#[tauri::command]
+pub async fn reveal_file(
+    app: tauri::AppHandle,
+    kind: String,
+    id: i64,
+    shared: bool,
+    path: Option<String>,
+    on_host: bool,
+) -> Result<RevealResult, String> {
+    use ganban_core::storage::{self, BlobKind, StorageRoot};
+    use tauri::Manager;
+    use tauri_plugin_opener::OpenerExt;
+    let kind = if kind == "project" { BlobKind::Project } else { BlobKind::Attachment };
+    let saved = path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(expand_home);
+    let root = if on_host { app.try_state::<StorageRoot>().map(|r| r.0.clone()) } else { None };
+    match storage::locate_on_this_machine(root.as_deref(), kind, id, shared, saved.as_deref()) {
+        storage::Location::Found(p) => {
+            app.opener().reveal_item_in_dir(&p).map_err(|e| e.to_string())?;
+            Ok(RevealResult { outcome: "file", opened: Some(p.display().to_string()) })
+        }
+        storage::Location::SavedPathMissing(p) => reveal_local_path(app, p.to_string_lossy().into_owned()).await,
+        storage::Location::Nowhere => Ok(RevealResult { outcome: "none", opened: None }),
+    }
+}
+
 #[cfg(test)]
 mod reveal_tests {
     use super::*;

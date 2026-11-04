@@ -574,6 +574,18 @@ fn parse_event_date(raw: &str) -> Option<chrono::DateTime<Utc>> {
     Local.from_local_datetime(&naive).single().map(|dt| dt.with_timezone(&Utc))
 }
 
+/// The visibility viewer a user id is (the owner sees every task).
+async fn viewer_for(db: &Db, user_id: i64) -> ganban_core::visibility::Viewer {
+    let is_owner = sqlx::query_scalar::<_, bool>("SELECT is_owner FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    ganban_core::visibility::Viewer { user_id, is_owner }
+}
+
 /// Execute one secretary tool call. Always returns a string for the tool
 /// message — errors are reported to the model so it can tell the user.
 pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> String {
@@ -587,14 +599,23 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
             // even when other words differ. Any word matches; rank by hits.
             let words: Vec<String> = q.split_whitespace().map(str::to_string).collect();
             let clause = words.iter().map(|_| "lower(t.title) LIKE ?").collect::<Vec<_>>().join(" OR ");
+            // Task visibility (ADR 0002): only tasks in the caller's audience,
+            // filtered in SQL so the limit counts visible matches.
+            let visible = match ganban_core::visibility::visible_tasks(db, viewer_for(db, user_id).await, None).await {
+                Ok(v) => ganban_core::visibility::json_ids(v.as_ref()),
+                Err(e) => return json!({ "error": format!("could not search tasks: {e}") }).to_string(),
+            };
             let sql = format!(
                 "SELECT t.id, t.title, t.status, p.name FROM tasks t JOIN projects p ON p.id = t.project_id \
-                 WHERE t.archived = 0 AND ({clause}) ORDER BY t.updated_at DESC LIMIT 30"
+                 WHERE t.archived = 0 AND ({clause}) \
+                 AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) \
+                 ORDER BY t.updated_at DESC LIMIT 30"
             );
             let mut query = sqlx::query_as::<_, (i64, String, String, String)>(&sql);
             for w in &words {
                 query = query.bind(format!("%{w}%"));
             }
+            query = query.bind(visible.clone()).bind(visible);
             let mut rows = query.fetch_all(db).await.unwrap_or_default();
             rows.sort_by_key(|(_, title, _, _)| {
                 let t = title.to_lowercase();
@@ -722,7 +743,8 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
                     .await
                     .ok()
                     .flatten();
-                    match row {
+                    let seen = ganban_core::visibility::can_see_task(db, viewer_for(db, user_id).await, tid).await.unwrap_or(false);
+                    match row.filter(|_| seen) {
                         Some(r) => Some(r),
                         None => return json!({ "error": format!("task {tid} does not exist (or is archived) — use find_tasks first") }).to_string(),
                     }
@@ -913,6 +935,56 @@ mod tests {
         // Missing task refused before anything is filed.
         let ghost = execute_tool(&db, 1, "update_task", &json!({ "task_id": 424242, "description": "x" })).await;
         assert!(ghost.contains("does not exist"), "{ghost}");
+    }
+
+    /// find_tasks follows task visibility (ADR 0002): a task outside the
+    /// caller's audience is absent, and can't anchor an event either.
+    #[tokio::test]
+    async fn find_tasks_hides_tasks_outside_the_callers_audience() {
+        let path = std::env::temp_dir().join(format!("ganban_secretary_vis_{}.db", std::process::id()));
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+        let db = ganban_core::init_db(&path).await.unwrap();
+        let owner = ganban_core::auth::ensure_owner(&db).await.unwrap();
+        let p = ops::create_project(&db, ganban_core::models::CreateProjectInput { name: "Visa".into(), description: None })
+            .await
+            .unwrap();
+        let member = ops::create_user(
+            &db,
+            ganban_core::models::CreateUserInput { username: "mia".into(), full_name: "Mia".into(), email: None },
+        )
+        .await
+        .unwrap()
+        .id;
+        ganban_core::auth::add_project_member(&db, p.id, member, ganban_core::auth::ROLE_MEMBER).await.unwrap();
+        let task = |title: &str| ganban_core::models::CreateTaskInput {
+            project_id: p.id,
+            area_id: None,
+            title: title.into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Medium".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
+        };
+        let open = ops::create_task(&db, task("Passport photo open")).await.unwrap();
+        let hidden = ops::create_task(&db, task("Passport photo admins")).await.unwrap();
+        ganban_core::visibility::set_task_visibility(&db, hidden.id, ganban_core::visibility::ADMINS_ONLY, &[]).await.unwrap();
+
+        let mine = execute_tool(&db, member, "find_tasks", &json!({ "query": "passport photo" })).await;
+        assert!(mine.contains("Passport photo open"), "{mine}");
+        assert!(!mine.contains("Passport photo admins"), "a hidden task is absent: {mine}");
+        let all = execute_tool(&db, owner, "find_tasks", &json!({ "query": "passport photo" })).await;
+        assert!(all.contains("Passport photo open") && all.contains("Passport photo admins"), "the owner sees both: {all}");
+
+        let anchored = execute_tool(&db, member, "create_event", &json!({
+            "title": "Photo", "event_date": "2027-01-05T10:00:00", "task_id": hidden.id
+        })).await;
+        assert!(anchored.contains("does not exist"), "a hidden task can't anchor an event: {anchored}");
+        let _ = open;
     }
 
     #[test]

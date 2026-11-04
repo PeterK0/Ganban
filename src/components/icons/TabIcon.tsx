@@ -108,6 +108,13 @@ const ICONS = {
   ),
   wrench: <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.4-3.4a5.5 5.5 0 01-7.3 7.3l-6.5 6.5a2 2 0 01-2.8-2.8l6.5-6.5a5.5 5.5 0 017.3-7.3l-3.6 3.6z" />,
   activity: <path d="M21 12h-3.5l-2.75 7.5L9.25 4.5 6.5 12H3" />,
+  // Finance: a wallet with its clasp.
+  finance: (
+    <>
+      <path d="M17.5 8V5.5A1.5 1.5 0 0016 4H6a2 2 0 00-2 2v12a2 2 0 002 2h12.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0018.5 8H6a2 2 0 01-2-2" />
+      <path d="M20 11.5h-3a2 2 0 000 4h3M16.75 13.5h.01" />
+    </>
+  ),
   /** The neutral fallback, for a tab the set doesn't know. */
   tab: (
     <>

@@ -35,6 +35,8 @@ database or a headless host.
 | `GANBAN_LOGS` | `~/Library/Logs/ganban` | Where `ops/update.sh` writes `update.log` (read by the Update the server button) | `updates.rs` |
 | `LAUNCHCTL` | `/bin/launchctl` | The `launchctl` the Update the server button runs (for tests) | `updates.rs` |
 | `GANBAN_SSE_RENEW_SECS` | `600` | How often the live-update stream reconnects (for testing) | `lib.rs` |
+| `GANBAN_PI_UNSANDBOXED` | none | Linux only: set to `1` to let pi runs go without a sandbox when Bubblewrap (`bwrap`) isn't installed. Without it such a host refuses pi runs. The run can then read everything you can | `pi_rpc.rs` |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's config folder, where Ganban copies a run's model settings and key from | `pi_rpc.rs` |
 
 ### Knowledge base (ragrat): coming later
 

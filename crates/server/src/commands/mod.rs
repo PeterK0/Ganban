@@ -45,6 +45,10 @@ mod comments;
 mod contacts;
 pub(crate) mod events;
 mod files;
+mod finance;
+mod finance_import;
+mod finance_reports;
+mod finance_suggest;
 mod models;
 mod pins;
 mod projects;
@@ -72,6 +76,10 @@ const TABLE: &[&[Command]] = &[
     pins::COMMANDS,
     account::COMMANDS,
     admin::COMMANDS,
+    finance::COMMANDS,
+    finance_import::COMMANDS,
+    finance_reports::COMMANDS,
+    finance_suggest::COMMANDS,
 ];
 
 /// Bespoke desktop Tauri commands that never join the table: they work on the desktop's own
@@ -162,13 +170,18 @@ pub(crate) enum Access {
     SelfOrOwner(&'static str),
     /// A rule that fits no other shape, spelled out where the command is declared.
     Custom(Check),
+    /// Finance (ADR 0009): any signed-in member, acting only on their own entity. The
+    /// command's authorship field picks the entity and is stamped over HTTP for everyone,
+    /// the owner included, so the owner's usual bypass reaches nothing here: another
+    /// user's row ids are "not found".
+    OwnFinance,
 }
 
 impl Access {
     async fn check(self, cx: &Ctx<'_>, user: &AuthUser, a: &Args<'_>) -> Result<(), AppError> {
         match self {
             Access::Owner => Err(AppError::Forbidden("owner only".into())),
-            Access::AnyMember => Ok(()),
+            Access::AnyMember | Access::OwnFinance => Ok(()),
             Access::Member(target) => {
                 role_on(cx.db, user, target.project(cx.db, a).await?, auth::ROLE_MEMBER).await?;
                 target.seen(cx.db, user, a).await
@@ -492,15 +505,17 @@ pub(crate) struct Ctx<'a> {
     /// Where the client builds and the host update's status live; `None` reads them from
     /// the environment (`crate::updates::shared`).
     update_paths: Option<&'a crate::updates::UpdatePaths>,
+    /// The host's live agent work; the desktop's in-process table has none.
+    agents: Option<&'a crate::agent_work::AgentBoard>,
 }
 
 impl<'a> Ctx<'a> {
     pub(crate) fn http(db: &'a Db, user: AuthUser) -> Self {
-        Ctx { db, caller: Caller::Http(user), storage_root: None, shares: None, update_paths: None }
+        Ctx { db, caller: Caller::Http(user), storage_root: None, shares: None, update_paths: None, agents: None }
     }
 
     pub(crate) fn in_process(db: &'a Db) -> Self {
-        Ctx { db, caller: Caller::InProcess, storage_root: None, shares: None, update_paths: None }
+        Ctx { db, caller: Caller::InProcess, storage_root: None, shares: None, update_paths: None, agents: None }
     }
 
     pub(crate) fn with_shares(self, shares: &'a Shares) -> Self {
@@ -510,6 +525,15 @@ impl<'a> Ctx<'a> {
     /// The native builds offered at `/download`, for the build-sharing commands.
     pub(crate) fn shares(&self) -> Result<&'a Shares, AppError> {
         self.shares.ok_or_else(|| AppError::InvalidInput("no build sharing here".into()))
+    }
+
+    pub(crate) fn with_agents(self, agents: &'a crate::agent_work::AgentBoard) -> Self {
+        Ctx { agents: Some(agents), ..self }
+    }
+
+    /// The host's live agent work, where this table runs on a host.
+    pub(crate) fn agents(&self) -> Option<&'a crate::agent_work::AgentBoard> {
+        self.agents
     }
 
     pub(crate) fn with_update_paths(self, paths: &'a crate::updates::UpdatePaths) -> Self {

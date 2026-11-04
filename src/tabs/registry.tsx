@@ -23,7 +23,7 @@ export const TAB_PANELS: Record<string, LazyExoticComponent<ComponentType<TabPan
   kanban: lazy(() => import("./KanbanTab")),
   models: lazy(() => import("./ModelsTab")),
   quiz: lazy(() => import("./QuizTab")),
-  ...Object.fromEntries(TAB_MODULES.map((m) => [m.id, m.panel])),
+  ...Object.fromEntries(TAB_MODULES.flatMap((m) => (m.panel ? [[m.id, m.panel]] : []))),
 };
 
 /**

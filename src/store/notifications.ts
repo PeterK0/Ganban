@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 export type NotifKind = 'info' | 'success' | 'error' | 'progress';
 /** Which dropdown tab a notification belongs to. */
-export type NotifCategory = 'task' | 'event' | 'comment' | 'system';
+export type NotifCategory = 'task' | 'event' | 'comment' | 'system' | 'finance';
 
 export interface Notif {
   id: string;

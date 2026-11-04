@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent as ReactMouseEvent } from 'react';
 import { confirmDialog } from '../lib/confirm';
-import { canExpand, describeRrule, isoWeek, seriesOccurrences, weekStart } from '../lib/recur.pure';
+import { canExpand, describeRrule, isoWeek, monthGridRange, seriesOccurrences, weekStart } from '../lib/recur.pure';
 import { applyToDays, occurrenceKey, type PickedDay } from '../lib/eventSeries';
 import { askSeriesScope } from './SeriesScopeDialog';
 import RepeatingView from './RepeatingView';
@@ -539,7 +539,13 @@ export default function CalendarView({ scopeProjectId }: { scopeProjectId?: numb
     const start = new Date(currentDate);
     const end = new Date(currentDate);
 
-    if (isMonthlyRange) {
+    if (viewMode === 'month') {
+      // The whole grid, so the other months' leading and trailing days show
+      // their events too.
+      const { first, last } = monthGridRange(currentDate.getFullYear(), currentDate.getMonth());
+      start.setTime(first.getTime());
+      end.setTime(new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59, 999).getTime());
+    } else if (isMonthlyRange) {
       start.setDate(1);
       start.setHours(0, 0, 0, 0);
       end.setMonth(end.getMonth() + 1);
@@ -629,10 +635,7 @@ export default function CalendarView({ scopeProjectId }: { scopeProjectId?: numb
   };
 
   const getMonthCalendarDays = () => {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth();
-    // Six Monday-to-Sunday rows from the week that holds the 1st.
-    const startDate = weekStart(new Date(year, month, 1));
+    const startDate = monthGridRange(currentDate.getFullYear(), currentDate.getMonth()).first;
 
     const days: Date[] = [];
     const current = new Date(startDate);

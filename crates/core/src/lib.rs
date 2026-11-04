@@ -13,6 +13,7 @@ pub mod auth;
 pub mod db;
 pub mod domain_events;
 pub mod error;
+pub mod finance;
 pub mod ics;
 pub mod models;
 pub mod ops;

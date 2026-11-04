@@ -1676,6 +1676,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     sync_groundwork(pool).await;
 
+    // Finance (docs/design/FINANCE.md): host-only tables, never synced.
+    crate::finance::schema::migrate(pool).await?;
+
     println!("Database migrations completed");
 
     Ok(())

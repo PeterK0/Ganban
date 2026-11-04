@@ -32,6 +32,8 @@ pub struct EventHub {
     tx: Arc<broadcast::Sender<(u64, String)>>,
     seq: Arc<AtomicU64>,
     epoch: Arc<String>,
+    /// Live agent work: rides the hub because every change to it pulses.
+    agents: crate::agent_work::AgentBoard,
 }
 
 impl EventHub {
@@ -46,6 +48,7 @@ impl EventHub {
             tx: Arc::new(broadcast::channel(256).0),
             seq: Arc::new(AtomicU64::new(0)),
             epoch: Arc::new(format!("{:x}", nanos ^ u128::from(std::process::id()))),
+            agents: Default::default(),
         }
     }
 
@@ -62,6 +65,11 @@ impl EventHub {
     /// The SSE id for pulse `n` of this boot.
     pub fn id_of(&self, n: u64) -> String {
         format!("{}:{n}", self.epoch)
+    }
+
+    /// The board of live agent work (`crate::agent_work`).
+    pub fn agents(&self) -> &crate::agent_work::AgentBoard {
+        &self.agents
     }
 
     /// The id of the latest pulse (what `hello` reports).
@@ -110,6 +118,12 @@ pub fn pulse_kind(path: &str) -> Option<&'static str> {
 /// spurious pulse costs one debounced refetch, a missed one costs staleness.
 pub fn invoke_pulse_kind(cmd: &str) -> Option<&'static str> {
     if matches!(cmd.split('_').next().unwrap_or(""), "get" | "list" | "verify") {
+        return None;
+    }
+    // Finance is private to its user (ADR 0009), and the stream goes to every member: even a
+    // coarse pulse would tell them when someone touches their money. The finance views
+    // refetch after their own writes.
+    if cmd.starts_with("fin_") {
         return None;
     }
     // Build sharing (owner machinery; two of the three are reads named off-convention).
@@ -186,6 +200,10 @@ mod tests {
         assert_eq!(invoke_pulse_kind("shared_builds"), None);
         // …but only those: a write that merely mentions builds still pulses.
         assert_eq!(invoke_pulse_kind("create_model_build_step"), Some("models"));
+        // Finance writes are private to their user: no pulse at all.
+        assert_eq!(invoke_pulse_kind("fin_create_entry"), None);
+        assert_eq!(invoke_pulse_kind("fin_update_account"), None);
+        assert_eq!(invoke_pulse_kind("fin_import"), None);
     }
 
     #[test]

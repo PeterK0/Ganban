@@ -47,6 +47,7 @@ Ganban's documentation, grouped by who it's for. New here? Start with the [READM
 | [DEMONSTRATION.md](design/DEMONSTRATION.md) | Authoring protocols by showing: recorder, locators, replay. |
 | [ToolRegistry.md](design/ToolRegistry.md) | Declarative tool bindings and loadouts, with the model as the fallback. |
 | [PI_INTEGRATION_DESIGN.md](design/PI_INTEGRATION_DESIGN.md) | The pi runner: RPC, sandboxing, the cost ledger. |
+| [FINANCE.md](design/FINANCE.md) | Finance: the personal double-entry ledger, its tables, commands and import pipeline. |
 | [SHARE_LINKS.md](design/SHARE_LINKS.md) | Share links: files for people outside the team, and the commands behind them. |
 | [UPDATES.md](design/UPDATES.md) | Clients update from the host: versions, builds and the update flow. |
 | [CommentBoard.md](design/CommentBoard.md) | The project's Comments board: one update tagged on several tasks. |
@@ -61,6 +62,8 @@ Ganban's documentation, grouped by who it's for. New here? Start with the [READM
 | [0002](design/adr/0002-task-visibility.md) | Task visibility is enforced on the host; a hidden task is absent; areas are the lever. |
 | [0006](design/adr/0006-share-links-go-public-through-a-separate-door.md) | Share links go public through a separate door, published with Tailscale Funnel. |
 | [0007](design/adr/0007-clients-update-from-the-host.md) | Clients update from the host, which builds and signs them. |
+| [0009](design/adr/0009-finance-is-private-to-its-user.md) | Finance is private to its user; the owner bypass stops at Finance. |
+| [0010](design/adr/0010-the-double-entry-ledger.md) | A double-entry ledger: source lines apart from journal entries; edit until close, then reverse. |
 
 ### Diagrams and mockups
 

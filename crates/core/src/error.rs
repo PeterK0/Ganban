@@ -22,6 +22,18 @@ pub enum AppError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// A caller error the client acts on, not just shows: `code` is stable and
+    /// machine-readable (sent as `code` next to `error`), so the client never
+    /// matches the English message. Maps to 400 like `InvalidInput`.
+    #[error("Invalid input: {message}")]
+    Refused { code: &'static str, message: String },
+}
+
+/// `AppError::Refused` codes.
+pub mod codes {
+    /// Including a file in the AI overview needs `force`: it's over the size guard.
+    pub const AI_FILE_TOO_LARGE: &str = "AI_FILE_TOO_LARGE";
 }
 
 impl AppError {
@@ -34,7 +46,15 @@ impl AppError {
 
     /// True for caller/validation errors — lets transports map to 400.
     pub fn is_invalid_input(&self) -> bool {
-        matches!(self, AppError::InvalidInput(_))
+        matches!(self, AppError::InvalidInput(_) | AppError::Refused { .. })
+    }
+
+    /// The machine-readable code of a refusal, if it has one.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            AppError::Refused { code, .. } => Some(code),
+            _ => None,
+        }
     }
 
     /// Missing/invalid credentials — maps to 401.

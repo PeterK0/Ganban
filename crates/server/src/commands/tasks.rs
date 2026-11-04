@@ -218,6 +218,20 @@ pub(super) const COMMANDS: &[Command] = &[
     command("get_task_total_time")
         .access(Access::Member(TASK))
         .run(|cx, a| Box::pin(async move { reply(ops::get_task_total_time(cx.db, a.id(TASK)?).await?) })),
+    // The timer pill's "today": my finished seconds on the task since `since` (the client's
+    // local midnight, RFC 3339). The authorship field picks whose, as for the running timer.
+    command("get_my_task_time_since")
+        .access(Access::Member(TASK))
+        .author(Author::Arg("userId"))
+        .run(|cx, a| {
+            Box::pin(async move {
+                let since = a.req_str("since")?;
+                let since = chrono::DateTime::parse_from_rfc3339(&since)
+                    .map_err(|e| AppError::InvalidInput(format!("since: {e}")))?
+                    .with_timezone(&chrono::Utc);
+                reply(ops::get_user_task_time_since(cx.db, a.id(TASK)?, a.opt_author(), since).await?)
+            })
+        }),
     // "My running timer": the authorship field picks whose (stamped over HTTP).
     command("get_global_active_time_entry")
         .access(Access::AnyMember)
@@ -232,6 +246,28 @@ pub(super) const COMMANDS: &[Command] = &[
         .run(|cx, a| {
             Box::pin(async move {
                 reply(ops::get_recent_time_tasks(cx.db, a.opt_author(), a.opt_i64("limit").unwrap_or(8)).await?)
+            })
+        }),
+    // The timer's "Agents": the tasks my assistants are working on right now
+    // (`crate::agent_work`). Only my own runs; the filter drops tasks I can't see.
+    command("get_agent_work")
+        .access(Access::AnyMember)
+        .author(Author::Arg("userId"))
+        .filter(ResultFilter::OfTasks("task_id"))
+        .run(|cx, a| {
+            Box::pin(async move {
+                let (Some(board), Some(user)) = (cx.agents(), a.opt_author()) else { return reply(Vec::<Value>::new()) };
+                let mut out = Vec::new();
+                for e in board.of_user(user) {
+                    let task = sqlx::query_as::<_, ganban_core::models::Task>("SELECT * FROM tasks WHERE id = ? AND archived = 0")
+                        .bind(e.task_id)
+                        .fetch_optional(cx.db)
+                        .await?;
+                    if let Some(task) = task {
+                        out.push(json!({ "task_id": e.task_id, "task": task, "who": e.who, "since": e.since }));
+                    }
+                }
+                reply(out)
             })
         }),
 ];
@@ -285,6 +321,46 @@ mod tests {
         let ta = seed(db, "create_task", task(a)).await["id"].as_i64().unwrap();
         let tb = seed(db, "create_task", task(b)).await["id"].as_i64().unwrap();
         (a, b, ta, tb)
+    }
+
+    /// The timer's "today": my finished time on the task since my local midnight. An entry
+    /// that crosses midnight counts from midnight, a teammate's and the running entry don't.
+    #[tokio::test]
+    async fn my_task_time_since_counts_my_finished_time_after_the_cut() {
+        let db = test_db("tasks_time_since").await;
+        let (a, _, ta, _) = world(&db).await;
+        let mia = member(&db, 7, &[(a, "member")]).await;
+        member(&db, 8, &[(a, "member")]).await;
+        let at = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc);
+        let entry = |user: Option<i64>, start: &str, end: Option<&str>| {
+            let (start, end) = (at(start), end.map(at));
+            let duration = end.map(|e| (e - start).num_seconds());
+            sqlx::query("INSERT INTO time_entries (task_id, start_time, end_time, duration, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(ta)
+                .bind(start)
+                .bind(end)
+                .bind(duration)
+                .bind(user)
+                .bind(start)
+                .execute(&db)
+        };
+        entry(Some(7), "2026-11-03T09:00:00Z", Some("2026-11-03T20:00:00Z")).await.unwrap(); // yesterday: 11 h
+        entry(Some(7), "2026-11-03T23:30:00Z", Some("2026-11-04T00:15:00Z")).await.unwrap(); // crosses: 15 min today
+        entry(Some(7), "2026-11-04T08:00:00Z", Some("2026-11-04T09:00:00Z")).await.unwrap(); // today: 1 h
+        entry(None, "2026-11-04T10:00:00Z", Some("2026-11-04T10:10:00Z")).await.unwrap(); // unattributed: 10 min
+        entry(Some(8), "2026-11-04T08:00:00Z", Some("2026-11-04T12:00:00Z")).await.unwrap(); // Bo's: not mine
+        entry(Some(7), "2026-11-04T11:00:00Z", None).await.unwrap(); // running: the client adds it
+
+        let since = |s: &str| json!({ "taskId": ta, "since": s });
+        let mine = http(&db, mia, "get_my_task_time_since", since("2026-11-04T00:00:00Z")).await.unwrap();
+        assert_eq!(mine, 15 * 60 + 3600 + 10 * 60);
+        // The client sends its local midnight with its offset: 00:00+02:00 is 22:00 UTC the day before.
+        let east = http(&db, mia, "get_my_task_time_since", since("2026-11-04T00:00:00+02:00")).await.unwrap();
+        assert_eq!(east, 45 * 60 + 3600 + 10 * 60);
+        assert!(http(&db, mia, "get_my_task_time_since", since("today")).await.unwrap_err().to_string().contains("since"));
+        // In-process (the desktop, nobody stamped): everyone's.
+        let all = seed(&db, "get_my_task_time_since", since("2026-11-04T00:00:00Z")).await;
+        assert_eq!(all, 15 * 60 + 3600 + 10 * 60 + 4 * 3600);
     }
 
     #[tokio::test]
@@ -350,6 +426,65 @@ mod tests {
         assert_eq!(http(&db, bo, "get_global_active_time_entry", json!({})).await.unwrap(), Value::Null);
         http(&db, mia, "stop_time_entry", json!({ "entryId": eid })).await.unwrap();
         assert!(http(&db, bo, "start_time_entry", json!({ "taskId": tb })).await.is_ok());
+    }
+
+    /// The timer's "Agents": a member sees only their own runs, and only tasks they can
+    /// still see; a task outside the run's project or out of sight never goes on the board.
+    #[tokio::test]
+    async fn agent_work_is_mine_and_follows_task_visibility() {
+        use crate::agent_work::Run;
+        let db = test_db("tasks_agent_work").await;
+        let (a, _, ta, tb) = world(&db).await;
+        let mia = member(&db, 7, &[(a, "member")]).await;
+        let bo = member(&db, 8, &[(a, "member")]).await;
+        let ta2 = seed(&db, "create_task", json!({ "input": { "project_id": a, "title": "T2", "status": "To Do", "priority": "Low" } }))
+            .await["id"]
+            .as_i64()
+            .unwrap();
+        let hub = crate::events::EventHub::new();
+        let mut pulses = hub.subscribe();
+        let list = |u: crate::AuthUser| {
+            let (db, hub) = (db.clone(), hub.clone());
+            async move { super::super::run(&super::super::Ctx::http(&db, u).with_agents(hub.agents()), "get_agent_work", json!({})).await.unwrap() }
+        };
+        let tasks = |v: &Value| v.as_array().unwrap().iter().map(|r| r["task_id"].as_i64().unwrap()).collect::<Vec<_>>();
+
+        let run = Run::start(&hub, mia.id, false, a, "Scout");
+        run.touch_args(&db, &json!({ "task_id": ta })).await;
+        run.touch_args(&db, &json!({ "taskId": ta })).await; // the same task again
+        run.touch_args(&db, &json!({ "task_id": tb })).await; // another project's task
+        run.touch_args(&db, &json!({ "title": "no task" })).await;
+        assert_eq!(pulses.try_recv().unwrap().1, "agents");
+        assert!(pulses.try_recv().is_err(), "one pulse for one change");
+        let mine = list(mia).await;
+        assert_eq!(tasks(&mine), vec![ta]);
+        assert_eq!(mine[0]["who"], "Scout");
+        assert_eq!(mine[0]["task"]["title"], "T");
+        assert_eq!(tasks(&list(bo).await), Vec::<i64>::new(), "Bo's windows don't see Mia's run");
+        let as_mia = json!({ "userId": mia.id });
+        let bo_asks = super::super::run(&super::super::Ctx::http(&db, bo).with_agents(hub.agents()), "get_agent_work", as_mia).await.unwrap();
+        assert_eq!(tasks(&bo_asks), Vec::<i64>::new(), "naming Mia doesn't make Bo see her run");
+
+        // A task Mia can't see is never recorded, and one hidden mid-run drops out.
+        seed(&db, "set_task_visibility", json!({ "taskId": ta2, "visibility": "admins" })).await;
+        run.touch_args(&db, &json!({ "task_id": ta2 })).await;
+        assert_eq!(tasks(&list(mia).await), vec![ta]);
+        seed(&db, "set_task_visibility", json!({ "taskId": ta, "visibility": "admins" })).await;
+        assert_eq!(tasks(&list(mia).await), Vec::<i64>::new());
+
+        // A delegate shows under its own name; ending the turn clears it all.
+        seed(&db, "set_task_visibility", json!({ "taskId": ta, "visibility": "area" })).await;
+        {
+            let helper = run.child("Critic");
+            helper.touch(&db, ta).await;
+            let rows = list(mia).await;
+            assert_eq!(rows.as_array().unwrap().iter().map(|r| r["who"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Scout", "Critic"]);
+        }
+        assert_eq!(list(mia).await.as_array().unwrap().len(), 1, "the delegate's entry ends with it");
+        while pulses.try_recv().is_ok() {}
+        drop(run);
+        assert_eq!(pulses.try_recv().unwrap().1, "agents");
+        assert_eq!(tasks(&list(mia).await), Vec::<i64>::new());
     }
 
     #[tokio::test]

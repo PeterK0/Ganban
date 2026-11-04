@@ -82,10 +82,35 @@ html.gm-mobile .g-modal .g-iconbtn {
   width: 44px;
   height: 44px;
 }
-html.gm-mobile .g-modal .g-btn { min-height: 44px; }
+html.gm-mobile .g-modal .g-btn,
+html.gm-mobile .g-modal .g-chip { min-height: 44px; }
 
 /* A narrow numeric cell (six ability scores across a phone). */
 .g-field.gm-field.gm-field-tight {
   padding: 0 4px;
   text-align: center;
+}
+
+/* A desktop view mounted whole in the phone shell (a rail view such as Finance):
+   the shared g- controls at touch size, 44px targets and 16px fields. */
+.gm-touch .g-btn,
+.gm-touch .g-btn-sm,
+.gm-touch .g-chip,
+.gm-touch .g-dtab { min-height: 44px; }
+.gm-touch .g-field,
+.gm-touch .g-field-sm {
+  min-height: 44px;
+  font-size: 16px;
+}
+.gm-touch textarea.g-field { min-height: 88px; }
+.gm-touch .g-iconbtn {
+  width: 44px;
+  height: 44px;
+}
+.gm-touch button.g-lnk { min-height: 44px; } /* text buttons in rows (Rename, Reverse) */
+.gm-touch .g-tog::before { inset: -10px; } /* a 44px hit area */
+.gm-touch input[type='checkbox'],
+.gm-touch input[type='radio'] {
+  width: 22px;
+  height: 22px;
 }

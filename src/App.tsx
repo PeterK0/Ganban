@@ -15,6 +15,7 @@ import AtlasView from "./components/AtlasView";
 import SettingsModal from "./components/SettingsModal";
 import { OPEN_SETTINGS, type SettingsSection } from "./lib/settingsNav";
 import ActiveTaskWidget from "./components/ActiveTaskWidget";
+import { refreshAgentWork } from "./lib/timer";
 import ProjectSettingsModal from "./components/ProjectSettingsModal";
 import JoinServerModal from "./components/JoinServerModal";
 import AreaManager from "./components/AreaManager";
@@ -49,9 +50,12 @@ import { useNav } from "./store/navHistory";
 import { useGotoTaskMessages } from "./lib/gotoTask";
 import { useTitleBarInset } from "./lib/titleBar";
 import RailProjectsMenu from "./components/RailProjectsMenu";
+import { RailNavButtons, RailViewHost, isRailView, useShownRails } from "./components/RailViews";
+import { useRailTabs } from "./store/railTabs";
 import { projectColorClass, projectInitial } from "./lib/projectColor";
 
-type View = 'projects' | 'home' | 'bin' | 'reports' | 'events' | 'contacts' | 'chat' | 'atlas';
+/** `rail:<id>` is a tab module's own top-level view (src/components/RailViews.tsx). */
+type View = 'projects' | 'home' | 'bin' | 'reports' | 'events' | 'contacts' | 'chat' | 'atlas' | `rail:${string}`;
 
 // ── Gilt frame helpers (top bar + sidebar) ──────────────────────────────────
 
@@ -337,7 +341,19 @@ function App() {
       window.dispatchEvent(new CustomEvent(DATA_PULSE_EVENT, { detail: { kind: pendingKind } }));
       pendingKind = 'lagged';
     };
+    // Live agent work changes no data: it refreshes the timer's "Agents" only, and
+    // must not stand in for a data pulse in the debounce below.
+    let agentsT: number | undefined;
+    // Throttled, not debounced: a run touching tasks quickly still shows them.
+    const agentsChanged = () => {
+      if (agentsT !== undefined) return;
+      agentsT = window.setTimeout(() => {
+        agentsT = undefined;
+        void refreshAgentWork();
+      }, 300);
+    };
     const kick = (what?: string) => {
+      if (what === 'agents') return agentsChanged();
       const now = Date.now();
       if (!firstPulseAt) firstPulseAt = now;
       // Stash the latest kind for the debounced fire. Unknown/empty kinds fall
@@ -351,7 +367,10 @@ function App() {
     // host's routine 10-minute stream renewal (that wholesale refetch was the
     // periodic UI flash).
     const onOpen = (info: PulseOpen) => {
-      if (info.missed) kick();
+      if (info.missed) {
+        kick();
+        agentsChanged();
+      }
     };
     const subscribeAll = async () => {
       if (workspacesEnabled()) {
@@ -384,6 +403,7 @@ function App() {
     return () => {
       window.clearTimeout(t);
       window.clearTimeout(retry);
+      window.clearTimeout(agentsT);
       unsubs.forEach((u) => u());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -480,6 +500,19 @@ function App() {
     reloadCurrentUser();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, selectedProject?.workspaceId, wsTick]);
+
+  // Tab modules' rail views: the host's tabs and this user's Plug-ins switches.
+  const railUserId = isHostedClient() ? currentUser?.id ?? null : currentUserId;
+  useEffect(() => {
+    void useRailTabs.getState().load(railUserId);
+  }, [railUserId]);
+  // A rail view that was switched off (or a back step to one) lands on Home.
+  const shownRails = useShownRails();
+  const railsLoaded = useRailTabs((s) => s.hostTabs !== null);
+  useEffect(() => {
+    if (!currentView.startsWith('rail:') || !railsLoaded) return;
+    if (!isRailView(currentView) || !shownRails.some((m) => `rail:${m.id}` === currentView)) setCurrentView('home');
+  }, [currentView, shownRails, railsLoaded]);
 
   // The sidebar's collapsed (icon rail) state, stored with its width.
   const sidebar = usePaneCollapsed('sidebar');
@@ -1328,6 +1361,7 @@ function App() {
                       </button>
                     );
                   })}
+                  <RailNavButtons collapsed current={currentView} onGo={goNav} />
                 </div>
                 <ScrollArea className="flex-1 min-h-0 border-t border-gilt-b" contentClassName="flex flex-col items-center gap-1.5 py-3">
                   {pinnedProjects.map((project) => {
@@ -1405,6 +1439,7 @@ function App() {
                       </button>
                     );
                   })}
+                  <RailNavButtons collapsed={false} current={currentView} onGo={goNav} />
                 </div>
 
                 {/* Pinned, then the other projects (collapsible) */}
@@ -1524,6 +1559,8 @@ function App() {
             <ContactsView />
           ) : currentView === 'chat' ? (
             <ChatView />
+          ) : currentView.startsWith('rail:') ? (
+            <RailViewHost view={currentView} />
           ) : selectedProject ? (
             <ProjectView />
           ) : (

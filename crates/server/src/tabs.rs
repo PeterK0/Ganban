@@ -93,6 +93,15 @@ pub fn available_tabs() -> Vec<TabDescriptor> {
         description: "Academic quiz bank (the QuizForge adoption): Subject → Topic → question bank with 9 question types, quiz runs with grading, and attempt history. Oracle's quiz.generate node can draft questions from your files — through the approval gate.",
         has_tools: false,
     });
+    #[cfg(feature = "tab-finance")]
+    tabs.push(TabDescriptor {
+        id: "finance",
+        name: "Finance",
+        icon: "💶",
+        tier: 1,
+        description: "Your personal finances: accounts, imported bank statements, categories and a double-entry ledger. Private to you: no one else on the host sees them, the owner included. The assistant reads them only in your Personal chats, on a local model.",
+        has_tools: false,
+    });
     #[cfg(feature = "tab-atlas")]
     tabs.push(TabDescriptor {
         id: "atlas",
@@ -764,6 +773,7 @@ mod tests {
         let tabs = available_tabs();
         assert!(tabs.iter().any(|t| t.id == "nato" && t.tier == 1 && !t.has_tools));
         assert!(tabs.iter().any(|t| t.id == "pdf" && t.tier == 2 && t.has_tools));
+        assert!(tabs.iter().any(|t| t.id == "finance" && t.tier == 1 && !t.has_tools), "finance is in the default build");
         assert!(is_available("pdf") && !is_available("never-built"));
 
         assert!(tool_defs_for(&[]).is_empty(), "no enabled tabs → no tab tools offered");

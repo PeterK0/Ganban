@@ -127,4 +127,24 @@ mod tests {
         assert!(http(&db, bo, "delete_comment", json!({ "commentId": cid })).await.unwrap_err().is_not_found());
         assert!(http(&db, mia, "update_comment", json!({ "commentId": cid, "input": { "content": "edited" } })).await.is_ok());
     }
+
+    /// The tag picker's "Create task" sends create_task for the board's project. Someone who
+    /// can read a board snapshot but may not file tasks there (here: removed from the project
+    /// while the board was open) is refused, and no task is made; the picker shows the error.
+    #[tokio::test]
+    async fn the_tag_pickers_create_task_is_refused_without_membership() {
+        let db = test_db("comments_create_task").await;
+        owner(&db).await;
+        let pa = seed(&db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
+        let mia = member(&db, 7, &[(pa, "member")]).await;
+        // The picker's request: the board's project, the typed title, the app's defaults.
+        let picked = |title: &str| json!({ "input": { "project_id": pa, "title": title, "status": "To Do", "priority": "Medium" } });
+        assert!(http(&db, mia, "create_task", picked("allowed")).await.is_ok(), "a member may");
+
+        seed(&db, "remove_member", json!({ "projectId": pa, "userId": 7 })).await;
+        let err = http(&db, mia, "create_task", picked("refused")).await.unwrap_err();
+        assert!(err.is_not_found() || err.is_forbidden(), "{err}");
+        let titles: Vec<String> = sqlx::query_scalar("SELECT title FROM tasks WHERE project_id = ?").bind(pa).fetch_all(&db).await.unwrap();
+        assert!(!titles.contains(&"refused".to_string()), "{titles:?}");
+    }
 }

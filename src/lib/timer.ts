@@ -22,13 +22,17 @@ import {
   wsStartTimeEntry,
   wsStopTimeEntry,
   wsGetTaskTotalTime,
+  wsGetMyTaskTimeSince,
   wsGetMyRunningTimer,
   wsGetRecentTimeTasks,
+  wsGetAgentWork,
   type RecentTimeTask,
 } from './workspaceData';
 import { reportLocalWrite } from './api';
 import { isWebClient } from './daemon';
 import { DATA_PULSE_EVENT, type DataPulseDetail } from './livePulse';
+import { localMidnight, todaySeconds } from './timerDay.pure';
+import { mergeAgentWork, type AgentWorkRow, type MergedAgentWork } from './agentWork.pure';
 
 /** A task's composite key: ids collide across hosts (K2). */
 export const taskKey = (t: { id: number; workspaceId?: string } | null | undefined): string | null =>
@@ -43,17 +47,32 @@ interface TimerState {
   entry: TimeEntry | null;
   /** The workspace the running entry lives on. */
   entryWs: string | null;
-  /** The active task's finished seconds (the running entry not included). */
+  /** The active task's finished seconds, everyone's (the running entry not included). */
   totalBase: number;
+  /** My finished seconds on the active task since the local midnight `todayDay` (epoch ms). */
+  todayBase: number;
+  todayDay: number | null;
   busy: boolean;
   error: string | null;
 }
 
-export const useTimer = create<TimerState>(() => ({ entry: null, entryWs: null, totalBase: 0, busy: false, error: null }));
+export const useTimer = create<TimerState>(() => ({
+  entry: null,
+  entryWs: null,
+  totalBase: 0,
+  todayBase: 0,
+  todayDay: null,
+  busy: false,
+  error: null,
+}));
 
 /** The active task's total right now: finished entries plus the running one. */
 export function liveTotal(s: TimerState, now = Date.now()): number {
   return s.totalBase + (s.entry ? sessionSeconds(s.entry, now) : 0);
+}
+/** The pill's figure: my time on the active task today, the running entry included. */
+export function liveToday(s: TimerState, now = Date.now()): number {
+  return todaySeconds(s.todayBase, s.todayDay, s.entry ? Date.parse(s.entry.start_time) : null, now);
 }
 export function sessionSeconds(entry: TimeEntry, now = Date.now()): number {
   return Math.max(0, Math.floor((now - new Date(entry.start_time).getTime()) / 1000));
@@ -91,12 +110,19 @@ function noteWrite(ws: Workspace, command: string) {
 
 /** `gen`: a sync's snapshot; an action since then makes this answer stale. */
 async function loadTotal(task: Task | null, gen?: number) {
-  if (!task) return useTimer.setState({ totalBase: 0 });
+  if (!task) return useTimer.setState({ totalBase: 0, todayBase: 0, todayDay: null });
   const ws = wsOf(task);
   if (!ws) return;
-  const n = await wsGetTaskTotalTime(ws, task.id).catch(() => null);
+  const day = localMidnight(Date.now());
+  // An older host has no "today" command: the pill then counts only the running entry.
+  const [n, today] = await Promise.all([
+    wsGetTaskTotalTime(ws, task.id).catch(() => null),
+    wsGetMyTaskTimeSince(ws, task.id, new Date(day).toISOString()).catch(() => null),
+  ]);
   if (gen !== undefined && gen !== actionGen) return;
-  if (n != null && taskKey(useAppStore.getState().activeTask) === taskKey(task)) useTimer.setState({ totalBase: n });
+  if (taskKey(useAppStore.getState().activeTask) !== taskKey(task)) return;
+  if (n != null) useTimer.setState({ totalBase: n });
+  useTimer.setState(today != null ? { todayBase: today, todayDay: day } : { todayBase: 0, todayDay: null });
 }
 
 // ---------- reading the host ----------
@@ -231,7 +257,7 @@ export const stopTimer = () =>
   run(async () => {
     await stopEntry();
     adopt(null);
-    useTimer.setState({ totalBase: 0 });
+    useTimer.setState({ totalBase: 0, todayBase: 0, todayDay: null });
     announce();
   });
 
@@ -274,7 +300,7 @@ export function startTimerSync(): () => void {
       // failed stop aborts the switch (run() resyncs with the host).
       const wasRunning = !!useTimer.getState().entry;
       await stopEntry();
-      useTimer.setState({ totalBase: 0 });
+      useTimer.setState({ totalBase: 0, todayBase: 0, todayDay: null });
       await loadTotal(next);
       // A running timer carries over to the newly active task.
       if (wasRunning && next) await startEntry(next);
@@ -288,7 +314,7 @@ export function startTimerSync(): () => void {
       if (useAppStore.getState().activeTask) announce();
     } else if (m?.type === 'state') {
       adopt(m.active);
-      if (!m.active) useTimer.setState({ entry: null, entryWs: null, totalBase: 0 });
+      if (!m.active) useTimer.setState({ entry: null, entryWs: null, totalBase: 0, todayBase: 0, todayDay: null });
       void syncTimer();
     }
   };
@@ -334,28 +360,30 @@ export async function loadRecentTimeTasks(n = 8): Promise<RecentTimeTask[]> {
     .slice(0, n + 1);
 }
 
-/** Tasks a member agent is working on right now: the "Agents" section.
- * Futureproofing: the host records no live agent run against a task yet
- * (Oracle runs are per workflow, the agent ledger is after the fact), so
- * nothing reports here today and the section stays hidden. An agent that
- * works on a task calls `reportAgentWork` / `endAgentWork`. */
-export interface AgentWork {
-  task: Task;
-  /** Who is working: the agent's or member's name. */
-  who: string;
-  since: number;
-}
+/** Tasks my assistants are working on right now: the "Agents" section. A chat
+ * turn's tools (and its delegates') put each task they touch on the host's board
+ * until the turn ends; the host pulses `agents` on every change, and the app calls
+ * `refreshAgentWork` then, so every window of the user shows the same. The host
+ * returns only tasks the reader can see. */
+export type AgentWork = MergedAgentWork<Task>;
 export const useAgentWork = create<{ work: Record<string, AgentWork> }>(() => ({ work: {} }));
-export function reportAgentWork(task: Task, who: string) {
-  const k = taskKey(task)!;
-  useAgentWork.setState((s) => ({ work: { ...s.work, [k]: { task, who, since: Date.now() } } }));
-}
-export function endAgentWork(task: Task) {
-  const k = taskKey(task)!;
-  useAgentWork.setState((s) => {
-    const { [k]: _gone, ...rest } = s.work;
-    return { work: rest };
-  });
+let agentSeq = 0;
+/** Each workspace's last answer: a host that fails to answer once keeps its rows. */
+const lastAgentRows = new Map<string, AgentWorkRow<Task>[]>();
+export async function refreshAgentWork(): Promise<void> {
+  const n = ++agentSeq;
+  const wss = timerWorkspaces();
+  const rows = await Promise.all(
+    wss.map((ws) => wsGetAgentWork(ws).catch(() => lastAgentRows.get(ws.id) ?? []))
+  );
+  if (n !== agentSeq) return; // a newer refresh is on its way
+  wss.forEach((ws, i) => lastAgentRows.set(ws.id, rows[i]));
+  const work = mergeAgentWork(
+    wss.map((ws, i) => ({ workspaceId: ws.id, rows: rows[i] })),
+    (task, workspaceId) => ({ ...task, workspaceId }),
+    (t) => taskKey(t)!
+  );
+  useAgentWork.setState({ work });
 }
 
 export type { RecentTimeTask };

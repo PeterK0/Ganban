@@ -1,6 +1,6 @@
 [package]
 name = "ganban-core"
-version = "1.0.6"
+version = "1.0.7"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Shared data layer and business logic for Ganban (desktop app + daemon)"
@@ -9,6 +9,7 @@ description = "Shared data layer and business logic for Ganban (desktop app + da
 name = "ganban_core"
 
 [dev-dependencies]
+rust_xlsxwriter = { version = "0.102", default-features = false }
 tokio = { workspace = true }
 
 [dependencies]
@@ -21,3 +22,7 @@ sqlx = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }
+calamine = "0.38"
+encoding_rs = "0.8"
+# Only to read an XLSX's declared unpacked size before calamine opens it (calamine's own zip).
+zip = { version = "9", default-features = false }

@@ -80,7 +80,10 @@ fn the_size_guard_needs_force_and_names_the_size() {
     assert_eq!(storage::ai_flag(10 * mb, false, false, 50 * mb).unwrap(), storage::AI_EXCLUDED);
     assert_eq!(storage::ai_flag(10 * mb, true, false, 50 * mb).unwrap(), storage::AI_INCLUDED);
     assert_eq!(storage::ai_flag(50 * mb, true, false, 50 * mb).unwrap(), storage::AI_INCLUDED, "the guard itself is fine");
-    let err = storage::ai_flag(380 * mb, true, false, 50 * mb).unwrap_err().to_string();
+    let refusal = storage::ai_flag(380 * mb, true, false, 50 * mb).unwrap_err();
+    assert_eq!(refusal.code(), Some(ganban_core::error::codes::AI_FILE_TOO_LARGE), "the client matches the code, not the text");
+    assert!(refusal.is_invalid_input());
+    let err = refusal.to_string();
     assert!(err.contains("380 MB") && err.contains("50 MB") && err.contains("force"), "{err}");
     assert_eq!(storage::ai_flag(380 * mb, true, true, 50 * mb).unwrap(), storage::AI_FORCED);
     assert_eq!(storage::ai_flag(380 * mb, false, false, 50 * mb).unwrap(), storage::AI_EXCLUDED, "leaving out never asks");
