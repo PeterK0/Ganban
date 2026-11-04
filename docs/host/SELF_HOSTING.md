@@ -47,7 +47,8 @@ so clients never see those addresses or any token.
 
 ## Before you start
 
-- **A host:** a Mac (Apple Silicon or Intel) or a Linux machine that stays on.
+- **A host:** a Mac with Apple Silicon, or a Linux machine, that stays on. (An Intel Mac may still build and run the
+  host from source, but it isn't tested.)
 - **Tailscale** installed and signed in on the host *and* on every client. Turn on MagicDNS if you want HTTPS or
   share links.
 - **Ollama** (<https://ollama.com>) on the host, for the AI assistant. Ganban works without it, minus the assistant.

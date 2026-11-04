@@ -37,6 +37,8 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ### Changed
 
+- **Macs with Apple Silicon only:** Intel Macs are no longer built. 1.0.6 is the last Intel release, and it doesn't
+  offer itself an update.
 - The timer pill shows your time on the task today, not the task's all-time total.
 - On very wide screens, file lists keep their details beside the names.
 

@@ -3,7 +3,7 @@ name: Release
 # Build native installers for every desktop OS, an Android APK, and an iOS .ipa,
 # and attach them to a GitHub Release. Triggered by pushing a version tag
 # (e.g. `git tag v1.0.0 && git push origin v1.0.0`) or run manually.
-#   Desktop: Windows .msi/.exe · macOS .dmg (arm64 + Intel) · Linux .AppImage/.deb (unsigned)
+#   Desktop: Windows .msi/.exe · macOS .dmg (Apple Silicon only) · Linux .AppImage/.deb (unsigned)
 #   Android: signed release .apk when ANDROID_* secrets are set, else unsigned.
 #   iOS:     signed .ipa when the IOS_*/APPLE_DEVELOPMENT_TEAM secrets are set,
 #            else a simulator compile-check (no Apple Developer account needed).
@@ -94,14 +94,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Both Mac builds run on Apple Silicon; the Intel one cross-compiles (GitHub retired the
-          # Intel macos-13 runner).
+          # Apple Silicon only: Intel Macs aren't built since 1.0.7 (one macOS runner per release
+          # instead of two; GitHub's macOS runners are often slow to be acquired).
           - name: macos-arm64 # Apple Silicon .dmg
             platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
-          - name: macos-x64 # Intel .dmg
-            platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
           # The oldest supported Ubuntu, so the AppImage and .deb run on older glibc too.
           - name: linux
             platform: 'ubuntu-22.04'
@@ -123,7 +120,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -218,8 +215,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
-          TRIPLE: ${{ matrix.name == 'macos-x64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
-          ARCH: ${{ matrix.name == 'macos-x64' && 'x64' || 'aarch64' }}
+          TRIPLE: aarch64-apple-darwin
+          ARCH: aarch64
         run: |
           set -euo pipefail
           dmg="$(find "target/$TRIPLE/release/bundle/dmg" -name '*.dmg' | head -n 1)"
@@ -413,7 +410,7 @@ jobs:
               done
             node scripts/updater-json.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --assets "$RUNNER_TEMP/assets.json" \
               --sigs "$RUNNER_TEMP/sigs" --out "$RUNNER_TEMP/latest.json" \
-              --require darwin-aarch64,darwin-x86_64,linux-x86_64,windows-x86_64
+              --require darwin-aarch64,linux-x86_64,windows-x86_64
             gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber
           else
             echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: no latest.json, so desktop apps won't see this release."

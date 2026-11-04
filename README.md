@@ -14,7 +14,7 @@ telemetry.
 ## Download
 
 Get the installer for your system from **[GitHub Releases](https://github.com/PeterK0/Ganban/releases)**:
-a `.dmg` for macOS (Apple Silicon or Intel), an `.exe` or `.msi` for Windows, and an `.AppImage` or `.deb` for
+a `.dmg` for Macs with Apple Silicon (M1 and newer), an `.exe` or `.msi` for Windows, and an `.AppImage` or `.deb` for
 Linux. The Android app is there too. From 1.0.2 on, these apps check the Releases page for new versions and
 update themselves; **Settings → Updates** turns that off ([more](docs/user/UPDATES_AND_BACKUPS.md#updates)).
 

@@ -4,7 +4,7 @@
 // overwrite each other's platforms (tauri-action's own latest.json is read-modify-write per job).
 //
 //   node scripts/updater-json.mjs --repo owner/name --tag v1.0.2 --assets assets.json --sigs <dir> \
-//        --out latest.json [--require darwin-aarch64,darwin-x86_64,linux-x86_64,windows-x86_64]
+//        --out latest.json [--require darwin-aarch64,linux-x86_64,windows-x86_64]
 //
 // assets.json is GitHub's asset list (`[{name}]`, or `{assets: [{name}]}`); <dir> holds the release's
 // downloaded *.sig files. Each signed bundle gets `<os>-<arch>-<installer>` (the updater picks the one

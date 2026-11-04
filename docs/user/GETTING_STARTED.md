@@ -11,7 +11,7 @@ The apps aren't signed with a paid developer certificate, so each system warns y
 
 ### macOS
 
-1. Open the `.dmg` (Apple Silicon for M1 and newer, Intel for older Macs) and drag **Ganban** into **Applications**.
+1. Open the `.dmg` (for Apple Silicon Macs, M1 and newer) and drag **Ganban** into **Applications**.
 2. Open Ganban. If macOS says it "can't be opened" or "is damaged", open **Terminal** and run this once:
 
    ```bash

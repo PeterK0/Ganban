@@ -42,7 +42,8 @@ More: [Getting started](GETTING_STARTED.md).
 
 Download the installer for your system from the project's GitHub **Releases** page:
 
-- **Mac:** the `.dmg` (Apple Silicon or Intel).
+- **Mac:** the `.dmg`, for Apple Silicon (M1 and newer). Intel Macs aren't built since 1.0.7; 1.0.6 is the last Intel
+  release.
 - **Windows:** the `.msi` or `.exe`.
 - **Linux:** the `.AppImage` or the `.deb`.
 - **Android:** the `.apk`. You only need it to use Ganban on an Android phone ([question 6](#6-how-do-i-use-ganban-from-my-phone)).

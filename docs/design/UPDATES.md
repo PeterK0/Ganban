@@ -109,7 +109,7 @@ A keyed build without a channel counts as `host` (host builds from before channe
 - The Android build sets `versionCode = major·1000000 + minor·1000 + patch` (Tauri's formula, explicit) and uploads
   `Ganban_<version>_universal.apk`.
 - `publish`, after all of them, writes `latest.json` with `scripts/updater-json.mjs` from the draft's assets and
-  `.sig` files, refuses when one of `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64` or `windows-x86_64` is missing,
+  `.sig` files, refuses when one of `darwin-aarch64`, `linux-x86_64` or `windows-x86_64` is missing (Intel Macs aren't built since 1.0.7),
   uploads it and publishes the release as `latest`. Each bundle gets `<os>-<arch>-<installer>`, so an NSIS install
   updates with the NSIS installer and an MSI install with the MSI. The plain `<os>-<arch>` key is the `.app`, the
   MSI (tauri-action's `updaterJsonPreferNsis` default) or the AppImage.
