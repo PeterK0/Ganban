@@ -169,11 +169,36 @@ pub async fn ensure_owner(db: &Db) -> Result<i64> {
     Ok(owner_id)
 }
 
-/// Bootstrap auth on startup: ensure an owner, and if the owner has no enrolled
-/// device (and no pending owner token), mint a one-time owner enrollment token
-/// and return its raw value so the daemon can surface it. Idempotent.
+/// Repair the rule that the owner is owner-member of every project: add the
+/// owner to any project that lacks them. Desktops in local mode used to create
+/// projects with no member rows, so the owner was missing from their members
+/// (and from their assignees). Leaves an existing membership's role alone, and
+/// skips personal containers (they belong to their one user).
+/// Idempotent; returns how many projects it repaired.
+pub async fn ensure_owner_memberships(db: &Db, owner_id: i64) -> Result<u64> {
+    let done = sqlx::query(
+        r#"
+        INSERT INTO project_members (project_id, user_id, role, created_at)
+        SELECT p.id, ?1, ?2, ?3 FROM projects p
+        WHERE p.personal_user_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?1)
+        "#,
+    )
+    .bind(owner_id)
+    .bind(ROLE_OWNER)
+    .bind(Utc::now())
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// Bootstrap auth on startup: ensure an owner who is owner-member of every
+/// project, and if the owner has no enrolled device (and no pending owner
+/// token), mint a one-time owner enrollment token and return its raw value so
+/// the daemon can surface it. Idempotent.
 pub async fn bootstrap(db: &Db) -> Result<Option<String>> {
     let owner_id = ensure_owner(db).await?;
+    ensure_owner_memberships(db, owner_id).await?;
 
     let has_device: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM device_tokens WHERE user_id = ? LIMIT 1")

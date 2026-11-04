@@ -9,7 +9,7 @@ import StaleBuildBanner from "./components/StaleBuildBanner";
 import { daemonStatus } from "./lib/host";
 import { migrateWorkspaces, setLocalUrl } from "./lib/workspaces";
 import { installErrorCapture } from "./lib/errorLog";
-import { installRestartFlushListener } from "./lib/restartFlush";
+import { installRestartFlushListener, installUnloadFlush } from "./lib/restartFlush";
 import { tabPane } from "./tabs/modules";
 // Gilt's faces, bundled (the app runs offline): Figtree for text, Josefin Sans
 // for deco headings. Only the weights the design uses.
@@ -31,8 +31,10 @@ installErrorCapture();
 // enrollment becomes one registered remote, still active.
 migrateWorkspaces();
 
-// Every window saves its open editors when the app restarts into an update.
+// Every window saves its open editors when the app restarts into an update,
+// and when the window reloads or closes.
 void installRestartFlushListener();
+void installUnloadFlush();
 
 // WHICH SHELL is a question about the input device and the viewport, NOT the
 // runtime (lib/shell.ts): the native mobile app, a phone browser, or a narrow

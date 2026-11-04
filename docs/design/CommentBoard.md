@@ -52,8 +52,20 @@ Reactions for the whole board: `GET /projects/:id/reactions`.
 | Surface | What |
 |---|---|
 | Project › Comments | Tasks grouped by area on the left, with counts; click to filter (multi-select, ANY). With one task picked, the old task header shows (description, time tracked). Full board on the right; the composer pre-tags the filtered tasks. |
-| Project › Home | "Updates": latest 5 + composer; chips open the task in the detail pane. |
-| Home | "Updates" with a tab per project plus **All** (merged across workspaces). It follows the sidebar's project filter. Each project's board talks to that project's **own** workspace (`workspaceBoardApi`), so posting from Home lands on the right host. Pasted images and reactions only show when that workspace is the active transport. "Open the board" sets `commentBoardIntent`, so the project opens on its Comments tab. |
+| Project › Home | "Updates": latest 5 + composer; chips open the task in the detail pane. "Open Comments →" goes to the Comments tab. |
+| Home | "Updates" with a tab per project plus **All** (merged across workspaces). It follows the sidebar's project filter. Each project's board talks to that project's **own** workspace (`workspaceBoardApi`), so posting from Home lands on the right host. Pasted images and reactions only show when that workspace is the active transport. With a project selected, "Open {project}'s Comments →" sets `commentBoardIntent`, so the project opens on its Comments tab. |
+
+## The composer
+
+- **Text field** (`MarkdownField.tsx`, inside `CommentEditor.tsx`): it grows with its text up to about 60% of the
+  window, then scrolls. Its handle drags a height of your own (arrow keys too); a double-click resets it. One height
+  is remembered per device for every composer.
+- **Preview:** beside the text when the composer is at least 720px wide (its own width, not the window's), under it
+  when narrower. It shows once there's text, and the toolbar's Preview toggle hides it (remembered per device).
+- **Tag picker** (`TaskTagPicker.tsx`): arrow keys and Enter pick rows. When the search matches no task title
+  exactly, the last row is `Create task "…"`: it calls `create_task` on the board's host with the usual defaults
+  for a new task (To Do, Medium, no area) and tags the new task. A refusal shows the host's error in the picker and
+  tags nothing.
 
 The code is in `src/components/comments/`: `boardApi.ts` (transport adapter), `TaskTagPicker.tsx`,
 `CommentBoard.tsx` (composer, feed, `useBoard`), `HomeUpdates.tsx`.

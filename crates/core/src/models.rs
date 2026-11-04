@@ -118,11 +118,25 @@ pub struct UpdateTaskInput {
     pub status: Option<String>,
     pub priority: Option<String>,
     pub prefix: Option<String>,
-    pub cost: Option<f64>,
+    /// `cost`, `area_id` and `deadline` tell a missing field (keep) from `null`
+    /// (clear): `None` keeps, `Some(None)` clears, `Some(Some(v))` sets.
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    pub cost: Option<Option<f64>>,
     pub currency: Option<String>,
-    pub area_id: Option<i64>,
-    pub deadline: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    pub area_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<Option<DateTime<Utc>>>,
     pub pinned: Option<bool>,
+}
+
+/// A present field, `null` included, is `Some`; a missing one stays `None` (serde's default).
+fn patch_field<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1413,4 +1427,25 @@ pub struct ModelBuildLogEntry {
     pub board_id: i64,
     pub board_name: String,
     pub part_number: i64,
+}
+
+#[cfg(test)]
+mod update_task_input_tests {
+    use super::UpdateTaskInput;
+
+    /// A missing field keeps, `null` clears, a value sets, and serializing gives the same JSON back.
+    #[test]
+    fn missing_null_and_value_round_trip() {
+        let input: UpdateTaskInput =
+            serde_json::from_value(serde_json::json!({ "cost": null, "area_id": 4, "title": "t" })).unwrap();
+        assert_eq!(input.cost, Some(None));
+        assert_eq!(input.area_id, Some(Some(4)));
+        assert_eq!(input.deadline, None);
+        let back = serde_json::to_value(&input).unwrap();
+        assert_eq!(back["cost"], serde_json::Value::Null);
+        assert_eq!(back["area_id"], 4);
+        assert!(back.get("deadline").is_none(), "a missing field stays missing");
+        let again: UpdateTaskInput = serde_json::from_value(back).unwrap();
+        assert_eq!((again.cost, again.area_id, again.deadline), (Some(None), Some(Some(4)), None));
+    }
 }

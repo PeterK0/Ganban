@@ -55,7 +55,7 @@ interface AppState {
   // K2: composite 'workspace:id' (ids collide across hosts), not a bare id.
   homeBoardProjectFilter: string | null;
   setHomeBoardProjectFilter: (key: string | null) => void;
-  /** "Open the board" from Home: land on this project's Comments tab with
+  /** "Open {project}'s Comments" from Home: land on this project's Comments tab with
    * these tasks filtered. Consumed (cleared) by ProjectView. Not persisted. */
   commentBoardIntent: { projectKey: string; taskIds: number[] } | null;
   setCommentBoardIntent: (intent: { projectKey: string; taskIds: number[] } | null) => void;

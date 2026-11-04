@@ -150,6 +150,10 @@ async fn only_admins_widen_who_sees_a_task() {
     let move_to = |task: i64, area: i64| json!({ "taskId": task, "input": { "area_id": area } });
     assert!(http(&w.db, w.mia, "update_task", move_to(w.open, w.finance)).await.is_ok(), "Mia files into Finance");
     assert!(http(&w.db, w.mia, "update_task", move_to(w.budget, w.ops_area)).await.unwrap_err().is_forbidden());
+    // Clearing the area (null) takes it out too.
+    let clear_area = |task: i64| json!({ "taskId": task, "input": { "area_id": null } });
+    assert!(http(&w.db, w.mia, "update_task", clear_area(w.budget)).await.unwrap_err().is_forbidden());
+    assert!(http(&w.db, w.ana, "update_task", clear_area(w.open)).await.is_ok(), "an admin may");
     assert!(http(&w.db, w.ana, "update_task", move_to(w.budget, w.ops_area)).await.is_ok());
     let into_finance = task_input(w.project, "Mine", Some(w.finance));
     assert!(http(&w.db, w.bo, "create_task", into_finance).await.unwrap_err().is_not_found(), "Bo can't see Finance");

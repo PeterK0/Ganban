@@ -184,10 +184,11 @@ export interface UpdateTaskInput {
   status?: TaskStatus;
   priority?: TaskPriority;
   prefix?: string;
-  cost?: number;
+  /** `null` clears; leaving it out keeps (also for area_id and deadline). */
+  cost?: number | null;
   currency?: string;
-  area_id?: number;
-  deadline?: string;
+  area_id?: number | null;
+  deadline?: string | null;
   pinned?: boolean;
 }
 

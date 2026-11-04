@@ -28,8 +28,13 @@ pub(super) const COMMANDS: &[Command] = &[
         .author(Author::Arg("createdBy"))
         .run(|cx, a| {
             Box::pin(async move {
+                // The owner is owner-member of every project. Over HTTP the owner is the
+                // stamped creator; in-process (the desktop in local mode) nobody is stamped,
+                // and a project without the owner would offer no one to assign.
+                let owner = auth::ensure_owner(cx.db).await?;
                 let project = ops::create_project(cx.db, a.input()?).await?;
-                if let Some(creator) = a.opt_author() {
+                auth::add_project_member(cx.db, project.id, owner, auth::ROLE_OWNER).await?;
+                if let Some(creator) = a.opt_author().filter(|&c| c != owner) {
                     auth::add_project_member(cx.db, project.id, creator, auth::ROLE_OWNER).await?;
                 }
                 reply(project)
@@ -148,8 +153,46 @@ mod tests {
 
         let pid = http(&db, owner, "create_project", new).await.unwrap()["id"].as_i64().unwrap();
         assert_eq!(ganban_core::auth::member_role(&db, pid, owner.id).await.unwrap().as_deref(), Some("owner"));
-        // In-process (desktop) nobody is stamped as creator, so no member row appears.
-        assert_eq!(ganban_core::auth::member_role(&db, a, owner.id).await.unwrap(), None);
+        // In-process (the desktop in local mode) nobody is stamped as creator: the owner still owns it.
+        assert_eq!(ganban_core::auth::member_role(&db, a, owner.id).await.unwrap().as_deref(), Some("owner"));
+    }
+
+    fn member_ids(overview: &serde_json::Value) -> Vec<i64> {
+        overview.as_array().unwrap().iter().map(|m| m["user_id"].as_i64().unwrap()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_local_mode_project_lists_the_owner_among_its_members() {
+        let db = test_db("projects_local_owner").await;
+        let owner = owner(&db).await;
+        // Local mode runs the table in-process, with no creator in the args.
+        let pid = seed(&db, "create_project", json!({ "input": { "name": "Local" } })).await["id"].as_i64().unwrap();
+        let overview = seed(&db, "get_project_member_overview", json!({ "projectId": pid })).await;
+        assert_eq!(member_ids(&overview), vec![owner.id], "the owner is offered as an assignee");
+    }
+
+    #[tokio::test]
+    async fn startup_repairs_local_projects_created_without_the_owner() {
+        let db = test_db("projects_owner_repair").await;
+        let owner = owner(&db).await;
+        // A project an older desktop made in local mode: no member rows at all.
+        let pid: i64 = sqlx::query_scalar("INSERT INTO projects (name, created_at, updated_at) VALUES ('Old', datetime('now'), datetime('now')) RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let ana = member(&db, 8, &[(pid, "admin")]).await;
+        assert_eq!(member_ids(&seed(&db, "get_project_member_overview", json!({ "projectId": pid })).await), vec![ana.id]);
+
+        // Someone else's personal container stays theirs alone.
+        let personal = ganban_core::ops::ensure_personal_project(&db, ana.id).await.unwrap();
+
+        for _ in 0..2 {
+            // Idempotent: a second start changes nothing.
+            ganban_core::auth::bootstrap(&db).await.unwrap();
+            let overview = seed(&db, "get_project_member_overview", json!({ "projectId": pid })).await;
+            assert_eq!(member_ids(&overview), vec![owner.id, ana.id], "the owner first, the admin kept");
+            assert_eq!(ganban_core::auth::member_role(&db, personal, owner.id).await.unwrap(), None);
+        }
     }
 
     #[tokio::test]

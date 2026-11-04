@@ -19,6 +19,8 @@ import {
   type ProjectFile,
   type ProjectAttachment,
 } from '../lib/daemon';
+import { revealLocalPath } from '../lib/shell';
+import { atlasEntries, type AtlasEntry } from '../lib/atlasFiles.pure';
 import type { Project } from '../types';
 import { useContextMenu, type MenuItem } from './ContextMenu';
 import ScrollArea from './ScrollArea';
@@ -30,20 +32,12 @@ import ScrollArea from './ScrollArea';
 // machine — a "storage folder" button that opens the real on-disk blob store
 // (the "where did my 20 GB go" view).
 //
-// Two kinds of entries: project files (fully manageable) and shared task
-// attachments (owned by their task — download/open only).
+// Two kinds of entries: project files (fully manageable) and task attachments
+// (owned by their task — download/open only). Attachments stored only on this
+// device show where the data is served from this machine (atlasFiles.pure.ts),
+// with a "this device" tag; Open reveals them at their path.
 
-type Entry = {
-  key: string;
-  kind: 'project' | 'attachment';
-  id: number;
-  name: string;
-  /** Full library-relative path (folders from rel_path; attachments are flat). */
-  relPath: string;
-  size: number;
-  createdAt: string;
-  taskTitle?: string;
-};
+type Entry = AtlasEntry;
 
 type SortKey = 'name' | 'type' | 'size' | 'date';
 
@@ -56,6 +50,11 @@ function fmtSize(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** A this-device file's size isn't recorded when it's attached: show a dash, not "0 B". */
+function sizeOf(e: AtlasEntry): string {
+  return e.onDevice && !e.size ? '—' : fmtSize(e.size);
 }
 
 function fmtDate(iso: string): string {
@@ -128,28 +127,7 @@ export default function AtlasFilesTab() {
       listProjectAttachments(pid).catch(() => [] as ProjectAttachment[]),
       listProjectFolders(pid).catch(() => [] as string[]),
     ]).then(([pf, att, folders]) => {
-      const rows: Entry[] = [
-        ...pf.map((f): Entry => ({
-          key: `p-${f.id}`,
-          kind: 'project',
-          id: f.id,
-          name: f.file_name,
-          relPath: f.rel_path || f.file_name,
-          size: f.size_bytes,
-          createdAt: f.created_at,
-        })),
-        ...att.filter((a) => a.is_shared).map((a): Entry => ({
-          key: `a-${a.id}`,
-          kind: 'attachment',
-          id: a.id,
-          name: a.file_name,
-          relPath: a.file_name, // attachments are flat (no folders)
-          size: a.storage_size,
-          createdAt: a.created_at,
-          taskTitle: a.task_title,
-        })),
-      ];
-      setEntries(rows);
+      setEntries(atlasEntries(pf, att, onHostMachine));
       setServerFolders(folders);
     });
 
@@ -226,7 +204,7 @@ export default function AtlasFilesTab() {
   // Image preview for the focused entry (object URL, revoked on change).
   useEffect(() => {
     setPreview(null);
-    if (!detail) return;
+    if (!detail || detail.onDevice) return; // no host copy to preview
     const ext = detail.name.split('.').pop()?.toLowerCase() ?? '';
     if (!IMG_EXT.includes(ext) || detail.size > PREVIEW_CAP) return;
     let url: string | null = null;
@@ -249,10 +227,33 @@ export default function AtlasFilesTab() {
 
   const err = (e: unknown) => setMsg(e instanceof Error ? e.message : String(e));
 
-  const download = (e: Entry) =>
+  // A file stored only on this device has no host copy to download.
+  const download = (e: Entry) => {
+    if (e.onDevice) return;
     void (e.kind === 'project' ? downloadProjectFile(e.id, e.name) : downloadSharedFile(e.id, e.name)).catch(err);
-  const openFile = (e: Entry) =>
+  };
+  const openFile = (e: Entry) => {
+    if (e.onDevice) return void revealOnDevice(e);
     void (e.kind === 'project' ? openProjectFile(e.id, e.name) : openSharedFile(e.id, e.name)).catch(err);
+  };
+  /** Show a this-device file at its saved path (or the nearest folder that's left). */
+  const revealOnDevice = async (e: Entry) => {
+    if (!e.filePath) return;
+    try {
+      const r = await revealLocalPath(e.filePath);
+      setMsg(
+        r.outcome === 'file'
+          ? null
+          : r.outcome === 'folder'
+            ? `${e.name} isn't at its saved path — opened the nearest folder: ${r.opened}`
+            : `${e.name} isn't on this machine — it was saved as ${e.filePath}`
+      );
+    } catch (x) {
+      err(x);
+    }
+  };
+  const downloadable = (es: Entry[]) => es.filter((e) => !e.onDevice);
+  const deviceTag = <span className="g-tag !min-h-[18px] !px-1.5 !text-[10px] shrink-0" title="Stored only on this device — no host copy">this device</span>;
 
   const doRename = async () => {
     if (!detail || detail.kind !== 'project') return;
@@ -343,12 +344,15 @@ export default function AtlasFilesTab() {
     const many = targets.length > 1;
     const movable = targets.filter((t) => t.kind === 'project');
     const items: MenuItem[] = [];
-    if (!many && canOpen) items.push({ label: 'Open', icon: '↗', onClick: () => openFile(e) });
-    items.push({
-      label: many ? `Download ${targets.length} files` : 'Download',
-      icon: '⇩',
-      onClick: () => targets.forEach(download),
-    });
+    if (!many && canOpen) items.push({ label: e.onDevice ? 'Show in folder' : 'Open', icon: '↗', onClick: () => openFile(e) });
+    const dl = downloadable(targets);
+    if (dl.length > 0) {
+      items.push({
+        label: many ? `Download ${dl.length} files` : 'Download',
+        icon: '⇩',
+        onClick: () => dl.forEach(download),
+      });
+    }
     if (!many && e.kind === 'project') {
       items.push({
         label: 'Rename…', icon: '✏️',
@@ -563,14 +567,15 @@ export default function AtlasFilesTab() {
                       if (!selected.has(e.key)) clickEntry(e, ev);
                       menu.open(ev, entryMenu(e));
                     }}
-                    title={`${e.relPath} · ${fmtSize(e.size)}${e.taskTitle ? ` · on “${e.taskTitle}”` : ''}`}
+                    title={`${e.relPath} · ${sizeOf(e)}${e.taskTitle ? ` · on “${e.taskTitle}”` : ''}`}
                     className={`g-plain g-glint flex flex-col items-center gap-1 p-3 ${
                       selected.has(e.key) ? '!bg-gilt-b !border-gilt-a shadow-[inset_0_0_0_1px_var(--color-gilt-a)]' : 'hover:!border-gilt-a'
                     }`}
                   >
                     <span className="text-3xl">{iconFor(e.name)}</span>
                     <span className="text-xs text-text truncate w-full text-center">{e.name}</span>
-                    <span className="text-[10px] text-subtext-0">{fmtSize(e.size)}</span>
+                    <span className="text-[10px] text-subtext-0">{sizeOf(e)}</span>
+                    {e.onDevice && deviceTag}
                   </button>
                 ))}
               </div>
@@ -606,16 +611,17 @@ export default function AtlasFilesTab() {
                       {searching ? e.relPath : e.name}
                       {e.taskTitle && <span className="text-subtext-0 text-xs"> · 📎 {e.taskTitle}</span>}
                     </span>
+                    {e.onDevice && deviceTag}
                     <span className="text-[11px] text-subtext-0 shrink-0 w-14 text-right uppercase">{extOf(e.name) || '—'}</span>
                     <span className="text-[11px] text-subtext-0 shrink-0 w-20 text-right">{fmtDate(e.createdAt)}</span>
-                    <span className="text-[11px] text-subtext-0 shrink-0 w-16 text-right">{fmtSize(e.size)}</span>
+                    <span className="text-[11px] text-subtext-0 shrink-0 w-16 text-right">{sizeOf(e)}</span>
                   </button>
                 ))}
               </div>
             )}
             {entries != null && folders.length === 0 && files.length === 0 && newFolderDraft === null && (
               <p className="text-sm text-subtext-0 italic p-2">
-                {searching ? 'No matches.' : cwd.length ? 'Empty folder.' : 'No host-stored files in this project.'}
+                {searching ? 'No matches.' : cwd.length ? 'Empty folder.' : 'No files in this project.'}
               </p>
             )}
             <p className="mt-3 text-[11px] text-subtext-0">
@@ -650,12 +656,14 @@ export default function AtlasFilesTab() {
                     <div className="text-sm font-medium text-text">{selEntries.length} files selected</div>
                     <div className="text-xs text-subtext-0 mt-1">{fmtSize(selEntries.reduce((s, e) => s + e.size, 0))} total</div>
                   </div>
-                  <button
-                    onClick={() => selEntries.forEach(download)}
-                    className="g-btn g-btn-ghost g-btn-sm w-full"
-                  >
-                    ⇩ Download all
-                  </button>
+                  {downloadable(selEntries).length > 0 && (
+                    <button
+                      onClick={() => downloadable(selEntries).forEach(download)}
+                      className="g-btn g-btn-ghost g-btn-sm w-full"
+                    >
+                      ⇩ Download {downloadable(selEntries).length < selEntries.length ? `${downloadable(selEntries).length} on the host` : 'all'}
+                    </button>
+                  )}
                   {selEntries.some((e) => e.kind === 'project') && allFolders.length > 0 && (
                     <div className="space-y-1">
                       <div className="g-deco text-[10px] font-semibold text-gold">Move to</div>
@@ -709,9 +717,10 @@ export default function AtlasFilesTab() {
                     <span className={`g-tag mt-1.5 !min-h-[20px] !px-2 !text-[10px] ${detail.kind === 'project' ? '!bg-primary/15 !text-primary' : ''}`}>
                       {detail.kind === 'project' ? 'project file' : 'task attachment'}
                     </span>
+                    {detail.onDevice && <span className="g-tag mt-1.5 ml-1 !min-h-[20px] !px-2 !text-[10px]">this device</span>}
                   </div>
                   <div className="space-y-1.5 text-xs">
-                    <div className="flex justify-between"><span className="text-subtext-0">Size</span><span className="text-text">{fmtSize(detail.size)}</span></div>
+                    <div className="flex justify-between"><span className="text-subtext-0">Size</span><span className="text-text">{sizeOf(detail)}</span></div>
                     <div className="flex justify-between"><span className="text-subtext-0">Added</span><span className="text-text">{fmtDate(detail.createdAt)}</span></div>
                     {detail.relPath.includes('/') && (
                       <div className="flex justify-between gap-2"><span className="text-subtext-0 shrink-0">Folder</span><span className="text-text truncate">{detail.relPath.slice(0, detail.relPath.lastIndexOf('/'))}</span></div>
@@ -724,12 +733,14 @@ export default function AtlasFilesTab() {
                   <div className="space-y-1.5 pt-3 border-t border-gilt-b">
                     {canOpen && (
                       <button onClick={() => openFile(detail)} className="g-btn g-btn-pri g-btn-sm w-full">
-                        Open
+                        {detail.onDevice ? 'Show in folder' : 'Open'}
                       </button>
                     )}
-                    <button onClick={() => download(detail)} className="g-btn g-btn-ghost g-btn-sm w-full">
-                      Download
-                    </button>
+                    {!detail.onDevice && (
+                      <button onClick={() => download(detail)} className="g-btn g-btn-ghost g-btn-sm w-full">
+                        Download
+                      </button>
+                    )}
                     {detail.kind === 'project' && (
                       <button
                         onClick={() => { setRenaming(detail.name); setRenameActive(true); }}
@@ -737,6 +748,9 @@ export default function AtlasFilesTab() {
                       >
                         Rename
                       </button>
+                    )}
+                    {detail.onDevice && (
+                      <p className="text-[11px] text-subtext-0">Stored only on this device, at {detail.filePath}. Share it from its task to put a copy on the host.</p>
                     )}
                     {detail.kind === 'attachment' && (
                       <p className="text-[11px] text-subtext-0">Attachments are managed from their task — rename/move there.</p>

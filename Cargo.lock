@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "ganban-core"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "ganban-server"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "argon2",
  "async-imap",
@@ -1634,13 +1634,15 @@ dependencies = [
 
 [[package]]
 name = "gansty"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
  "ganban-core",
  "ganban-server",
  "if-addrs",
+ "objc2",
+ "objc2-foundation",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5396,7 +5398,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-apk-updater"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "tauri",
  "tauri-plugin",

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import ScrollArea from '../ScrollArea';
 import type { Area, Task } from '../../types';
+import { createCandidate, moveCursor } from '../../lib/composer.pure';
 
 export const STATUS_DOT: Record<string, string> = {
   'To Do': 'bg-overlay-0',
@@ -76,7 +77,9 @@ export function TaskChip({
 /**
  * Pick the tasks a comment is about. Chips for the chosen ones, a searchable
  * list grouped by area, and one-click suggestions (what you tracked time on
- * today, the active task) — the end-of-day update's usual suspects.
+ * today, the active task) — the end-of-day update's usual suspects. With
+ * `onCreate`, a search that no task matches offers to create that task and
+ * tags it. Arrow keys move through the rows; Enter picks.
  */
 export default function TaskTagPicker({
   tasks,
@@ -84,16 +87,30 @@ export default function TaskTagPicker({
   value,
   onChange,
   suggestions = [],
+  onCreate,
 }: {
   tasks: Task[];
   areas?: Area[];
   value: number[];
   onChange: (ids: number[]) => void;
   suggestions?: { taskId: number; hint: string }[];
+  /** Create a task with this title on the board's host. A refusal (the
+   * host's error) shows in the picker and tags nothing. */
+  onCreate?: (title: string) => Promise<Task>;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // The highlighted row, kept with the search it belongs to: a new search
+  // starts at the first row (in the same render, so Enter never picks a
+  // row from the previous search).
+  const [hot, setHot] = useState({ q: '', row: 0 });
+  const cursor = hot.q === query ? hot.row : 0;
+  const setCursor = (row: number) => setHot({ q: query, row });
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const uid = useId();
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
   useEffect(() => {
@@ -119,7 +136,46 @@ export default function TaskTagPicker({
     return out.filter((g) => g.tasks.length > 0);
   }, [tasks, areas, query]);
 
+  // The rows in order, for the arrow keys: every match, then "Create task".
+  const flat = useMemo(() => groups.flatMap((g) => g.tasks), [groups]);
+  const rowOf = useMemo(() => new Map(flat.map((t, i) => [t.id, i])), [flat]);
+  const latest = useRef(value);
+  latest.current = value;
+  const candidate = onCreate ? createCandidate(query, tasks.map((t) => t.title)) : null;
+  const rowCount = flat.length + (candidate ? 1 : 0);
+  const at = Math.min(cursor, rowCount - 1);
+  const scrollTo = (row: number) =>
+    requestAnimationFrame(() => list.current?.querySelector<HTMLElement>(`[data-row="${row}"]`)?.scrollIntoView({ block: 'nearest' }));
+
+  const create = async () => {
+    if (!onCreate || !candidate || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const task = await onCreate(candidate);
+      const now = latest.current;
+      onChange(now.includes(task.id) ? now : [...now, task.id]);
+      setQuery('');
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const pick = (row: number) => {
+    if (row < 0) return;
+    if (row < flat.length) {
+      toggle(flat[row].id);
+      setQuery('');
+    } else void create();
+  };
+
   const offered = suggestions.filter((s) => !value.includes(s.taskId) && byId.has(s.taskId));
+  const rowClass = (on: boolean, hot: boolean) =>
+    `w-full flex items-center gap-2 px-2 min-h-[32px] [@media(pointer:coarse)]:min-h-[44px] rounded text-left text-sm ${
+      on ? 'bg-gilt-b text-text' : hot ? 'bg-surface-0 text-text' : 'text-subtext-1 hover:bg-surface-0'
+    } ${hot ? 'shadow-[inset_0_0_0_1px_var(--color-gilt-a)]' : ''}`;
 
   return (
     <div className="space-y-1.5">
@@ -137,57 +193,94 @@ export default function TaskTagPicker({
             + Tag task
           </button>
           {open && (
-            <div className="absolute z-30 left-0 top-full mt-1 w-72 bg-base border border-gilt-a rounded shadow-xl p-2 space-y-2">
+            <div className="absolute z-30 left-0 top-full mt-1 w-72 max-w-[calc(100vw-2rem)] bg-base border border-gilt-a rounded shadow-xl p-2 space-y-2">
               <input
                 autoFocus
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setCreateError(null);
+                }}
+                readOnly={creating}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') setOpen(false);
-                  // Enter tags the first match — fast keyboard tagging.
-                  if (e.key === 'Enter') {
+                  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                     e.preventDefault();
-                    const first = groups[0]?.tasks[0];
-                    if (first) {
-                      toggle(first.id);
-                      setQuery('');
-                    }
+                    const next = moveCursor(at, e.key === 'ArrowDown' ? 1 : -1, rowCount);
+                    setCursor(next);
+                    scrollTo(next);
+                  } else if (e.key === 'Enter') {
+                    // Enter picks the highlighted row (the first match unless
+                    // the arrows moved): fast keyboard tagging.
+                    e.preventDefault();
+                    pick(at);
                   }
                 }}
-                placeholder="Find a task…"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={`${uid}-rows`}
+                aria-activedescendant={at >= 0 ? `${uid}-row-${at}` : undefined}
+                placeholder={onCreate ? 'Find or create a task…' : 'Find a task…'}
                 className="g-field g-field-sm"
               />
-              <div className="h-64">
-                <ScrollArea className="h-full" contentClassName="pr-2 space-y-2">
-                  {groups.length === 0 && <p className="text-xs text-subtext-0 px-1">No task matches.</p>}
-                  {groups.map((g) => (
-                    <div key={g.name || 'all'}>
-                      {g.name && <div className="g-flbl px-1 !mb-0.5 !text-[10px]">{g.name}</div>}
-                      {g.tasks.map((t) => {
-                        const on = value.includes(t.id);
-                        return (
-                          <button
-                            key={t.id}
-                            type="button"
-                            onClick={() => toggle(t.id)}
-                            className={`w-full flex items-center gap-2 px-2 min-h-[32px] rounded text-left text-sm ${
-                              on ? 'bg-gilt-b text-text' : 'text-subtext-1 hover:bg-surface-0'
-                            }`}
-                          >
-                            <span
-                              className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] ${
-                                on ? 'bg-gold border-gold text-base' : 'border-surface-1'
-                              }`}
+              <div className="h-64" ref={list}>
+                <ScrollArea className="h-full" contentClassName="pr-2">
+                  <div id={`${uid}-rows`} role="listbox" aria-label="Tasks" aria-multiselectable="true" className="space-y-2">
+                    {groups.length === 0 && <p className="text-xs text-subtext-0 px-1">No task matches.</p>}
+                    {groups.map((g) => (
+                      <div key={g.name || 'all'} role="group" aria-label={g.name || undefined}>
+                        {g.name && <div className="g-flbl px-1 !mb-0.5 !text-[10px]">{g.name}</div>}
+                        {g.tasks.map((t) => {
+                          const on = value.includes(t.id);
+                          const row = rowOf.get(t.id) ?? -1;
+                          return (
+                            <button
+                              key={t.id}
+                              id={`${uid}-row-${row}`}
+                              data-row={row}
+                              role="option"
+                              aria-selected={on}
+                              type="button"
+                              tabIndex={-1}
+                              onClick={() => toggle(t.id)}
+                              onMouseMove={() => row !== at && setCursor(row)}
+                              className={rowClass(on, row === at)}
                             >
-                              {on ? '✓' : ''}
-                            </span>
-                            <StatusMark status={t.status} />
-                            <span className="truncate">{t.title}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
+                              <span
+                                className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] ${
+                                  on ? 'bg-gold border-gold text-base' : 'border-surface-1'
+                                }`}
+                              >
+                                {on ? '✓' : ''}
+                              </span>
+                              <StatusMark status={t.status} />
+                              <span className="truncate">{t.title}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                    {candidate && (
+                      <div className={groups.length ? 'border-t border-gilt-b pt-2' : ''}>
+                        <button
+                          id={`${uid}-row-${flat.length}`}
+                          data-row={flat.length}
+                          role="option"
+                          aria-selected={false}
+                          type="button"
+                          tabIndex={-1}
+                          disabled={creating}
+                          onClick={() => void create()}
+                          onMouseMove={() => flat.length !== at && setCursor(flat.length)}
+                          className={`${rowClass(false, flat.length === at)} !text-gold disabled:opacity-60`}
+                        >
+                          <span className="w-3.5 shrink-0 text-center" aria-hidden="true">+</span>
+                          <span className="truncate">{creating ? 'Creating…' : `Create task “${candidate}”`}</span>
+                        </button>
+                        {createError && <p className="text-xs text-error px-2 pt-1">{createError}</p>}
+                      </div>
+                    )}
+                  </div>
                 </ScrollArea>
               </div>
             </div>

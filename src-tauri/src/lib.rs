@@ -20,9 +20,13 @@ mod members;
 mod storage_cmds;
 #[cfg(desktop)]
 mod sync_cmds;
+mod text_substitution;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any webview exists: no smart dashes, quotes or text replacement in
+    // the app's fields, so markdown stays as typed (macOS only).
+    text_substitution::disable();
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
     let builder = tauri::Builder::default()

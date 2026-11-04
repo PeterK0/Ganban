@@ -522,6 +522,18 @@ async function streamFetch(url: string, init: RequestInit | undefined, timeoutMs
   return new Response(stream, { status });
 }
 
+/** The page is going away (lib/restartFlush.ts, installUnloadFlush): requests
+ * from now on are `keepalive`, so the browser finishes them after the page is
+ * gone. Off again if the page comes back from the back-forward cache. */
+let unloading = false;
+/** Browsers allow 64 KiB of keepalive bodies in flight per page, in bytes. */
+const KEEPALIVE_BUDGET = 60_000;
+let keepaliveBytes = 0;
+export function setUnloading(on: boolean): void {
+  unloading = on;
+  keepaliveBytes = 0;
+}
+
 /**
  * Low-level fetch against the daemon. Resolves to the parsed JSON body (or
  * `undefined` for 204). Throws `DaemonError` on transport/HTTP failure, using
@@ -551,7 +563,16 @@ export async function daemonFetch<T>(
 
   let res: Response;
   try {
-    res = await transportFetch(base + path, { ...init, headers, signal: controller.signal }, timeoutMs);
+    // A body past what's left of the keepalive budget goes as usual, and may not make it.
+    let keepalive = {};
+    if (unloading) {
+      const bytes = typeof init?.body === "string" ? new TextEncoder().encode(init.body).length : 0;
+      if (keepaliveBytes + bytes <= KEEPALIVE_BUDGET) {
+        keepaliveBytes += bytes;
+        keepalive = { keepalive: true };
+      }
+    }
+    res = await transportFetch(base + path, { ...init, ...keepalive, headers, signal: controller.signal }, timeoutMs);
   } catch (e) {
     if (e instanceof Error && e.name === "AbortError") {
       throw new DaemonError(

@@ -6637,6 +6637,22 @@ mod invoke_wiring_tests {
         let listed: Vec<i64> = listed.as_array().unwrap().iter().map(|a| a["task_id"].as_i64().unwrap()).collect();
         assert_eq!(listed, vec![open], "the project's file list leaves out the hidden task's files");
 
+        // Files stored only on the attaching device (is_shared = 0) list too, under the same rule.
+        for t in [open, secret] {
+            let local = json!({ "input": { "task_id": t, "file_path": "/Users/me/notes.md", "file_name": "notes.md" } });
+            host.invoke(Who::Loopback, "create_file_attachment", local).await;
+        }
+        let local_on = |rows: &Value| -> Vec<i64> {
+            let rows = rows.as_array().unwrap().iter().filter(|a| a["is_shared"] == false);
+            rows.map(|a| a["task_id"].as_i64().unwrap()).collect()
+        };
+        let (_, owner_rows) = route(&host, Who::Loopback, "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
+        let mut both = local_on(&owner_rows);
+        both.sort();
+        assert_eq!(both, vec![open.min(secret), open.max(secret)], "the owner (local mode) gets both local files");
+        let (_, bo_rows) = route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
+        assert_eq!(local_on(&bo_rows), vec![open], "a local file on a hidden task stays absent");
+
         route(&host, Who::Loopback, "POST", &format!("/comments/{}/react", c_secret["id"]), Body::from(r#"{"emoji":"👍"}"#)).await;
         let (_, tallies) = route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/reactions"), Body::empty()).await;
         assert!(tallies.as_array().unwrap().is_empty(), "no tallies for hidden comments: {tallies}");

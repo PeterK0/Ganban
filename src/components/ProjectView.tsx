@@ -542,7 +542,7 @@ function ProjectHome({ onGo }: { onGo: (t: Tab, chatId?: number) => void }) {
               onToggle={toggleUpdates}
               action={
                 <button onClick={() => onGo('comments')} className="g-lnk text-[13px] min-h-[32px] px-2">
-                  Open the board →
+                  Open Comments →
                 </button>
               }
             />
@@ -605,7 +605,7 @@ function ProjectView() {
     const i = usePins.getState().openIntent;
     return i && i.projectKey === pkey ? i.tab : 'home';
   });
-  // "Open the board" from Home → this project's Comments tab (CommentsTab
+  // "Open {project}'s Comments" from Home → this project's Comments tab (CommentsTab
   // consumes the intent's task filter and clears it).
   useEffect(() => {
     if (commentBoardIntent && commentBoardIntent.projectKey === pkey) setTab('comments');

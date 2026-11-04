@@ -20,6 +20,11 @@ name: Release
 #   Android: ANDROID_KEY_BASE64 (base64 of the .jks keystore), ANDROID_KEY_ALIAS,
 #            ANDROID_KEY_PASSWORD. Keep the same keystore for every release: Android only
 #            installs an update signed by the key the app was installed with.
+#   macOS:   APPLE_CERTIFICATE (base64 of the Developer ID Application .p12), APPLE_CERTIFICATE_PASSWORD,
+#            APPLE_SIGNING_IDENTITY ("Developer ID Application: Name (TEAMID)"), APPLE_ID,
+#            APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID. With all six the Mac builds are
+#            signed, the .app is notarised and stapled, and so is the .dmg. Without them they're
+#            ad-hoc signed ("-" in tauri.conf.json) and macOS asks before the first open.
 #   iOS:     IOS_CERTIFICATE (base64 .p12), IOS_CERTIFICATE_PASSWORD,
 #            IOS_MOBILE_PROVISION (base64 .mobileprovision), APPLE_DEVELOPMENT_TEAM
 
@@ -158,6 +163,37 @@ jobs:
             echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: these apps won't update themselves."
           fi
 
+      # Tauri's bundler signs with APPLE_SIGNING_IDENTITY (imported from APPLE_CERTIFICATE), then
+      # notarises and staples the .app when APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID are set. An unset
+      # secret arrives as an empty string, and an empty APPLE_CERTIFICATE would make the bundler try
+      # to import it, so the variables reach the build only when all six exist. Otherwise the
+      # config's ad-hoc identity ("-") stays.
+      - name: Apple signing and notarisation (when its secrets exist)
+        id: apple
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          names="APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID"
+          missing=""
+          for n in $names; do [ -n "${!n}" ] || missing="$missing $n"; done
+          if [ -z "$missing" ]; then
+            for n in $names; do
+              { echo "$n<<APPLE_EOF_$GITHUB_RUN_ID"; printf '%s\n' "${!n}"; echo "APPLE_EOF_$GITHUB_RUN_ID"; } >> "$GITHUB_ENV"
+            done
+            echo "notarise=true" >> "$GITHUB_OUTPUT"
+          elif [ "$missing" = " $names" ]; then
+            echo "::notice::No Apple secrets: this Mac build is ad-hoc signed and not notarised."
+          else
+            echo "::warning::Apple secrets missing:$missing. This Mac build is ad-hoc signed and not notarised."
+          fi
+
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
         env:
@@ -171,6 +207,61 @@ jobs:
           # `publish` writes latest.json once every build is up: per-job ones would race.
           includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ steps.updater.outputs.args }}
+
+      # The bundler notarises and staples the .app inside the .dmg, not the .dmg itself. Notarise
+      # and staple the .dmg too, so Gatekeeper accepts the download offline as well, then replace
+      # the one tauri-action uploaded.
+      - name: Notarise and staple the .dmg
+        if: steps.apple.outputs.notarise == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          TRIPLE: ${{ matrix.name == 'macos-x64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+          ARCH: ${{ matrix.name == 'macos-x64' && 'x64' || 'aarch64' }}
+        run: |
+          set -euo pipefail
+          dmg="$(find "target/$TRIPLE/release/bundle/dmg" -name '*.dmg' | head -n 1)"
+          [ -n "$dmg" ] || { echo "::error::no .dmg built"; exit 1; }
+          # Sign the .dmg itself if the bundler didn't, from a keychain of our own (the bundler's
+          # is gone by now).
+          if ! codesign -v "$dmg" 2>/dev/null; then
+            kc="$RUNNER_TEMP/dmg-signing.keychain-db"
+            security create-keychain -p "$GITHUB_RUN_ID" "$kc"
+            security set-keychain-settings "$kc"
+            security unlock-keychain -p "$GITHUB_RUN_ID" "$kc"
+            printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            rm -f "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$GITHUB_RUN_ID" "$kc" > /dev/null
+            codesign --force --timestamp --keychain "$kc" --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+            security delete-keychain "$kc"
+          fi
+          out="$RUNNER_TEMP/notary.json"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --timeout 30m --output-format json > "$out" || true
+          cat "$out"
+          if [ "$(node -p "require('$out').status" 2>/dev/null)" != Accepted ]; then
+            id="$(node -p "require('$out').id" 2>/dev/null || true)"
+            [ -n "$id" ] && xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            echo "::error::the .dmg wasn't notarised"; exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t open --context context:primary-signature "$dmg"
+          if [ "$REF_TYPE" = tag ]; then
+            # Replace the .dmg tauri-action uploaded to the draft, under the name it gave it.
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+            read -r old_id name < <(node -e 'const a = require(process.argv[1]).find((x) => x.name.endsWith(`_${process.argv[2]}.dmg`)); if (a) console.log(a.id + " " + a.name)' "$RUNNER_TEMP/assets.json" "$ARCH") || true
+            name="${name:-$(basename "$dmg")}"
+            if [ -n "${old_id:-}" ]; then gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old_id"; fi
+            mkdir -p "$RUNNER_TEMP/dmg"
+            cp "$dmg" "$RUNNER_TEMP/dmg/$name"
+            upload_url="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .upload_url | sed 's/{.*}//')"
+            curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/x-apple-diskimage' \
+              --data-binary @"$RUNNER_TEMP/dmg/$name" "$upload_url?name=$name" > /dev/null
+          fi
 
       # Manual (non-tag) runs: keep the installers as workflow artifacts instead.
       - name: Upload installers as workflow artifacts (manual run)

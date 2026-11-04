@@ -1,6 +1,6 @@
 [package]
 name = "gansty"
-version = "1.0.5"
+version = "1.0.6"
 license = "AGPL-3.0-only"
 description = "Ganban desktop and mobile app (Tauri shell)"
 authors = ["Ganban contributors"]
@@ -61,6 +61,12 @@ futures-util = "0.3"
 # The app updates itself from its host (app_update.rs, ADR 0007). Desktop only;
 # registered at runtime only when the build carries the updater's public key.
 tauri-plugin-updater = "2"
+
+# macOS: register WebKit's text-substitution defaults at launch
+# (text_substitution.rs), so "---" in a markdown field stays three hyphens.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDictionary", "NSString", "NSUserDefaults", "NSValue"] }
 
 [dev-dependencies]
 # Desktop wiring test: drive `run_command` through Tauri's mock runtime (IPC as the

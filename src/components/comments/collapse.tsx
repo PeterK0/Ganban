@@ -47,7 +47,7 @@ export function CollapsedNote({ label, onShow }: { label: string; onShow: () => 
 /**
  * A collapsible section's heading: Gilt's centred deco heading between two
  * diamonds (`g-h2`), whose title is the collapse toggle. An optional `action`
- * (e.g. "Open the board →") sits on the right without pulling the title off
+ * (e.g. "Open Comments →") sits on the right without pulling the title off
  * centre. Home's and a project's Updates share it.
  */
 export function SectionToggle({
@@ -62,7 +62,9 @@ export function SectionToggle({
   action?: ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 mb-4">
+    // A container: when the heading is too narrow for the action beside the
+    // title, the action takes its own centred row under it.
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 mb-4 [container-type:inline-size]">
       <span aria-hidden="true" />
       <DecoHeading className="mb-0">
         <button
@@ -77,7 +79,11 @@ export function SectionToggle({
           </span>
         </button>
       </DecoHeading>
-      <div className="justify-self-end min-w-0">{action}</div>
+      {action && (
+        <div className="justify-self-end min-w-0 max-w-full [@container(max-width:560px)]:col-span-3 [@container(max-width:560px)]:justify-self-center">
+          {action}
+        </div>
+      )}
     </div>
   );
 }

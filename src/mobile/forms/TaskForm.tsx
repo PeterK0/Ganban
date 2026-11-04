@@ -52,11 +52,12 @@ export default function TaskForm({
             description,
             status,
             priority,
-            area_id: areaId || undefined,
-            prefix: prefix || undefined,
-            cost: costNum,
-            currency: currency || undefined,
-            deadline: deadlineIso,
+            // A cleared field saves as cleared (null); a cost that isn't a number keeps the old one.
+            area_id: areaId || null,
+            prefix,
+            cost: cost.trim() ? costNum : null,
+            currency,
+            deadline: deadlineIso ?? null,
           })
         : await createTask({
             project_id: projectId,

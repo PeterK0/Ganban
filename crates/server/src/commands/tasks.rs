@@ -25,6 +25,13 @@ fn input_area(a: &Args<'_>) -> Option<i64> {
     a.get("input").and_then(|i| i.get("area_id")).and_then(Value::as_i64)
 }
 
+/// Where `update_task` moves a task: `None` when `input.area_id` is missing (it
+/// stays put), `Some(None)` for `null` (out of any area), `Some(Some(id))` into
+/// an area.
+fn input_area_move(a: &Args<'_>) -> Option<Option<i64>> {
+    a.get("input").and_then(|i| i.get("area_id").map(Value::as_i64))
+}
+
 /// Filing a task into an area needs sight of the area: a restricted one is its members'.
 async fn require_area_seen(cx: &Ctx<'_>, user: &AuthUser, area: Option<i64>) -> Result<(), AppError> {
     match area {
@@ -53,10 +60,10 @@ pub(super) const COMMANDS: &[Command] = &[
         .access(Access::Custom(|cx, a, user| {
             Box::pin(async move {
                 Access::Member(TASK).check(cx, user, a).await?;
-                let Some(area) = input_area(a) else { return Ok(()) };
-                require_area_seen(cx, user, Some(area)).await?;
+                let Some(area) = input_area_move(a) else { return Ok(()) };
+                require_area_seen(cx, user, area).await?;
                 let task = a.id(TASK)?;
-                if visibility::move_widens(cx.db, task, Some(area)).await? {
+                if visibility::move_widens(cx.db, task, area).await? {
                     let project = auth::task_project_id(cx.db, task).await?.unwrap_or_default();
                     require_role(cx.db, user, project, auth::ROLE_ADMIN)
                         .await
@@ -406,5 +413,42 @@ mod tests {
         seed(&db, "unassign_task", json!({ "taskId": ta, "userId": 7 })).await;
         seed(&db, "assign_task", json!({ "taskId": ta, "userId": 7, "assignedBy": 7 })).await;
         assert_eq!(seed(&db, "get_assignees", json!({ "taskId": ta })).await[0]["assigned_by"], 7);
+    }
+
+    /// `update_task` keeps a field it isn't sent, clears one sent as `null`, and sets one
+    /// sent with a value: the editor clears a cost, deadline or area by sending `null`.
+    #[tokio::test]
+    async fn update_task_keeps_missing_fields_and_clears_null_ones() {
+        let db = test_db("task_patch").await;
+        let me = owner(&db).await;
+        let project = seed(&db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
+        let area = seed(&db, "create_area", json!({ "input": { "project_id": project, "name": "Ops" } })).await["id"]
+            .as_i64()
+            .unwrap();
+        let input = json!({ "input": {
+            "project_id": project, "title": "t", "status": "To Do", "priority": "Low",
+            "area_id": area, "cost": 12.5, "deadline": "2026-11-08T00:00:00Z", "prefix": "FEAT",
+        } });
+        let task = seed(&db, "create_task", input).await["id"].as_i64().unwrap();
+        let update = |fields: Value| http(&db, me, "update_task", json!({ "taskId": task, "input": fields }));
+
+        // Missing: kept, whatever else changes.
+        let t = update(json!({ "title": "renamed" })).await.unwrap();
+        assert_eq!((t["cost"].as_f64(), t["area_id"].as_i64()), (Some(12.5), Some(area)));
+        assert!(t["deadline"].as_str().unwrap().starts_with("2026-11-08"));
+        assert_eq!(t["prefix"], "FEAT");
+
+        // Null: cleared, one at a time, the others kept.
+        let t = update(json!({ "cost": null })).await.unwrap();
+        assert!(t["cost"].is_null());
+        assert_eq!(t["area_id"].as_i64(), Some(area));
+        let t = update(json!({ "deadline": null, "area_id": null })).await.unwrap();
+        assert!(t["deadline"].is_null() && t["area_id"].is_null());
+        assert_eq!(t["title"], "renamed");
+
+        // A value: set again.
+        let t = update(json!({ "cost": 3.0, "area_id": area, "deadline": "2026-12-24T00:00:00Z" })).await.unwrap();
+        assert_eq!((t["cost"].as_f64(), t["area_id"].as_i64()), (Some(3.0), Some(area)));
+        assert!(t["deadline"].as_str().unwrap().starts_with("2026-12-24"));
     }
 }

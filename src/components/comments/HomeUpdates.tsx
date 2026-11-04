@@ -64,8 +64,12 @@ export default function HomeUpdates({
         onToggle={toggleCollapsed}
         action={
           current && onOpenBoard ? (
-            <button onClick={() => onOpenBoard(current, [])} className="g-lnk text-[13px] min-h-[32px] px-2">
-              Open the board →
+            <button
+              onClick={() => onOpenBoard(current, [])}
+              title={`Open ${current.name}’s Comments tab`}
+              className="g-lnk !gap-0 text-[13px] min-h-[32px] px-2 max-w-full whitespace-nowrap"
+            >
+              Open&nbsp;<span className="truncate min-w-0">{current.name}</span>’s Comments →
             </button>
           ) : undefined
         }

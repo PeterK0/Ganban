@@ -1,7 +1,7 @@
 {
   "name": "ganban",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -19,13 +19,16 @@
     "test:reports": "node scripts/test-reports.mjs",
     "test:extra-tabs": "node scripts/test-extra-tabs.mjs",
     "test:listedit": "node scripts/test-listedit.mjs",
+    "test:composer": "node scripts/test-composer.mjs",
     "test:pins": "node scripts/test-pins.mjs",
     "test:ops": "node scripts/test-ops.mjs",
     "test:nav": "node scripts/test-nav.mjs",
     "test:update": "node scripts/test-update.mjs",
     "test:apkupdate": "node scripts/test-apk-update.mjs",
     "test:doclinks": "node scripts/check-doc-links.mjs",
-    "test:recur": "node scripts/test-recur.mjs"
+    "test:recur": "node scripts/test-recur.mjs",
+    "test:atlasfiles": "node scripts/test-atlas-files.mjs",
+    "test:taskform": "node scripts/test-taskform.mjs"
   },
   "dependencies": {
     "@fontsource/figtree": "^5.3.0",

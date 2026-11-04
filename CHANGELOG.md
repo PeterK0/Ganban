@@ -9,6 +9,27 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-11-04
+
+- fix(tasks): review fixes for the unload save
+- fix(tasks): save open edits when the window reloads or closes
+- fix(tasks): clearing a task's cost, deadline or area saves
+- fix(tasks): close the gaps the review found in the save on close
+- fix(tasks): save the open task's edits when you switch projects
+- fix(comments): review fixes for the composer and the tag picker's Create task
+- fix(tasks): keep task edits when you leave the editor without saving
+- fix(projects): the owner repair leaves personal containers alone
+- fix(atlas): show a dash, not 0 B, for a this-device file's unknown size
+- feat(comments): create a task from the update's tag picker
+- feat(comments): a bigger comment field that grows, resizes and previews beside the text
+- fix(comments): say "Open {project}'s Comments" instead of "Open the board"
+- fix(atlas): Atlas > Files lists files stored only on this device
+- ci(release): sign the .dmg before notarising it, and replace it by release id
+- fix(projects): the owner is a member of local-mode projects, so Assignees lists them
+- ci(release): notarise the Mac downloads once Apple's secrets exist
+- fix(desktop): "---" stays three hyphens instead of turning into a long dash
+- docs(changelog): 1.0.5 notes for users
+
 ## [1.0.5] - 2026-11-03
 
 - The first release after a clean-up of the public repository; the earlier 1.0.x downloads were withdrawn. Apps from

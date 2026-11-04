@@ -1,5 +1,6 @@
 import {
   createComment,
+  createTask,
   deleteComment,
   getProjectCommentBoard,
   getUsers,
@@ -10,13 +11,14 @@ import { getProjectReactions, hasDaemon, type ReactionSummary } from '../../lib/
 import { getActiveWorkspaceId, type Workspace } from '../../lib/workspaces';
 import {
   wsCreateComment,
+  wsCreateTask,
   wsDeleteComment,
   wsGetProjectCommentBoard,
   wsGetUsers,
   wsSetCommentTags,
   wsUpdateComment,
 } from '../../lib/workspaceData';
-import type { Comment, CommentBoard, CreateCommentInput, User } from '../../types';
+import type { Comment, CommentBoard, CreateCommentInput, CreateTaskInput, Task, User } from '../../types';
 
 /**
  * Where a comment board reads and writes. Project views talk to the ACTIVE
@@ -33,6 +35,8 @@ export interface BoardApi {
   remove(commentId: number): Promise<void>;
   setTags(commentId: number, taskIds: number[]): Promise<Comment>;
   users(): Promise<User[]>;
+  /** Create a task on this board's host (the tag picker's "Create task"). */
+  createTask(input: CreateTaskInput): Promise<Task>;
   /** Reactions are host-served via the active daemon; null = not shown here. */
   reactions: ((projectId: number) => Promise<ReactionSummary[]>) | null;
   /** Pasted images upload through the active transport — only safe when that
@@ -48,6 +52,7 @@ export const activeBoardApi: BoardApi = {
   remove: deleteComment,
   setTags: setCommentTags,
   users: getUsers,
+  createTask,
   reactions: (pid) => (hasDaemon() ? getProjectReactions(pid) : Promise.resolve([])),
   images: true,
 };
@@ -68,6 +73,7 @@ export function workspaceBoardApi(ws: Workspace): BoardApi {
     remove: (id) => wsDeleteComment(ws, id),
     setTags: (id, taskIds) => wsSetCommentTags(ws, id, taskIds),
     users: () => wsGetUsers(ws),
+    createTask: (input) => wsCreateTask(ws, input),
     reactions: active ? activeBoardApi.reactions : null,
     images: active,
   };

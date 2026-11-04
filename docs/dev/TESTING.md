@@ -22,9 +22,12 @@ None needs a running server, a browser or network access.
 |---|---|
 | `npm run test:reports` | The report engine and its exports, invite parsing, quiz grading. It also checks the XLSX and PDF bytes with outside readers (`openpyxl` through `uv`, poppler's `pdftotext`) and says SKIP when they're missing. |
 | `npm run test:listedit` | List editing in comment fields: Tab, Shift+Tab and Enter. |
+| `npm run test:composer` | The comment composer's field height and the tag picker's "Create task" row. |
 | `npm run test:pins` | Pinned tabs: merging across workspaces, order, moves and the top bar's fit. |
 | `npm run test:nav` | Back and forward history, its shortcuts and its limits. |
 | `npm run test:recur` | The repeat-rule (RRULE) expander behind recurring events. |
+| `npm run test:atlasfiles` | Atlas › Files' listing: which files show, and which are marked as stored only on this device. |
+| `npm run test:taskform` | The task editor's form: what counts as an edit, what a save sends, and the saved copies that keep an edit made on close from showing (and being re-saved) as the old text. |
 | `npm run test:update` | The version compare behind the host-served update check. |
 | `npm run test:apkupdate` | The phone app's self-update decisions. |
 | `npm run test:ops` | The host service scripts in `ops/` (install, backup, update), in a sandbox with fake system tools. They target macOS and launchd, so run this suite on a Mac. |

@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import type { Project, Task } from '../types';
 import { deleteTask } from '../lib/api';
 import TaskEditor from './TaskEditor';
@@ -41,6 +42,9 @@ export default function DetailPane({
   taskPage?: boolean;
 }) {
   const { current, open, replace, back, close } = controller;
+  // The task editor's save, for ✕ in collapsible mode: the pane hides but the
+  // editor stays mounted, so its save on unmount wouldn't run.
+  const flushTask = useRef<(() => Promise<void>) | null>(null);
 
   if (!current) {
     return (
@@ -99,8 +103,10 @@ export default function DetailPane({
               // In collapsible mode, hide the pane (the parent controls
               // visibility); the stack is preserved so reopening shows the same
               // target. Otherwise clear the stack (the original behavior).
-              if (onClose) onClose();
-              else close();
+              if (onClose) {
+                if (current.kind === 'task') flushTask.current?.().catch((e) => console.warn('Save on close failed:', e));
+                onClose();
+              } else close();
             }}
             title={onClose ? 'Close (saves and hides)' : 'Close'}
             aria-label="Close"
@@ -126,6 +132,7 @@ export default function DetailPane({
             task={current.task}
             fill
             page={taskPage}
+            flushOnClose={flushTask}
             onSave={(t) => {
               // TaskEditor also fires onSave for the *previous* task when the
               // task prop switches — only refresh the stack entry if it's the
@@ -139,10 +146,11 @@ export default function DetailPane({
                 await deleteTask(current.task.id);
               } catch (e) {
                 alert(`Failed to delete task: ${e}`);
-                return;
+                return false;
               }
               onChanged?.();
               back();
+              return true;
             }}
             onOpenEvent={(event) => open({ kind: 'event', event })}
           />

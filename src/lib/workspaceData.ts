@@ -12,7 +12,7 @@ import { invokeLocal } from './api';
 import { invokeOnHost, isWebClient, getDeviceToken } from './daemon';
 import { LOCAL_ID, type Workspace } from './workspaces';
 import type { HostPin } from './pinnedTabs.pure';
-import type { Project, Task, Area, Event, ProjectStats, Comment, CommentBoard, CreateCommentInput, MyAssignment, User, TimeEntry } from '../types';
+import type { Project, Task, Area, Event, ProjectStats, Comment, CommentBoard, CreateCommentInput, CreateTaskInput, MyAssignment, User, TimeEntry } from '../types';
 
 async function call<T>(ws: Workspace, command: string, args?: Record<string, unknown>): Promise<T> {
   if (ws.id === LOCAL_ID) {
@@ -30,6 +30,9 @@ export const wsGetProjects = async (ws: Workspace): Promise<Project[]> =>
 
 export const wsGetTasks = async (ws: Workspace, projectId: number, archived = false): Promise<Task[]> =>
   (await call<Task[]>(ws, 'get_tasks', { projectId, archived })).map((t) => ({ ...t, workspaceId: ws.id }));
+
+export const wsCreateTask = async (ws: Workspace, input: CreateTaskInput): Promise<Task> =>
+  ({ ...(await call<Task>(ws, 'create_task', { input })), workspaceId: ws.id });
 
 export const wsGetAreas = (ws: Workspace, projectId: number): Promise<Area[]> =>
   call<Area[]>(ws, 'get_areas', { projectId });

@@ -41,7 +41,7 @@ export default function CommentsTab() {
     });
   };
   useEffect(() => {
-    // "Open the board" from Home lands here with its tasks pre-filtered.
+    // "Open {project}'s Comments" from Home lands here with its tasks pre-filtered.
     const intent = commentBoardIntent && commentBoardIntent.projectKey === pkey ? commentBoardIntent : null;
     setFilter(intent?.taskIds ?? []);
     if (intent) setCommentBoardIntent(null);

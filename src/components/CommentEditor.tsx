@@ -5,7 +5,7 @@ import { parseProfile } from '../lib/profile';
 import Avatar from './Avatar';
 import EmojiPicker from './EmojiPicker';
 import GifPicker from './GifPicker';
-import MarkdownField from './MarkdownField';
+import MarkdownField, { TOUCH } from './MarkdownField';
 
 interface CommentEditorProps {
   comment?: Comment;
@@ -147,7 +147,7 @@ export default function CommentEditor({
                 key={u.id}
                 type="button"
                 onClick={() => pickMention(u)}
-                className="w-full flex items-center gap-2 px-2.5 min-h-[36px] text-left text-sm hover:bg-gilt-b"
+                className={`w-full flex items-center gap-2 px-2.5 min-h-[36px] text-left text-sm hover:bg-gilt-b ${TOUCH}`}
               >
                 <Avatar name={u.full_name} src={parseProfile(u.profile_json).avatar} size={20} />
                 <span className="truncate text-text">{u.full_name}</span>
@@ -162,7 +162,7 @@ export default function CommentEditor({
           <button
             type="button"
             onClick={() => { setShowEmoji((s) => !s); setShowGif(false); }}
-            className="g-btn g-btn-ghost g-btn-sm"
+            className={`g-btn g-btn-ghost g-btn-sm ${TOUCH}`}
             title="Insert emoji"
             aria-label="Insert emoji"
           >
@@ -171,7 +171,7 @@ export default function CommentEditor({
           <button
             type="button"
             onClick={() => setShowGif(true)}
-            className="g-btn g-btn-ghost g-btn-sm"
+            className={`g-btn g-btn-ghost g-btn-sm ${TOUCH}`}
             title="Insert a GIF"
           >
             GIF
@@ -188,14 +188,14 @@ export default function CommentEditor({
           type="button"
           onClick={onCancel}
           disabled={isSaving}
-          className="g-btn g-btn-ghost g-btn-sm"
+          className={`g-btn g-btn-ghost g-btn-sm ${TOUCH}`}
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={!content.trim() || isSaving || uploading || !!blockedReason}
-          className="g-btn g-btn-pri g-glint g-btn-sm"
+          className={`g-btn g-btn-pri g-glint g-btn-sm ${TOUCH}`}
         >
           {uploading ? 'Uploading…' : isSaving ? 'Saving…' : submitLabel ?? (comment ? 'Update' : 'Add Comment')}
         </button>

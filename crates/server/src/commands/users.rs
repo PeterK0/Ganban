@@ -78,8 +78,9 @@ mod tests {
 
         let mut seen = ids(&http(&db, mia, "get_users", json!({})).await.unwrap());
         seen.sort();
-        assert_eq!(seen, vec![7, 8]);
-        assert_eq!(ids(&http(&db, mia, "get_active_users", json!({})).await.unwrap()).len(), 2);
+        // The owner is owner-member of every project, so Mia shares A with them too.
+        assert_eq!(seen, vec![owner.id, 7, 8]);
+        assert_eq!(ids(&http(&db, mia, "get_active_users", json!({})).await.unwrap()).len(), 3);
         assert_eq!(http(&db, mia, "get_user", json!({ "userId": 8 })).await.unwrap()["id"], 8);
         let hidden = http(&db, mia, "get_user", json!({ "userId": 9 })).await.unwrap_err();
         let absent = http(&db, mia, "get_user", json!({ "userId": 999 })).await.unwrap_err();

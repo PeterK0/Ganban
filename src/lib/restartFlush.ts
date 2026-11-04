@@ -1,8 +1,9 @@
-// Save what's open before the app restarts into an update. A restart kills every
-// window at once, with no React unmount, so the task editor's save-on-close never
-// runs: editors register their save here instead, and "Restart" asks every window
-// to run its saves and waits for them (briefly) before relaunching.
-import { isTauri } from './daemon';
+// Save what's open when a window goes away without a React unmount: the app
+// restarting into an update, a reload, a closed browser tab or desktop window.
+// Editors register their save here (onBeforeRestart). "Restart" asks every
+// window to run its saves and waits for them (briefly) before relaunching; a
+// page going away runs them itself (installUnloadFlush).
+import { isTauri, setUnloading } from './daemon';
 
 /** A save that rejects when it fails. */
 type Flush = () => Promise<void>;
@@ -14,9 +15,55 @@ export function onBeforeRestart(fn: Flush): () => void {
   return () => flushes.delete(fn);
 }
 
+/** How long a desktop window's close waits for its saves. */
+const CLOSE_WAIT_MS = 3000;
+
+/** Save open editors when this window goes away (call once per window, at boot),
+ * silently, with no "unsaved changes" prompt:
+ * - a browser tab reloading or closing (`pagehide`): the saves go out as
+ *   keepalive requests, which the browser finishes after the page is gone;
+ * - a desktop window closing: the close waits for the saves, at most
+ *   CLOSE_WAIT_MS, then goes ahead. */
+let unloadInstalled = false;
+export async function installUnloadFlush(): Promise<void> {
+  if (unloadInstalled) return;
+  unloadInstalled = true;
+  window.addEventListener('pagehide', () => {
+    setUnloading(true);
+    void runLocal();
+  });
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) setUnloading(false); // back from the back-forward cache
+  });
+  if (!isTauri()) return;
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    // The window closes once this resolves (the API destroys it then), so it
+    // must always resolve: a throw here would leave the window open.
+    await getCurrentWindow().onCloseRequested(async () => {
+      try {
+        await Promise.race([runLocal(), new Promise((r) => setTimeout(r, CLOSE_WAIT_MS))]);
+      } catch {
+        /* close anyway */
+      }
+    });
+  } catch {
+    /* no window API: pagehide still runs the saves */
+  }
+}
+
 /** Run this window's saves; resolves to how many failed. */
 async function runLocal(): Promise<number> {
-  const results = await Promise.allSettled([...flushes].map((f) => f()));
+  // Called right away (on pagehide the requests must leave now); one that
+  // throws synchronously counts as failed instead of stopping the rest.
+  const start = (f: Flush): Promise<void> => {
+    try {
+      return f();
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  };
+  const results = await Promise.allSettled([...flushes].map(start));
   return results.filter((r) => r.status === 'rejected').length;
 }
 

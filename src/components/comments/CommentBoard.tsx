@@ -32,6 +32,10 @@ export interface BoardContext {
   users: User[];
   reactions: ReactionSummary[];
   onChanged: () => void;
+  /** The tag pickers' "Create task" (see useTaskCreator); left out, they
+   * don't offer it. A board passes one shared creator, so a task made in
+   * one picker shows in all of them. */
+  createTask?: (title: string) => Promise<Task>;
 }
 
 export interface FeedItem {
@@ -134,6 +138,33 @@ export function toItems(board: BoardData | null, ctx: BoardContext): FeedItem[] 
 
 // ---------------------------------------------------------------------------
 
+/**
+ * The tag picker's "Create task": makes the task on the board's host with the
+ * app's usual defaults for a new task (To Do, Medium, no area) and keeps it in
+ * this board's task list until the caller's own list catches up (a data pulse).
+ */
+function useTaskCreator(ctx: Pick<BoardContext, 'api' | 'projectId' | 'tasks'>) {
+  const [made, setMade] = useState<Task[]>([]);
+  const tasks = useMemo(() => {
+    const have = new Set(ctx.tasks.map((t) => t.id));
+    const extra = made.filter((t) => !have.has(t.id) && t.project_id === ctx.projectId);
+    return extra.length ? [...ctx.tasks, ...extra] : ctx.tasks;
+  }, [ctx.tasks, ctx.projectId, made]);
+  const create = useCallback(
+    async (title: string) => {
+      try {
+        const task = await ctx.api.createTask({ project_id: ctx.projectId, title, status: 'To Do', priority: 'Medium' });
+        setMade((m) => [...m, task]);
+        return task;
+      } catch (e) {
+        throw new Error(boardError(e));
+      }
+    },
+    [ctx.api, ctx.projectId]
+  );
+  return { tasks, create };
+}
+
 /** Write an update and tag the tasks it covers. The text is the one update
  * draft (./draft.ts), so switching projects mid-sentence keeps it; the tags
  * start over, since tasks belong to one project. */
@@ -145,7 +176,7 @@ export function UpdateComposer({
   compact,
   leading,
 }: {
-  ctx: Pick<BoardContext, 'api' | 'tasks' | 'users' | 'onChanged'>;
+  ctx: Pick<BoardContext, 'api' | 'projectId' | 'tasks' | 'users' | 'onChanged' | 'createTask'>;
   areas?: Area[];
   defaultTags: number[];
   suggestions: { taskId: number; hint: string }[];
@@ -157,7 +188,12 @@ export function UpdateComposer({
   const [tags, setTags] = useState<number[]>(defaultTags);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const live = useMemo(() => new Set(ctx.tasks.map((t) => t.id)), [ctx.tasks]);
+  // A board's ctx brings its shared creator; Home → All's doesn't, so the
+  // composer keeps its own.
+  const own = useTaskCreator(ctx);
+  const tasks = ctx.createTask ? ctx.tasks : own.tasks;
+  const createTask = ctx.createTask ?? own.create;
+  const live = useMemo(() => new Set(tasks.map((t) => t.id)), [tasks]);
   const defaultsKey = defaultTags.join(',');
   // Follow the filter while the composer is closed (opening it keeps them).
   useEffect(() => {
@@ -198,7 +234,14 @@ export function UpdateComposer({
   return (
     <div className="g-card g-corners p-4 space-y-3">
       {leading}
-      <TaskTagPicker tasks={ctx.tasks} areas={areas} value={tags} onChange={setTags} suggestions={suggestions} />
+      <TaskTagPicker
+        tasks={tasks}
+        areas={areas}
+        value={tags}
+        onChange={setTags}
+        suggestions={suggestions}
+        onCreate={createTask}
+      />
       <CommentEditor
         value={text}
         onChange={setUpdateDraftText}
@@ -333,7 +376,7 @@ function Entry({
       </div>
       {retagging && (
         <div className="g-card mb-3 p-3 space-y-2.5">
-          <TaskTagPicker tasks={ctx.tasks} value={retagging} onChange={setRetagging} />
+          <TaskTagPicker tasks={ctx.tasks} value={retagging} onChange={setRetagging} onCreate={ctx.createTask} />
           <div className="flex items-center gap-2 justify-end">
             {error && <span className="text-xs text-error mr-auto">{error}</span>}
             {!retagging.length && <span className="text-xs text-warning mr-auto">Keep at least one task</span>}
@@ -573,6 +616,7 @@ export default function CommentBoard({
   useEffect(() => setLimit(pageSize), [filterKey, projectId, pageSize]);
   const { board, error, reactions, reload } = useBoard(api, projectId, filter, limit);
   const users = useBoardUsers(api);
+  const creator = useTaskCreator({ api, projectId, tasks });
   const { activeTask } = useAppStore();
   useEffect(() => {
     if (board) onLoaded?.(board);
@@ -580,8 +624,8 @@ export default function CommentBoard({
   }, [board]);
 
   const ctx: BoardContext = useMemo(
-    () => ({ api, projectId, tasks, users, reactions, onChanged: () => void reload() }),
-    [api, projectId, tasks, users, reactions, reload]
+    () => ({ api, projectId, tasks: creator.tasks, users, reactions, onChanged: () => void reload(), createTask: creator.create }),
+    [api, projectId, creator.tasks, creator.create, users, reactions, reload]
   );
   const items = useMemo(() => toItems(board, ctx), [board, ctx]);
   const suggestions = useMemo(() => {

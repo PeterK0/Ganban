@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { getTasks, createTask, getTaskTotalTime, getAreas } from '../lib/api';
-import DetailPane, { useDetailStack } from './DetailPane';
+import DetailPane, { useDetailStack, type DetailTarget } from './DetailPane';
 import { useDataPulse } from '../lib/livePulse';
 import { useNav } from '../store/navHistory';
 import type { CreateTaskInput, Area, Task } from '../types';
@@ -57,15 +57,30 @@ export default function TaskList() {
     selectTask(task); // keep the global selection in sync for other views
   };
 
+  // A task from the project we just left: close it. The editor unmounts and
+  // saves its draft to that task, before the new list arrives; it never
+  // switches over to a task of this project carrying the old draft. A
+  // back/forward landing opens its own task here instead; leave that be.
+  const openElsewhere = (t: DetailTarget) => t.kind === 'task' && t.task.project_id !== selectedProject?.id;
+  useEffect(() => {
+    if (!selectedProject || !detail.current || !openElsewhere(detail.current)) return;
+    const r = useNav.getState().restore;
+    if (r && r.entry.pane?.scope === 'tasks' && Date.now() - r.at < 3000) return;
+    detail.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProject?.id]);
+
   // The rail+editor IS the view — entering a project's tasks auto-opens the
   // first task (display order) so there's never a dead landing page. Once per
   // project: closing (✕) or switching tasks must not snap back.
   const autoOpenedFor = useRef<number | null>(null);
   useEffect(() => {
     if (!selectedProject || tasks.length === 0) return;
+    // Right after a project switch the list still holds the last project's tasks.
+    if (tasks[0].project_id !== selectedProject.id) return;
     if (autoOpenedFor.current === selectedProject.id) return;
     autoOpenedFor.current = selectedProject.id;
-    if (detail.current) return; // something is already open (e.g. via search)
+    if (detail.current && !openElsewhere(detail.current)) return; // something is already open (e.g. via search)
     // A back/forward landing here reopens its own task, or leaves its entry as it was.
     const r = useNav.getState().restore;
     const restoring = !!r && r.entry.tab === 'tasks' && Date.now() - r.at < 3000;

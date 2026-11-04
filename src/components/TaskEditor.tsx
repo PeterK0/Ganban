@@ -23,6 +23,10 @@ import FileBrowser, { type FileEntry } from './files/FileBrowser';
 import type { TaskUploadHandle } from './TaskUploadArea';
 import { useProjectRole } from '../lib/projectRole';
 import { onBeforeRestart } from '../lib/restartFlush';
+import {
+  applyForm, forgetPending, formFromTask, formsEqual, formToUpdate, freshest, isFormDirty, isFormSavable,
+  beginSave, rememberPending, rememberSaved, type TaskForm,
+} from '../lib/taskForm';
 
 /** Strip markdown control chars from a filename so it can sit safely inside a
  * `[text](/files/N)` link without breaking the link syntax. */
@@ -85,7 +89,8 @@ const isFreshTask = (t: Task): boolean =>
 interface TaskEditorProps {
   task: Task | null;
   onSave: (task: Task) => void;
-  onDelete: () => void;
+  /** Delete the task. May resolve to `false` when the delete failed. */
+  onDelete: () => void | Promise<boolean | void>;
   width?: number;
   /** Fill the parent (used inside DetailPane) instead of a fixed-width rail. */
   fill?: boolean;
@@ -95,25 +100,35 @@ interface TaskEditorProps {
   page?: boolean;
   /** Open a linked event in a navigable detail pane (click-through). */
   onOpenEvent?: (event: Event) => void;
+  /** Set to the editor's save, for a parent that hides the editor without
+   * unmounting it (a collapsible pane's ✕): call it before hiding. */
+  flushOnClose?: { current: (() => Promise<void>) | null };
 }
 
-export default function TaskEditor({ task, onSave, onDelete, width = 384, fill = false, page = false, onOpenEvent }: TaskEditorProps) {
+export default function TaskEditor({ task, onSave, onDelete, width = 384, fill = false, page = false, onOpenEvent, flushOnClose }: TaskEditorProps) {
   const { setTaskTime, activeTask, setActiveTask } = useAppStore();
   const isActive = !!task && activeTask?.id === task.id;
 
   // All hooks must be called unconditionally before any early returns
-  const [title, setTitle] = useState(task?.title || '');
-  const [description, setDescription] = useState(task?.description || '');
-  const [status, setStatus] = useState(task?.status || 'To Do');
-  const [priority, setPriority] = useState(task?.priority || 'Medium');
-  const [prefix, setPrefix] = useState(task?.prefix || '');
-  const [cost, setCost] = useState(task?.cost?.toString() || '');
-  const [currency, setCurrency] = useState(task?.currency || '');
-  const [deadline, setDeadline] = useState(
-    task?.deadline ? new Date(task.deadline).toISOString().split('T')[0] : ''
-  );
-  const [areaId, setAreaId] = useState<number | undefined>(task?.area_id || undefined);
-  const [pinned, setPinned] = useState(task?.pinned || false);
+  // The form opens on the newest copy of the task this window knows (see the
+  // seeding effect), so the first render already matches what a save compares
+  // against.
+  const [seedTask] = useState(() => (task ? freshest(task) : null));
+  const seedForm = seedTask ? formFromTask(seedTask) : null;
+  const [title, setTitle] = useState(seedForm?.title ?? '');
+  const [description, setDescription] = useState(seedForm?.description ?? '');
+  const [status, setStatus] = useState<Task['status']>((seedForm?.status ?? 'To Do') as Task['status']);
+  const [priority, setPriority] = useState<Task['priority']>((seedForm?.priority ?? 'Medium') as Task['priority']);
+  const [prefix, setPrefix] = useState(seedForm?.prefix ?? '');
+  const [cost, setCost] = useState(seedForm?.cost ?? '');
+  const [currency, setCurrency] = useState(seedForm?.currency ?? '');
+  const [deadline, setDeadline] = useState(seedForm?.deadline ?? '');
+  const [areaId, setAreaId] = useState<number | undefined>(seedForm?.areaId);
+  // The task the form state belongs to. It changes with the form (the seeding
+  // effect), not with the prop: in the render where the prop moves to another
+  // task, the form still holds the previous task's values.
+  const [formTaskId, setFormTaskId] = useState<number | null>(seedTask?.id ?? null);
+  const [pinned, setPinned] = useState(seedTask?.pinned || false);
   const [areas, setAreas] = useState<Area[]>([]);
   // Assignment (MEMBER_AGENTS): who this task belongs to, plus the optional
   // ADVISORY work brief that rides each assignment.
@@ -165,7 +180,7 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   const prevTaskSnapshot = useRef<Task | null>(null);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [isDescriptionModalOpen, setIsDescriptionModalOpen] = useState(false);
-  const [isDescriptionPreview, setIsDescriptionPreview] = useState(!!task?.description?.trim());
+  const [isDescriptionPreview, setIsDescriptionPreview] = useState(!!seedTask?.description?.trim());
   // "More details": remembered per device, default closed; a just-created
   // task opens closed whatever the preference says.
   const [moreOpen, setMoreOpen] = useState(() => !!task && !isFreshTask(task) && storedMoreOpen());
@@ -229,53 +244,74 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   const split = layout !== 'narrow';
   const wide = layout === 'wide';
 
-  // Latest form values for the UNMOUNT auto-save — a cleanup closure would
-  // hold the first render's state.
-  const latestFormRef = useRef<{
-    taskId: number | null; title: string; description: string; status: string; priority: string;
-    prefix: string; cost: string; currency: string; deadline: string; areaId: number | undefined;
-  } | null>(null);
-  latestFormRef.current = { taskId: task?.id ?? null, title, description, status, priority, prefix, cost, currency, deadline, areaId };
+  // The form as plain data (lib/taskForm.ts), and the latest one in a ref: the
+  // save on close runs from a cleanup closure that would otherwise hold the
+  // first render's state.
+  const form: TaskForm = { title, description, status, priority, prefix, cost, currency, deadline, areaId };
+  const latestFormRef = useRef<{ taskId: number | null; form: TaskForm }>({ taskId: null, form });
+  latestFormRef.current = { taskId: formTaskId, form };
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const mountedRef = useRef(true);
+  // Delete pressed on this task with this form: its edits are thrown away, not
+  // saved into the Bin. It stops matching on the next edit, and clears when the
+  // parent reports the delete failed.
+  const deletingRef = useRef<{ taskId: number; form: TaskForm } | null>(null);
+  const isDeleting = (taskId: number, f: TaskForm) =>
+    deletingRef.current?.taskId === taskId && formsEqual(f, deletingRef.current.form);
 
-  // Auto-save on UNMOUNT: switching to another tab, page or view closes the
-  // editor — edits must survive that, not just task→task switches. The same
-  // save runs before the app restarts into an update (lib/restartFlush.ts),
-  // where no unmount happens.
+  /** Send `input` for `base` to the host and remember the answer, so an editor
+   * that reopens from an older copy shows it (lib/taskForm.ts, saved copies). */
+  const saveToHost = async (base: Task, input: UpdateTaskInput, seq = beginSave()): Promise<Task> =>
+    rememberSaved(base, await updateTaskApi(base.id, input), seq);
+  // The last form the save on close sent, so ✕ then unmount sends it once even
+  // when the pending copy can't show it (a cleared cost, deadline or area).
+  const sentRef = useRef<{ taskId: number; form: TaskForm } | null>(null);
+
+  /** Save the open form if it holds an edit. Every way of leaving the editor
+   * runs it: closing the pane, a tab, page or view change (unmount), and the
+   * restart into an update (lib/restartFlush.ts). The switch to another task
+   * has its own save below. Rejects when the save fails. */
+  const flushRef = useRef<() => Promise<void>>(async () => {});
+  flushRef.current = async () => {
+    const { taskId, form: f } = latestFormRef.current;
+    const base = prevTaskSnapshot.current;
+    // The form must belong to the task the snapshot is of: mid-switch it holds
+    // the previous task's values, and the switch save owns them.
+    if (taskId == null || !base || base.id !== taskId) return;
+    if (!isFormSavable(f) || !isFormDirty(f, base) || isDeleting(taskId, f)) return;
+    if (sentRef.current?.taskId === taskId && formsEqual(sentRef.current.form, f)) return;
+    // Mark it saved now, so a second flush (✕ then unmount) doesn't send it
+    // again, and remember the pending copy before the first await: a view that
+    // reopens this task meanwhile reads the edit.
+    const pending = applyForm(base, f);
+    const seq = beginSave();
+    prevTaskSnapshot.current = pending;
+    sentRef.current = { taskId, form: f };
+    rememberPending(base, pending, seq);
+    try {
+      const saved = await saveToHost(base, formToUpdate(f), seq);
+      if (prevTaskSnapshot.current === pending) prevTaskSnapshot.current = saved;
+      // After an unmount the parent may be gone or showing something else.
+      if (mountedRef.current) onSaveRef.current(saved);
+    } catch (e) {
+      forgetPending(pending);
+      if (prevTaskSnapshot.current === pending) prevTaskSnapshot.current = base;
+      if (sentRef.current?.form === f) sentRef.current = null;
+      throw e;
+    }
+  };
+  if (flushOnClose) flushOnClose.current = () => flushRef.current();
+
   useEffect(() => {
-    const saveOpenForm = async () => {
-      const f = latestFormRef.current;
-      const prev = prevTaskSnapshot.current;
-      if (!f || f.taskId == null || !f.title.trim()) return;
-      if (prev && prev.id !== f.taskId) return; // mid-switch; the switch effect owns it
-      const dirty =
-        !prev ||
-        f.title !== (prev.title || '') ||
-        f.description !== (prev.description || '') ||
-        f.status !== prev.status ||
-        f.priority !== prev.priority ||
-        f.prefix !== (prev.prefix || '') ||
-        f.cost !== (prev.cost?.toString() || '') ||
-        f.currency !== (prev.currency || '') ||
-        f.deadline !== (prev.deadline ? new Date(prev.deadline).toISOString().split('T')[0] : '') ||
-        f.areaId !== (prev.area_id || undefined);
-      if (!dirty) return;
-      await updateTaskApi(f.taskId, {
-        title: f.title,
-        description: f.description || undefined,
-        status: f.status as Task['status'],
-        priority: f.priority as Task['priority'],
-        prefix: f.prefix || undefined,
-        cost: f.cost ? parseFloat(f.cost) : undefined,
-        currency: f.currency || undefined,
-        deadline: f.deadline ? new Date(f.deadline).toISOString() : undefined,
-        area_id: f.areaId || undefined,
-      });
-    };
+    mountedRef.current = true;
+    const flush = () => flushRef.current();
     // The restart path hears a failed save (it asks before losing edits).
-    const offRestart = onBeforeRestart(saveOpenForm);
+    const offRestart = onBeforeRestart(flush);
     return () => {
+      mountedRef.current = false;
       offRestart();
-      saveOpenForm().catch((e) => console.warn('Unmount auto-save failed:', e));
+      flush().catch((e) => console.warn('Auto-save on close failed:', e));
     };
   }, []);
 
@@ -287,7 +323,8 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
       // Skip if this is the first render
       if (previousTaskId === null) {
         setPreviousTaskId(task.id);
-        prevTaskSnapshot.current = task;
+        // The copy the form opened on (the first render's), if it's this task.
+        prevTaskSnapshot.current = seedTask?.id === task.id ? seedTask : freshest(task);
         return;
       }
 
@@ -301,48 +338,26 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
       // clicking through tasks to view them would write the previous one every
       // time, and the resulting host pulse reloads the whole dashboard.
       const prev = prevTaskSnapshot.current;
-      const dirty =
-        !prev ||
-        title !== (prev.title || '') ||
-        description !== (prev.description || '') ||
-        status !== prev.status ||
-        priority !== prev.priority ||
-        prefix !== (prev.prefix || '') ||
-        cost !== (prev.cost?.toString() || '') ||
-        currency !== (prev.currency || '') ||
-        deadline !== (prev.deadline ? new Date(prev.deadline).toISOString().split('T')[0] : '') ||
-        areaId !== (prev.area_id || undefined);
-
-      if (dirty && title.trim()) {
-        console.log(`Auto-saving previous task (ID: ${previousTaskId}) before switching to task ${task.id}...`);
+      const prevId = previousTaskId;
+      setPreviousTaskId(task.id);
+      prevTaskSnapshot.current = freshest(task);
+      const sent = sentRef.current?.taskId === prevId && formsEqual(sentRef.current.form, form);
+      if (prev && prev.id === prevId && formTaskId === prevId && isFormSavable(form) && isFormDirty(form, prev)
+        && !isDeleting(prevId, form) && !sent) {
         setIsAutoSaving(true);
+        const pending = applyForm(prev, form);
+        const seq = beginSave();
+        rememberPending(prev, pending, seq);
         try {
-          const input: UpdateTaskInput = {
-            title,
-            description: description || undefined,
-            status,
-            priority,
-            prefix: prefix || undefined,
-            cost: cost ? parseFloat(cost) : undefined,
-            currency: currency || undefined,
-            deadline: deadline ? new Date(deadline).toISOString() : undefined,
-            area_id: areaId || undefined,
-            // pinned is owned by its dedicated auto-save effect; omitting here so a
-            // potentially stale form value can't overwrite the DB.
-          };
-          // Use previousTaskId to save the old task, not the current task.id
-          const updatedTask = await updateTaskApi(previousTaskId, input);
-          onSave(updatedTask);
-          console.log('Auto-save completed');
+          // Save the old task (prev), not the one now open.
+          onSave(await saveToHost(prev, formToUpdate(form), seq));
         } catch (error) {
+          forgetPending(pending);
           console.error('Auto-save failed:', error);
         } finally {
           setIsAutoSaving(false);
         }
       }
-
-      setPreviousTaskId(task.id);
-      prevTaskSnapshot.current = task;
     };
 
     autoSave();
@@ -351,21 +366,29 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   useEffect(() => {
     if (!task) return;
 
-    // Update local state when task prop changes
-    setTitle(task.title);
-    setDescription(task.description || '');
-    setStatus(task.status);
-    setPriority(task.priority);
-    setPrefix(task.prefix || '');
-    setCost(task.cost?.toString() || '');
-    setCurrency(task.currency || '');
-    setIsDescriptionPreview(!!task.description?.trim()); // show rendered content (images!) first
+    // Update local state when the task changes. Seed from the newest copy this
+    // window has: the one handed in can predate a save made on close.
+    const t = freshest(task);
+    const seed = formFromTask(t);
+    setTitle(seed.title);
+    setDescription(seed.description);
+    setStatus(seed.status as Task['status']);
+    setPriority(seed.priority as Task['priority']);
+    setPrefix(seed.prefix);
+    setCost(seed.cost);
+    setCurrency(seed.currency);
+    setIsDescriptionPreview(!!t.description?.trim()); // show rendered content (images!) first
     setEditMinHeight(null); // reset the captured height on task switch
-    setDeadline(
-      task.deadline ? new Date(task.deadline).toISOString().split('T')[0] : ''
-    );
-    setAreaId(task.area_id || undefined);
-    setPinned(task.pinned || false);
+    setDeadline(seed.deadline);
+    setAreaId(seed.areaId);
+    setPinned(t.pinned || false);
+    setFormTaskId(t.id); // batched with the values above: one render has both
+    deletingRef.current = null;
+    sentRef.current = null;
+    // The parent's copy is older: hand it the newer one (title bar, lists).
+    // Safe in this effect: the parent's new copy has the same id, so it
+    // doesn't run again.
+    if (t !== task) onSave(t);
     loadTimeData();
     loadAreas();
     loadAssignees();
@@ -602,8 +625,11 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
         const input: UpdateTaskInput = {
           pinned: pinned,
         };
-        const updatedTask = await updateTaskApi(task.id, input);
-        onSave(updatedTask);
+        const saved = await saveToHost(task, input);
+        // The pin is saved: a later save of the form mustn't carry the old one.
+        const snap = prevTaskSnapshot.current;
+        if (snap?.id === task.id) prevTaskSnapshot.current = { ...snap, pinned: saved.pinned, updated_at: saved.updated_at };
+        onSave(saved);
         console.log('Pinned state auto-saved');
       } catch (error) {
         console.error('Failed to auto-save pinned state:', error);
@@ -720,7 +746,7 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
           );
           const newDeadline = toLocalDateString(new Date(earliest.event_date));
           setDeadline(newDeadline);
-          const updated = await updateTaskApi(task.id, {
+          const updated = await saveToHost(task, {
             deadline: new Date(newDeadline).toISOString(),
           });
           onSave(updated);
@@ -843,21 +869,11 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
     if (!task) return;
     setIsSaving(true);
     try {
-      const input: UpdateTaskInput = {
-        title,
-        description: (descOverride ?? description) || undefined,
-        status,
-        priority,
-        prefix: prefix || undefined,
-        cost: cost ? parseFloat(cost) : undefined,
-        currency: currency || undefined,
-        deadline: deadline ? new Date(deadline).toISOString() : undefined,
-        area_id: areaId || undefined,
-        // pinned is owned by its dedicated auto-save effect (see [pinned] effect)
-      };
-
-      const updatedTask = await updateTaskApi(task.id, input);
-      prevTaskSnapshot.current = updatedTask; // unmount save compares against this
+      const base = prevTaskSnapshot.current?.id === task.id ? prevTaskSnapshot.current : task;
+      const sentForm = { ...form, description: descOverride ?? description };
+      const updatedTask = await saveToHost(base, formToUpdate(sentForm));
+      prevTaskSnapshot.current = updatedTask; // the save on close compares against this
+      sentRef.current = { taskId: task.id, form: sentForm };
       onSave(updatedTask);
     } catch (error) {
       console.error('Failed to update task:', error);
@@ -1528,7 +1544,14 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
                   {/* Delete lives here in BOTH modes now (the old title-bar trash
                       was removed as redundant with the DetailPane header). */}
                   <button
-                    onClick={onDelete}
+                    onClick={() => {
+                      const mark = { taskId: task.id, form };
+                      deletingRef.current = mark;
+                      void Promise.resolve(onDelete()).then((ok) => {
+                        // The delete failed and the task stays open: its edits save again.
+                        if (ok === false && deletingRef.current === mark) deletingRef.current = null;
+                      });
+                    }}
                     title="Restorable from the Bin"
                     className="g-btn g-btn-danger w-full"
                   >
@@ -1819,7 +1842,8 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
         task={task}
         isOpen={isDescriptionModalOpen}
         onClose={() => setIsDescriptionModalOpen(false)}
-        onSave={(updatedTask) => {
+        onSave={(saved) => {
+          const updatedTask = task ? rememberSaved(task, saved, beginSave()) : saved;
           prevTaskSnapshot.current = updatedTask;
           onSave(updatedTask);
           setDescription(updatedTask.description || '');
