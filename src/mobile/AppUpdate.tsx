@@ -2,18 +2,22 @@
 // something to do, and the full state in Settings → App update. The state and
 // the native calls live in src/lib/apkUpdate.ts. Android only: both render
 // nothing elsewhere (iOS included).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  apkFromGithub,
+  apkSource,
+  apkSourceStatuses,
   apkUpdateSupported,
   checkApkUpdate,
   retryApkInstall,
   startApkUpdate,
+  switchApkSource,
   useApkUpdate,
   type ApkUpdateState,
 } from "../lib/apkUpdate";
 import { bannerVisible, fmtMB, progressPct } from "../lib/apkUpdate.pure";
-import { setGithubChecksOn, useGithubChecksOn } from "../lib/updateChannel";
+import { GITHUB_REPO, setGithubChecksOn, useGithubChecksOn, useUpdateSource } from "../lib/updateChannel";
+import type { SourceStatus, UpdateSource } from "../lib/updateSource.pure";
+import { currentDaemonUrl } from "../lib/daemon";
 import { Button, SectionHeader, Toggle } from "./ui";
 
 /** Progress for a download: a gold bar, and "12 / 48 MB · 25%". */
@@ -33,9 +37,9 @@ function Progress({ s }: { s: Extract<ApkUpdateState, { kind: "downloading" }> }
 }
 
 /** One line per state: the title and what to do. Shared by the banner and Settings.
- * A GitHub build (apkFromGithub) names GitHub's latest release instead of the host. */
+ * On GitHub Releases it names GitHub's latest release instead of the host. */
 function describe(s: ApkUpdateState): { title: string; sub?: string; tone?: "error" | "ok" } {
-  const gh = apkFromGithub;
+  const gh = apkSource() === "github";
   switch (s.kind) {
     case "idle":
     case "checking":
@@ -47,7 +51,16 @@ function describe(s: ApkUpdateState): { title: string; sub?: string; tone?: "err
         ? { title: "No Android build on GitHub", sub: "The latest release has no app to install." }
         : { title: "No Android build on the host", sub: "The host builds the app when it updates. Nothing to install yet." };
     case "up-to-date":
+      if (s.older) {
+        return {
+          title: "Up to date",
+          sub: `${gh ? `The latest release (${s.host})` : `The server's build (${s.host})`} is older than this app, and Android can't go back. ${gh ? "The next release" : "Its next build"} installs over this one.`,
+          tone: "ok",
+        };
+      }
       return { title: "Up to date", sub: gh ? `The latest release is ${s.host}.` : `The host's build is ${s.host}.`, tone: "ok" };
+    case "unavailable":
+      return { title: `Can't update from ${gh ? "GitHub Releases" : "this server"}`, sub: s.why, tone: "error" };
     case "available":
       return { title: `Update available (${s.build.version})`, sub: `${fmtMB(s.build.size)} from ${gh ? "GitHub" : "the host"}` };
     case "downloading":
@@ -113,14 +126,37 @@ export function UpdateBanner() {
   );
 }
 
-/** Settings → App update: this app's version, the host's build and the state. */
+/** "1.0.10", or why the source can't be chosen; "…" while it's unknown. The chosen source's
+ * reason is left to the state card below, which says it in full. */
+function sourceLine(st: SourceStatus | undefined, chosen: boolean): string {
+  if (!st) return "…";
+  return [st.latest, chosen && !st.available ? null : st.why].filter(Boolean).join(" · ") || "—";
+}
+
+/** Settings → App update: where this app updates from, its version, the source's build and the state. */
 export function UpdateSection() {
   const s = useApkUpdate();
   const githubOn = useGithubChecksOn();
-  if (!apkUpdateSupported()) return null;
+  const source = useUpdateSource() ?? "host";
+  const [statuses, setStatuses] = useState<Record<UpdateSource, SourceStatus> | null>(null);
+  const supported = apkUpdateSupported();
+  useEffect(() => {
+    if (!supported) return;
+    let alive = true;
+    void apkSourceStatuses().then((x) => alive && setStatuses(x));
+    return () => {
+      alive = false;
+    };
+  }, [supported, githubOn, source]);
+  if (!supported) return null;
   const d = describe(s);
   const current = "current" in s && s.current ? s.current : null;
   const busy = s.kind === "checking" || s.kind === "downloading";
+  const host = currentDaemonUrl();
+  const options: { value: UpdateSource; label: string; disabled: boolean }[] = [
+    { value: "github", label: `GitHub Releases${GITHUB_REPO ? ` · ${GITHUB_REPO}` : ""}`, disabled: !!statuses && !statuses.github.available && source !== "github" },
+    { value: "host", label: `This server${host ? ` · ${host.replace(/^https?:\/\//, "")}` : ""}`, disabled: !!statuses && !statuses.host.available && source !== "host" },
+  ];
   return (
     <>
       <SectionHeader
@@ -133,6 +169,29 @@ export function UpdateSection() {
         App update
       </SectionHeader>
       <div className="px-4 space-y-2">
+        <div className="g-card px-4 py-3 space-y-3">
+          <label className="block space-y-1">
+            <span className="text-sm gm-mut">Updates from</span>
+            <select
+              value={source}
+              disabled={busy}
+              onChange={(e) => void switchApkSource(e.target.value as UpdateSource)}
+              className="g-field gm-field w-full"
+            >
+              {options.map((o) => (
+                <option key={o.value} value={o.value} disabled={o.disabled}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            <dt className="gm-mut">GitHub Releases</dt>
+            <dd className="break-words tabular-nums">{sourceLine(statuses?.github, source === "github")}</dd>
+            <dt className="gm-mut">This server</dt>
+            <dd className="break-words tabular-nums">{sourceLine(statuses?.host, source === "host")}</dd>
+          </dl>
+        </div>
         <div className="g-card px-4 py-3 space-y-3">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
@@ -147,7 +206,7 @@ export function UpdateSection() {
           <Actions s={s} full />
           <div className="text-xs gm-mut tabular-nums">This app: {current ?? "—"}</div>
         </div>
-        {apkFromGithub && (
+        {source === "github" && (
           <div className="g-card px-4 py-1">
             <Toggle
               label="Check GitHub for new versions"

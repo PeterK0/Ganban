@@ -386,6 +386,38 @@ on the desktop and on the phone (`src/lib/notificationFeed.ts`) while the app is
 - A refund and the expense it nets against don't count as the same fix for the rule offer.
 - An import skips lines dated in a closed month, with a warning; they're corrected in an open month.
 
+## Starting over
+
+Finance → Settings ends with a danger zone, **Delete all finance data**, for a user who wants to import their history
+again from scratch (`crates/core/src/finance/reset.rs`). Its confirmation lists what goes with counts (accounts,
+transactions, rules, saved layouts), offers "Keep my categorisation rules and saved import layouts" (off by default),
+and enables its button only once `DELETE` is typed. Then it shows the job's progress and opens the empty overview.
+The phone shell shows the same Settings section.
+
+- **What goes:** everything in the caller's entity: accounts and their ledger accounts, entries and lines, source
+  lines and import batches, pairs, payee-group suggestions, budgets, planned and recurring items, schedules and their
+  releases, periods and the audit trail, and the rules and saved import layouts unless `keepRules`.
+- **What stays:** the entity row (its name and functional currency), its `fin_settings` (the reminder and the import
+  option), and the global `fin_rates`. The default chart is created again, as on first use, and one `reset` audit row records
+  the counts.
+- **Kept rules** are pointed at the new chart: a category by its system key, else its code and class, and a category
+  of the user's own is created again with its name. A rule's account condition goes with the accounts, and a rule
+  left with no condition is dropped, since it would match everything.
+- **Writes:** a background job, one per user in the host's memory, deleting in `BEGIN IMMEDIATE` transactions of 500
+  rows with a short pause after each, as the import writes, so a reset of ten thousand entries holds no long lock.
+  Indexes on the columns that point at an entry (`reverses_id`, a pair's `adjust_entry_id`, a schedule's entry and
+  deferral, a release's entry) keep each entry's delete from scanning those tables. A write that slips in meanwhile
+  is swept up in the last transaction, which also replaces the chart.
+- **Refused** while the user's import, a bulk action (`fin_post_matching`, `fin_categorise_matching`) or the
+  suggestions job runs; and those, and another reset, are refused while it runs. The host log gets one line with the
+  user id and the counts, nothing else.
+
+| Command | Args | Returns |
+|---|---|---|
+| `fin_reset_preview` | — | `{accounts, entries, rules, layouts}`: what a reset would delete |
+| `fin_reset` | `confirm` (exactly `"DELETE"`), `keepRules?` | `ResetJob`, running |
+| `fin_reset_status` | `jobId?` | `ResetJob \| null`: that job (another user's is not found), else the user's latest. `ResetJob {job_id, state: running\|done\|failed, done, total (rows), started_at, finished_at?, result?: {removed: {accounts, entries, rules, layouts}, kept_rules}, error?}` |
+
 ## Assistant (wave 4)
 
 Finance data reaches a model only on the host's own terms: a local Ollama model, the caller's own books, read-only.

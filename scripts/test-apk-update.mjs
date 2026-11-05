@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(mkdtempSync(join(tmpdir(), 'apkupd-')), 'apk.mjs');
-execSync(`npx esbuild src/lib/apkUpdate.pure.ts --format=esm --outfile=${out} --log-level=error`, { cwd: root, stdio: 'inherit' });
+execSync(`npx esbuild src/lib/apkUpdate.pure.ts --bundle --format=esm --outfile=${out} --log-level=error`, { cwd: root, stdio: 'inherit' });
 
 const U = await import(out);
 let pass = 0, fail = 0;
@@ -28,7 +28,7 @@ eq(U.compareBuild(5960, undefined), 'no-build', 'no android key at all');
 eq(U.compareBuild(5960, build(0)), 'no-build', 'a zero version code is no build');
 eq(U.compareBuild(5960, build(5975)), 'available', 'a larger code is newer');
 eq(U.compareBuild(5975, build(5975)), 'up-to-date', 'the same code is up to date');
-eq(U.compareBuild(5980, build(5975)), 'up-to-date', 'an older host build never offers a downgrade');
+eq(U.compareBuild(5980, build(5975)), 'older', 'an older build is never offered (Android refuses a smaller code)');
 
 // ----- progress and sizes
 eq(U.progressPct(0, 0), null, 'unknown total');
@@ -61,8 +61,9 @@ eq(U.cmpSemver('1.0.2', '1.0.1'), 1, 'semver: patch');
 eq(U.cmpSemver('v1.0.10', '1.0.9'), 1, 'semver: numeric, leading v');
 eq(U.cmpSemver('1.0.1', '1.0.1'), 0, 'semver: equal');
 eq(U.cmpSemver('1.0.975', '1.1.0'), -1, 'semver: minor beats a big patch');
-eq(U.versionCodeFor('1.0.2'), 1000002, "Tauri's version code");
-eq(U.versionCodeFor('v2.3.45'), 2003045, 'version code with a v');
+eq(U.versionCodeFor('1.0.2'), 1000002, "releases before 1.0.10: Tauri's version code");
+eq(U.versionCodeFor('v1.0.10'), 1000010000, 'from 1.0.10 on: x1000, so host builds fit between releases');
+eq(U.versionCodeFor('v2.3.45'), 2003045000, 'version code with a v');
 const apkAsset = (name, extra = {}) => ({ name, browser_download_url: `https://github.com/o/r/releases/download/v1.0.2/${name}`, size: 9, ...extra });
 const rel = (assets, extra = {}) => ({ tag_name: 'v1.0.2', assets, ...extra });
 const digest = 'sha256:' + 'AB'.repeat(32);
@@ -75,10 +76,11 @@ eq(U.githubApk(rel([apkAsset('x.apk', { browser_download_url: 'http://plain/x.ap
 eq(U.githubApk(rel([apkAsset('x.apk')], { tag_name: 'nightly' })), null, 'a tag that is not a version');
 eq(U.githubApk(rel([apkAsset('x.apk')], { prerelease: true })), null, 'a prerelease');
 eq(U.githubApk({}), null, 'no release at all');
-eq(U.compareGithub('1.0.1', a), 'available', 'a newer tag is available');
-eq(U.compareGithub('1.0.2', a), 'up-to-date', 'the same tag is up to date');
-eq(U.compareGithub('1.0.3', a), 'up-to-date', 'an older release never offers a downgrade');
-eq(U.compareGithub('1.0.1', null), 'no-build', 'no APK on the release');
+eq(U.compareGithub(1000001, a), 'available', 'a newer release is available');
+eq(U.compareGithub(1000002, a), 'up-to-date', 'the same release is up to date');
+eq(U.compareGithub(1000003, a), 'older', 'an older release is never offered');
+eq(U.compareGithub(1000002500, a), 'older', 'nor one older than a host build after it');
+eq(U.compareGithub(1000001, null), 'no-build', 'no APK on the release');
 eq(U.bannerVisible({ kind: 'off', current: '1.0.1' }, null), false, 'switched off is quiet');
 eq(U.shouldRecheckOnResume({ kind: 'off', current: '1.0.1' }), true, 'off re-reads the switch on resume (no request while off)');
 

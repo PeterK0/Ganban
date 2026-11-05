@@ -37,12 +37,14 @@ None needs a running server, a browser or network access.
 | `npm run test:finreports` | Finance reports: months and periods, statement rows with subtotals and comparatives, net worth, budget progress, the forecast band's scale and a statement's PDF. |
 | `npm run test:fincash` | Finance quick-add of a cash expense: which cash account it posts to and the balanced entry it makes. |
 | `npm run test:finimport` | Finance import job progress: how full the bar is through the stages, and the stage labels. |
+| `npm run test:finreset` | Deleting all finance data: the confirmation's list, the typed word that enables it, and the progress bar. |
 | `npm run test:fininbox` | Finance inbox at scale: what "Select all" covers, the bulk confirm texts with their counts, group date ranges and the suggestion job's progress line. |
 | `npm run test:finpairs` | Finance transfer review: which waiting pairs "all like this" and "all at ≥ N%" take. |
 | `npm run test:pdfsections` | PDF Studio's section kinds (front matter, chapters, back matter) and the chapter numbering in extracted file names. |
 | `npm run test:cadence` | An automation's schedule: interval, daily and weekly (`Mon,Thu 09:00`), read and written as the host parses them. |
 | `npm run test:update` | The version compare behind the host-served update check. |
 | `npm run test:apkupdate` | The phone app's self-update decisions. |
+| `npm run test:updatesource` | The update source: the choice, the desktop's host key pin, the phone's certificate match, and the Android version codes (against `ops/version-code.mjs`). |
 | `npm run test:ops` | The host service scripts in `ops/` (install, backup, update), in a sandbox with fake system tools. They target macOS and launchd, so run this suite on a Mac. |
 | `npm run test:doclinks` | Every link and `docs/…` path in the repo's Markdown, comments and scripts resolves. |
 

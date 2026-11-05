@@ -1,5 +1,6 @@
 // The phone's self-update (ADR 0007, docs/design/UPDATES.md § The phone): the states and
 // the decisions, with no I/O, so scripts/test-apk-update.mjs can test them.
+import { compareCodes, releaseVersionCode } from "./updateSource.pure";
 
 /** `get_client_builds().android` on the host. */
 export interface AndroidBuild {
@@ -11,6 +12,8 @@ export interface AndroidBuild {
   sha256: string;
   /** Where to download it; absent means the host's `/updates/android/apk`. */
   url?: string;
+  /** The SHA-256 of its signing certificate, when the source says (absent: unknown). */
+  certSha256?: string | null;
 }
 
 /** What the update looks like right now. `failed.during` says whether asking the
@@ -21,18 +24,21 @@ export type ApkUpdateState =
   | { kind: "off"; current: string }
   | { kind: "checking" }
   | { kind: "no-build"; current: string }
-  | { kind: "up-to-date"; current: string; host: string }
+  /** `older`: the source's build has a smaller version code, which Android won't install. */
+  | { kind: "up-to-date"; current: string; host: string; older?: boolean }
+  /** The source's build can't install over this app (another signing certificate). */
+  | { kind: "unavailable"; current: string; why: string }
   | { kind: "available"; current: string; build: AndroidBuild }
   | { kind: "downloading"; current: string; build: AndroidBuild; downloaded: number; total: number }
   | { kind: "needs-permission"; current: string; build: AndroidBuild; path: string }
   | { kind: "install-started"; current: string; build: AndroidBuild; path: string }
   | { kind: "failed"; during: "check" | "update"; why: string; current?: string; build?: AndroidBuild };
 
-/** Compare the installed version code with the host's Android build. Version
- * codes only grow (`0.5.<commit count>`), so newer means larger. */
-export function compareBuild(currentCode: number, build: AndroidBuild | null | undefined): "no-build" | "up-to-date" | "available" {
-  if (!build || !Number.isFinite(build.versionCode) || build.versionCode <= 0) return "no-build";
-  return build.versionCode > currentCode ? "available" : "up-to-date";
+/** Compare the installed version code with a source's Android build. Codes only grow
+ * (ops/version-code.mjs), so newer means larger; a smaller one is `older`, which Android
+ * never installs over this app. */
+export function compareBuild(currentCode: number, build: AndroidBuild | null | undefined): "no-build" | "up-to-date" | "available" | "older" {
+  return compareCodes(currentCode, build?.versionCode);
 }
 
 /** Download progress in whole percent, or null when the size isn't known. */
@@ -75,9 +81,8 @@ export function bannerVisible(s: ApkUpdateState, dismissedCode: number | null): 
 }
 
 // ---- The GitHub channel (ADR 0008) --------------------------------------------
-// A phone app from GitHub Releases asks the repo's latest release (no token),
-// compares its tag with its own version name by semver, and takes the release's
-// `.apk` asset.
+// A phone on GitHub Releases asks the repo's latest release (no token), compares
+// the tag's version code with its own, and takes the release's `.apk` asset.
 
 /** The fields of GitHub's "latest release" answer this uses. */
 export interface GithubRelease {
@@ -104,12 +109,9 @@ export function cmpSemver(a: string, b: string): number {
   return 0;
 }
 
-/** Tauri's Android version code for a version (major·1000000 + minor·1000 + patch),
- * which the release workflow sets explicitly too. */
-export function versionCodeFor(version: string): number {
-  const [maj = 0, min = 0, pat = 0] = version.trim().replace(/^v/i, "").split(/[-+]/)[0].split(".").map((n) => parseInt(n, 10) || 0);
-  return maj * 1_000_000 + min * 1_000 + pat;
-}
+/** A release's Android version code (ops/version-code.mjs's formula, which the release
+ * workflow sets explicitly). */
+export const versionCodeFor = releaseVersionCode;
 
 /** The release's installable APK, or null: a draft, a prerelease, a tag that isn't a
  * version, or no signed `.apk` asset (an unsigned one can't be installed). */
@@ -136,8 +138,8 @@ export function githubApk(release: GithubRelease | null | undefined): GithubApk 
   };
 }
 
-/** The installed version name against the release's APK, by semver. */
-export function compareGithub(currentName: string, apk: GithubApk | null): "no-build" | "up-to-date" | "available" {
-  if (!apk) return "no-build";
-  return cmpSemver(apk.version, currentName) > 0 ? "available" : "up-to-date";
+/** The installed app against the release's APK, by version code (a host build's
+ * `1.0.<count>` name doesn't compare with a release's). */
+export function compareGithub(currentCode: number, apk: GithubApk | null): "no-build" | "up-to-date" | "available" | "older" {
+  return compareCodes(currentCode, apk?.versionCode);
 }

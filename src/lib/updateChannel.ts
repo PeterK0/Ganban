@@ -1,9 +1,13 @@
-// This build's update channel (ADR 0008) and the device's "Check GitHub for new
-// versions" switch. The channel is fixed at build time (VITE_UPDATE_CHANNEL,
-// VITE_UPDATE_REPO; see update.pure.ts); the switch shows only on `github`
-// builds, is on by default, and off means this device sends GitHub nothing.
+// This build's update channel (ADR 0008), the device's update source (GitHub
+// Releases or This server, docs/design/UPDATES.md § The update source), the
+// desktop's pinned key for This server, and the "Check GitHub for new versions"
+// switch. The channel is fixed at build time (VITE_UPDATE_CHANNEL,
+// VITE_UPDATE_REPO; see update.pure.ts) and only sets the default source. The
+// switch shows while the source is GitHub, is on by default, and off means this
+// device sends GitHub nothing.
 import { useSyncExternalStore } from 'react';
-import { mayAskGithub, parseUpdateChannel, type UpdateChannel } from './update.pure';
+import { mayAskGithub, parseUpdateChannel, validRepo, type UpdateChannel } from './update.pure';
+import { chosenSource, type UpdateSource } from './updateSource.pure';
 
 export const UPDATE_CHANNEL: UpdateChannel = parseUpdateChannel(
   import.meta.env.VITE_UPDATE_CHANNEL as string | undefined,
@@ -45,7 +49,69 @@ export function useGithubChecksOn(): boolean {
   );
 }
 
-/** The GitHub repo to ask now, or null: not a `github` build, or the switch is off. */
+/** The GitHub repo this build may update from: a `github` build's own, or the one a host
+ * build was given (ops/build-clients.sh), or null. */
+export const GITHUB_REPO: string | null = (() => {
+  if (UPDATE_CHANNEL.kind === 'github') return UPDATE_CHANNEL.repo;
+  const r = ((import.meta.env.VITE_UPDATE_REPO as string | undefined) ?? '').trim();
+  return validRepo(r) ? r : null;
+})();
+
+/** The GitHub repo to ask now, or null: no repo, the device updates from This server (it
+ * then never contacts GitHub), or the switch is off. */
 export function githubRepoToAsk(): string | null {
-  return mayAskGithub(UPDATE_CHANNEL, githubChecksOn()) ? UPDATE_CHANNEL.repo : null;
+  if (!GITHUB_REPO || updateSource() !== 'github') return null;
+  return mayAskGithub({ kind: 'github', repo: GITHUB_REPO }, githubChecksOn()) ? GITHUB_REPO : null;
+}
+
+// ---- The update source: kept on the device, like the switch ----
+
+const SOURCE_KEY = 'ganban.updates.source';
+const HOST_KEY_PIN = 'ganban.updates.hostKey';
+
+function read(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function write(key: string, value: string | null): void {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* private mode: the default stays */
+  }
+  listeners.forEach((l) => l());
+}
+
+/** Where this device updates from: its choice, else the build's channel. Null on a dev build. */
+export function updateSource(): UpdateSource | null {
+  return chosenSource(read(SOURCE_KEY), UPDATE_CHANNEL);
+}
+
+export function setUpdateSource(source: UpdateSource): void {
+  write(SOURCE_KEY, source);
+}
+
+export function useUpdateSource(): UpdateSource | null {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    updateSource,
+    updateSource,
+  );
+}
+
+/** The desktop's pinned updater key for This server (one pin: a different server's key asks too). */
+export function pinnedHostKey(): string | null {
+  return read(HOST_KEY_PIN);
+}
+
+export function pinHostKey(key: string): void {
+  write(HOST_KEY_PIN, key.trim());
 }

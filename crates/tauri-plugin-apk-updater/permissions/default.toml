@@ -1,4 +1,4 @@
 "$schema" = "schemas/schema.json"
 [default]
-description = "Read the app's version, download the host's APK and start its install."
+description = "Read the app's version and signing certificate, download an APK and start its install."
 permissions = ["allow-apk-version", "allow-apk-download", "allow-apk-install"]

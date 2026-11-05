@@ -450,7 +450,9 @@ Once the new server is healthy, `ops/update.sh` builds the client apps from the 
 - **The Android APK** (arm64), signed with your release keystore. The phone offers "Update available", then Android's
   install prompt.
 
-Each build's version is `<major>.<minor>.<commit count>` from `src-tauri/tauri.conf.json` (today `1.0.<count>`) (Android's version code is `500000 + count`), so every commit is newer.
+Each build's version is `<major>.<minor>.<commit count>` from `src-tauri/tauri.conf.json` (today `1.0.<count>`), so
+every commit is newer. Android's version code puts a host build between the release it follows and the next one
+(`ops/version-code.mjs`, docs/design/UPDATES.md § Versions).
 The builds land in `~/Library/Application Support/com.scs.gansty/client-builds/` (`desktop/darwin-aarch64/`,
 `android/`, each with a `manifest.json`), and the host serves them at `/updates/…` to paired devices only. They add
 10–20 minutes to an update, after the server is back up. `GANBAN_CLIENT_BUILDS` in `install.env` picks which:
@@ -458,8 +460,8 @@ The builds land in `~/Library/Application Support/com.scs.gansty/client-builds/`
 `desktop`, `android`, `desktop,android`); a reinstall keeps it. Run `ops/build-clients.sh` alone to rebuild just the
 clients.
 
-**Devices on GitHub Releases don't need host builds.** An app downloaded from GitHub Releases updates from GitHub
-(ADR 0008), never from the host. If all your devices run those, set `--client-builds none`: the update then only
+**Each device chooses where it updates from.** Settings → Updates → **Updates from** picks **GitHub Releases** or
+**This server** (ADR 0011). The app's origin only sets the default. An app on GitHub Releases never asks the host. If all your devices run those, set `--client-builds none`: the update then only
 updates the server, and Settings → Updates says "This host doesn't build apps; devices update from GitHub releases".
 
 **Once, on the host:**
@@ -475,8 +477,29 @@ updates the server, and Settings → Updates says "This host doesn't build apps;
    means reinstalling the phone app and pairing it again.
 4. Run `ops/install.sh` again (it installs `com.ganban.updater`), then `ops/update.sh`.
 
-**Once, on each device:** install the first host-built app by hand, because apps built elsewhere don't know your
-updater key. On a Mac, take the `.app.tar.gz` from `client-builds/desktop/…/`, unpack it and replace
+**Sign with the project's keys to switch freely.** A device moves between GitHub Releases and your builds without a
+reinstall only when both are signed with the same keys. A maintainer who holds the project's release keys can sign
+the host's builds with them:
+
+1. Put the project's desktop updater key in `keys/`: the private key as `updater.key`, its public half as
+   `updater.key.pub` (the same text as `src-tauri/updater/github.pub`), and its password as `updater.pass`, all mode
+   600 (the `.pub` may be 644). These are the release workflow's `TAURI_SIGNING_PRIVATE_KEY` and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+2. Put the project's Android release keystore in `keys/` (for example `keys/ganban-release.jks`) and write
+   `keys/keystore.properties` with `keyAlias=` (`ANDROID_KEY_ALIAS`), `password=` (`ANDROID_KEY_PASSWORD`, the same
+   for the store and the key) and `storeFile=`. Mode 600.
+3. Run `ops/install.sh --client-keys`. It never overwrites, so move any older `updater.*` and `keystore.properties`
+   out of `keys/` first. It should say `key id …: the GitHub Releases key` and show the keystore's
+   `certificate SHA-256`.
+4. Commit that SHA-256 as `src-tauri/updater/github-android-cert.txt` (it's public), so every build, the host's
+   included, knows GitHub Releases' certificate. Without it, phones don't offer GitHub Releases on host builds.
+
+With your own keys instead, the host's builds still update from the host. Desktop apps can switch either way (the app
+pins your host's key the first time and asks if it changes). A phone needs a one-time reinstall to move between your
+builds and GitHub's, and the app says so.
+
+**Once, on each device:** install the first host-built app by hand, unless it already runs a build signed with the
+same keys (then just choose **This server**), because apps built elsewhere don't know your updater key. On a Mac, take the `.app.tar.gz` from `client-builds/desktop/…/`, unpack it and replace
 `/Applications/Ganban.app`. On the phone, install the APK from `client-builds/android/` (or from the host's
 `/download` page). **A phone whose Ganban was signed with another key** refuses the update: uninstall Ganban first,
 once. That deletes its local data, so pair it again afterwards (§4.3).

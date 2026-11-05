@@ -45,21 +45,20 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_apk_updater::init());
 
-    // Desktop: the app updates itself from its host or from GitHub Releases (its
-    // build's channel), when its build gave it that channel's updater key (ADR 0007,
-    // ADR 0008). Without a key the plugin can't start, so it isn't registered and
-    // Settings says this build can't update itself.
+    // Desktop: the app updates itself from its host or from GitHub Releases, chosen per
+    // device at run time (ADR 0007, ADR 0008, docs/design/UPDATES.md). Every build with
+    // a channel carries the project's key; a host build also its host's. A dev build has
+    // neither: the plugin isn't registered and Settings says this build can't update itself.
     #[cfg(desktop)]
     let update_channel = app_update::UpdateChannel::current();
     #[cfg(desktop)]
-    let (builder, can_update) = {
-        let can_update = app_update::configured(context.config());
-        if can_update {
-            app_update::prepare_config(context.config_mut(), &update_channel);
-            (builder.plugin(tauri_plugin_updater::Builder::new().build()), true)
-        } else {
-            (builder, false)
-        }
+    let update_build_key = app_update::build_key(context.config());
+    #[cfg(desktop)]
+    let builder = if app_update::can_update(&update_channel, update_build_key.as_deref()) {
+        app_update::prepare_config(context.config_mut());
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
     };
 
     // Desktop: open the local database and register the full command surface.
@@ -68,7 +67,7 @@ pub fn run() {
         use tauri::Manager;
         builder
             .setup(move |app| {
-                app.manage(app_update::AppUpdate::new(can_update, update_channel.clone()));
+                app.manage(app_update::AppUpdate::new(update_channel.clone(), update_build_key.clone()));
                 // Logging first, so the embedded server's tracing events (and any
                 // panic) land in a rolling file under the app's log dir — a
                 // bundled .app has no console, so without this they're lost.
@@ -186,6 +185,7 @@ pub fn run() {
                 ai_engine::ai_engine_stop,
                 ai_engine::ai_engine_reclaim_ragrat,
                 app_update::update_check,
+                app_update::update_sources,
                 app_update::update_download,
                 app_update::update_install_and_restart,
             ])

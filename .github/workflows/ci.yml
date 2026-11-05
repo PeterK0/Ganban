@@ -56,6 +56,7 @@ jobs:
           npm run test:doclinks
           npm run test:update
           npm run test:apkupdate
+          npm run test:updatesource
           npm run test:nav
           npm run test:reports
           npm run test:listedit

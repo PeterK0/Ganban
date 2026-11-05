@@ -9,6 +9,19 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-11-05
+
+### Added
+
+- **Choose where the app updates from.** Settings → Updates on the desktop and Settings → App update on Android have
+  an "Updates from" choice: GitHub Releases or This server. Each source shows its latest version, or why it can't be
+  chosen, and switching checks it at once. The desktop pins the server's update key and asks before trusting a new
+  one; the phone offers a source only when its app is signed with the same certificate. Android version codes from
+  1.0.10 on leave room for a server's builds between releases.
+- **Finance: delete all finance data and start over.** Finance → Settings has a "Delete all finance data" section
+  that shows what will go, with counts. Typing DELETE confirms it, and you can choose to keep your categorisation
+  rules and saved import layouts.
+
 ## [1.0.9] - 2026-11-05
 
 ### Added

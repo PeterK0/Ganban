@@ -1,7 +1,7 @@
 {
   "name": "ganban",
   "private": true,
-  "version": "1.0.9",
+  "version": "1.0.10",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -25,6 +25,7 @@
     "test:nav": "node scripts/test-nav.mjs",
     "test:update": "node scripts/test-update.mjs",
     "test:apkupdate": "node scripts/test-apk-update.mjs",
+    "test:updatesource": "node scripts/test-update-source.mjs",
     "test:doclinks": "node scripts/check-doc-links.mjs",
     "test:recur": "node scripts/test-recur.mjs",
     "test:atlasfiles": "node scripts/test-atlas-files.mjs",
@@ -41,7 +42,8 @@
     "test:fincash": "node scripts/test-finance-cash.mjs",
     "test:finimport": "node scripts/test-finance-import-job.mjs",
     "test:fininbox": "node scripts/test-finance-inbox.mjs",
-    "test:finpairs": "node scripts/test-finance-review-pairs.mjs"
+    "test:finpairs": "node scripts/test-finance-review-pairs.mjs",
+    "test:finreset": "node scripts/test-finance-reset.mjs"
   },
   "dependencies": {
     "@fontsource/figtree": "^5.3.0",

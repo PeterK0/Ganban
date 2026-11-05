@@ -27,6 +27,7 @@ pub mod budgets;
 pub mod forecast;
 pub mod recurring;
 pub mod reminder;
+pub mod reset;
 pub mod schedules;
 pub mod statements;
 #[cfg(test)]

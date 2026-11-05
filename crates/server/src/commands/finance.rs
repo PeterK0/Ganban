@@ -5,7 +5,7 @@
 //! user, the host owner included, so a row id from another entity is "not found".
 
 use ganban_core::error::AppError;
-use ganban_core::finance::{self, inbox, rates, Entity};
+use ganban_core::finance::{self, inbox, rates, reset, Entity};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -154,6 +154,24 @@ pub(super) const COMMANDS: &[Command] = &[
     command("fin_trial_balance").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(finance::trial_balance(cx.db, &entity(cx, a).await?, &a.req_str("asOf")?).await?) })
     }),
+    // Start over: delete all of the caller's finance data (FINANCE.md § Starting over). A
+    // background job, followed with `fin_reset_status`.
+    command("fin_reset_preview").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move { reply(reset::preview(cx.db, &entity(cx, a).await?).await?) })
+    }),
+    command("fin_reset").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let confirm = a.opt_str("confirm").unwrap_or_default();
+            let keep = a.opt_bool("keepRules").unwrap_or(false);
+            reply(reset::start(cx.db, &entity(cx, a).await?, &confirm, keep)?)
+        })
+    }),
+    command("fin_reset_status").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let job = a.opt_i64("jobId").map(|id| id as u64);
+            reply(reset::status(cx.db, &entity(cx, a).await?, job)?)
+        })
+    }),
     // Rates are global (public ECB data), so this one reads no entity.
     command("fin_rate").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(rates::rate_on(cx.db, &a.req_str("currency")?, &a.req_str("date")?).await?) })
@@ -234,6 +252,43 @@ mod tests {
         let tb = http(&db, mia, "fin_trial_balance", json!({ "asOf": "2026-12-31" })).await.unwrap();
         let total = |k: &str| tb.as_array().unwrap().iter().map(|r| r[k].as_i64().unwrap()).sum::<i64>();
         assert_eq!((total("debit_minor"), total("credit_minor")), (50_000, 50_000));
+    }
+
+    #[tokio::test]
+    async fn a_reset_wipes_only_the_callers_books() {
+        let db = test_db("finance_reset").await;
+        let owner = owner(&db).await;
+        let mia = member(&db, 7, &[]).await;
+        let open = json!({ "input": { "kind": "current", "name": "Everyday", "currency": "EUR",
+            "openingBalanceMinor": 50_000, "openingDate": "2026-01-01" } });
+        http(&db, mia, "fin_create_account", open.clone()).await.unwrap();
+        http(&db, owner, "fin_create_account", open).await.unwrap();
+        let preview = http(&db, mia, "fin_reset_preview", json!({})).await.unwrap();
+        assert_eq!(preview, json!({ "accounts": 1, "entries": 1, "rules": 0, "layouts": 0 }));
+
+        // Without the exact word, nothing happens.
+        for confirm in [json!(null), json!("delete"), json!("DELETE ")] {
+            let err = http(&db, owner, "fin_reset", json!({ "userId": mia.id, "confirm": confirm })).await.unwrap_err();
+            assert!(err.is_invalid_input(), "{err}");
+        }
+        // The owner naming Mia as the author resets the owner's own books, never hers.
+        let job = http(&db, owner, "fin_reset", json!({ "userId": mia.id, "confirm": "DELETE" })).await.unwrap();
+        assert_eq!(job["state"], "running");
+        let job_id = job["job_id"].as_i64().unwrap();
+        // Mia can't follow the owner's job.
+        assert!(http(&db, mia, "fin_reset_status", json!({ "jobId": job_id })).await.unwrap_err().is_not_found());
+        loop {
+            let j = http(&db, owner, "fin_reset_status", json!({ "jobId": job_id })).await.unwrap();
+            if j["state"] != "running" {
+                assert_eq!(j["state"], "done", "{j}");
+                assert_eq!(j["result"]["removed"]["accounts"], 1);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(ids(&http(&db, owner, "fin_list_accounts", json!({ "includeArchived": true })).await.unwrap()).is_empty());
+        assert_eq!(http(&db, mia, "fin_list_accounts", json!({})).await.unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(http(&db, mia, "fin_list_entries", json!({})).await.unwrap()["total"], 1);
     }
 
     #[tokio::test]

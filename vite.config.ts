@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { cpSync, existsSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 
@@ -21,6 +21,17 @@ function buildStamp(): { hash: string; at: string } {
   return { hash, at: new Date().toISOString() };
 }
 const BUILD = buildStamp();
+
+/** The SHA-256 of the certificate GitHub Releases' APKs are signed with (public): the release
+ * workflow's VITE_GITHUB_ANDROID_CERT, else src-tauri/updater/github-android-cert.txt. A phone
+ * offers GitHub Releases only when its own signature matches (docs/design/UPDATES.md). */
+function githubAndroidCert(): string {
+  // @ts-expect-error process is a nodejs global
+  const env = (process.env.VITE_GITHUB_ANDROID_CERT as string | undefined) ?? "";
+  if (env.trim()) return env.trim();
+  const file = resolve("src-tauri/updater/github-android-cert.txt");
+  return existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+}
 function buildJson() {
   return {
     name: "ganban-build-json",
@@ -72,7 +83,7 @@ const DAEMON_ROUTES = [
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react(), pdfjsWasmCopy(), buildJson()],
-  define: { __GANBAN_BUILD__: JSON.stringify(BUILD) },
+  define: { __GANBAN_BUILD__: JSON.stringify(BUILD), __GITHUB_ANDROID_CERT__: JSON.stringify(githubAndroidCert()) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

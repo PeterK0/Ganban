@@ -9,6 +9,7 @@ package app.ganban.apkupdater
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -62,10 +63,39 @@ class ApkUpdaterPlugin(private val activity: Activity) : Plugin(activity) {
             val ret = JSObject()
             ret.put("versionCode", code)
             ret.put("versionName", info.versionName ?: "")
+            // The installed app's signing certificates (SHA-256, hex): an APK installs over
+            // it only when it's signed with the same one, so an update source is offered
+            // only when its certificate is among these.
+            ret.put("certSha256", org.json.JSONArray(signingCertSha256()))
             invoke.resolve(ret)
         } catch (e: Exception) {
             invoke.reject("Couldn't read the app's version: ${e.message}")
         }
+    }
+
+    /** SHA-256 of each certificate the installed app is signed with, lowercase hex. On API 28+
+     * the signing history counts too (a rotated key still installs over the app). Empty when
+     * Android won't say. */
+    private fun signingCertSha256(): List<String> {
+        val pm = activity.packageManager
+        val sigs: Array<android.content.pm.Signature> = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val si = pm.getPackageInfo(activity.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+                when {
+                    si == null -> emptyArray()
+                    si.hasMultipleSigners() -> si.apkContentsSigners ?: emptyArray()
+                    else -> si.signingCertificateHistory ?: emptyArray()
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(activity.packageName, PackageManager.GET_SIGNATURES).signatures ?: emptyArray()
+            }
+        } catch (e: Exception) {
+            emptyArray()
+        }
+        return sigs.map { sig ->
+            MessageDigest.getInstance("SHA-256").digest(sig.toByteArray()).joinToString("") { "%02x".format(it) }
+        }.distinct()
     }
 
     @Command

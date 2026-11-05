@@ -1,8 +1,8 @@
-// Settings → Updates: this app's update (desktop: checks on open, downloads in the
-// background, "Restart to update"), the owner's "Update the server" card with the
-// host update's live log, and the advanced first-install downloads. ADR 0007, docs/design/UPDATES.md. A build from GitHub
-// Releases updates from GitHub instead, behind the "Check GitHub for new
-// versions" switch (ADR 0008).
+// Settings → Updates: this app's update (desktop: where it updates from, checks on open,
+// downloads in the background, "Restart to update"), the owner's "Update the server" card
+// with the host update's live log, and the advanced first-install downloads. ADR 0007,
+// ADR 0008, docs/design/UPDATES.md § The update source: "Updates from" picks GitHub Releases
+// or This server per device; GitHub is asked only while "Check GitHub for new versions" is on.
 import { useEffect, useRef, useState } from 'react';
 import ScrollArea from './ScrollArea';
 import { ShareBuildsPanel } from './ShareBuildsPanel';
@@ -11,22 +11,26 @@ import {
   appVersion,
   checkForUpdate,
   describeUpdateState,
+  desktopSourceStatuses,
   downloadPercent,
   getClientBuilds,
   getHostUpdateStatus,
   isDesktopApp,
   canUpdateHost,
+  pendingKeyChange,
   restartToUpdate,
   startHostUpdate,
+  switchUpdateSource,
+  trustHostKey,
   updateHost,
   useUpdateState,
   type ClientBuilds,
   type HostUpdateStatus,
 } from '../lib/update';
 import { HOST_POLL_MS, hostClientApps, keepPolling, nextHostPoll, type HostPoll } from '../lib/update.pure';
-import { UPDATE_CHANNEL, setGithubChecksOn, useGithubChecksOn } from '../lib/updateChannel';
+import { GITHUB_REPO, setGithubChecksOn, useGithubChecksOn, useUpdateSource } from '../lib/updateChannel';
+import type { SourceStatus, UpdateSource } from '../lib/updateSource.pure';
 
-const fmtSize = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(0)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 const fmtDate = (s: string | null | undefined) => {
   if (!s) return '';
   const d = new Date(s);
@@ -43,26 +47,34 @@ export default function UpdatesPanel() {
   );
 }
 
+type Statuses = Record<UpdateSource, SourceStatus & { fingerprint?: string | null }>;
+
 function ThisAppCard() {
   const desktop = isDesktopApp();
-  // A desktop build from GitHub Releases: it asks GitHub, never the host.
-  const github = desktop && UPDATE_CHANNEL.kind === 'github' ? UPDATE_CHANNEL.repo : null;
-  const githubBroken = desktop && UPDATE_CHANNEL.kind === 'github-broken';
+  const source = useUpdateSource();
+  const github = source === 'github';
   const githubOn = useGithubChecksOn();
   const st = useUpdateState();
   const [version, setVersion] = useState('');
   const [builds, setBuilds] = useState<ClientBuilds | null>(null);
   const [buildsErr, setBuildsErr] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<Statuses | null>(null);
   const [restartErr, setRestartErr] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const host = updateHost();
 
   const loadBuilds = () => {
-    if (github || githubBroken) return;
+    if (!desktop) return;
     setBuildsErr(null);
     getClientBuilds()
-      .then(setBuilds)
-      .catch((e) => setBuildsErr(why(e)));
+      .then((b) => {
+        setBuilds(b);
+        setBuildsErr(null);
+      })
+      .catch((e) => {
+        setBuilds(null);
+        setBuildsErr(why(e));
+      });
   };
 
   useEffect(() => {
@@ -70,6 +82,16 @@ function ThisAppCard() {
     loadBuilds();
     void checkForUpdate(); // Settings → Updates opening is one of the check's moments
   }, []);
+
+  // Each source's latest version, or why it can't be chosen. GitHub only while its switch is on.
+  useEffect(() => {
+    if (!desktop || (!builds && !buildsErr)) return;
+    let alive = true;
+    void desktopSourceStatuses(builds, buildsErr).then((x) => alive && setStatuses(x));
+    return () => {
+      alive = false;
+    };
+  }, [builds, buildsErr, githubOn, st.kind]);
 
   const restart = async () => {
     setRestarting(true);
@@ -88,11 +110,16 @@ function ThisAppCard() {
   };
 
   // Off, an idle or finished check has nothing to say; a download already under way finishes.
-  const githubOff = !!github && !githubOn && (st.kind === 'idle' || st.kind === 'up-to-date' || st.kind === 'failed');
+  const githubOff = github && !githubOn && (st.kind === 'idle' || st.kind === 'up-to-date' || st.kind === 'failed');
   const pct = downloadPercent(st);
   const tag =
     st.kind === 'up-to-date' ? 'g-tag-ok' : st.kind === 'ready' ? 'g-tag-pri' : st.kind === 'failed' ? 'g-tag-red' : st.kind === 'unsupported' ? 'g-tag-warn' : '';
   const busy = st.kind === 'checking' || st.kind === 'downloading';
+  const keyChange = st.kind === 'failed' ? pendingKeyChange() : null;
+  const options: { value: UpdateSource; label: string }[] = [
+    { value: 'github', label: `GitHub Releases${GITHUB_REPO ? ` · ${GITHUB_REPO}` : ''}` },
+    { value: 'host', label: `This server${host ? ` · ${host.label}` : ''}` },
+  ];
 
   return (
     <div className="g-card p-5 space-y-3">
@@ -100,41 +127,33 @@ function ThisAppCard() {
       <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-subtext-0">Version</dt>
         <dd className="text-text tabular-nums">{desktop ? version || '…' : 'Served live by the host'}</dd>
-        {github || githubBroken ? (
+        {desktop && source && (
           <>
-            <dt className="text-subtext-0">Updates from</dt>
-            <dd className="text-subtext-1 truncate">GitHub Releases{github ? ` · ${github}` : ''}</dd>
-          </>
-        ) : (
-          <>
-            <dt className="text-subtext-0">Host's desktop build</dt>
-            <dd className="text-text">
-              {buildsErr ? (
-                <span className="text-subtext-0">{buildsErr}</span>
-              ) : !builds ? (
-                '…'
-              ) : builds.desktop ? (
-                <>
-                  <span className="tabular-nums">{builds.desktop.version}</span>
-                  <span className="text-subtext-0">
-                    {' '}· {builds.desktop.target}-{builds.desktop.arch} · {fmtSize(builds.desktop.size)} · {fmtDate(builds.desktop.pubDate)}
-                  </span>
-                </>
-              ) : (
-                <span className="text-subtext-0">None yet. The host builds one when it updates.</span>
-              )}
+            <dt className="text-subtext-0 self-center">
+              <label htmlFor="upd-source">Updates from</label>
+            </dt>
+            <dd className="min-w-0">
+              <select
+                id="upd-source"
+                value={source}
+                disabled={busy}
+                onChange={(e) => void switchUpdateSource(e.target.value as UpdateSource)}
+                className="g-field g-field-sm w-full max-w-sm"
+              >
+                {options.map((o) => (
+                  <option key={o.value} value={o.value} disabled={o.value !== source && !!statuses && !statuses[o.value].available}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </dd>
-            {host && (
-              <>
-                <dt className="text-subtext-0">Updates from</dt>
-                <dd className="text-subtext-1 truncate" title={host.url}>{host.label} · {host.url}</dd>
-              </>
-            )}
+            <SourceRow label="GitHub Releases" st={statuses?.github} />
+            <SourceRow label="This server" st={statuses?.host} title={host?.url} />
           </>
         )}
       </dl>
 
-      {github && (
+      {github && desktop && (
         <div className="g-togrow border-t border-gilt-b">
           <span id="upd-github" className="flex-1 min-w-0">
             <span className="block font-semibold text-text">Check GitHub for new versions</span>
@@ -153,7 +172,7 @@ function ThisAppCard() {
           <div className="flex items-center gap-2 text-sm">
             {tag && !githubOff && <span className={`g-tag ${tag}`}>{st.kind === 'up-to-date' ? 'Up to date' : st.kind === 'ready' ? 'Ready' : st.kind === 'failed' ? 'Failed' : 'Unavailable'}</span>}
             <span className="text-text min-w-0">
-              {githubOff ? 'Checking GitHub is off.' : describeUpdateState(st, github ? 'GitHub' : 'the host')}
+              {githubOff ? 'Checking GitHub is off.' : describeUpdateState(st, github ? 'GitHub' : 'the server')}
             </span>
           </div>
           {st.kind === 'downloading' && (
@@ -179,14 +198,46 @@ function ThisAppCard() {
                 {st.kind === 'checking' ? 'Checking…' : 'Check for updates'}
               </button>
             )}
+            {keyChange && (
+              <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void trustHostKey()}>
+                Trust the new key…
+              </button>
+            )}
           </div>
         </div>
       ) : (
         <p className="text-sm text-subtext-0">
-          This page is served live by your host, so it's always current. The desktop app updates itself from the host.
+          This page is served live by your host, so it's always current. The desktop and Android apps update
+          themselves, from GitHub Releases or from this server, as each device chooses.
         </p>
       )}
     </div>
+  );
+}
+
+/** A source's line under "Updates from": its latest version, the server key's fingerprint,
+ * and why it can't be chosen. */
+function SourceRow({ label, st, title }: { label: string; st: (SourceStatus & { fingerprint?: string | null }) | undefined; title?: string }) {
+  return (
+    <>
+      <dt className="text-subtext-0 pl-3">{label}</dt>
+      <dd className="text-subtext-1 min-w-0 break-words" title={title}>
+        {!st ? (
+          '…'
+        ) : (
+          <>
+            {st.latest ? <span className="text-text tabular-nums">{st.latest}</span> : null}
+            {st.fingerprint ? (
+              <span>
+                {st.latest ? ' · ' : ''}key <span className="font-mono text-xs">{st.fingerprint}</span>
+              </span>
+            ) : null}
+            {st.why ? <span className={st.available ? '' : 'text-subtext-0'}>{st.latest || st.fingerprint ? ' · ' : ''}{st.why}</span> : null}
+            {!st.latest && !st.fingerprint && !st.why ? '—' : null}
+          </>
+        )}
+      </dd>
+    </>
   );
 }
 

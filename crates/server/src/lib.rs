@@ -7113,4 +7113,16 @@ mod invoke_wiring_tests {
         let (status, _, _) = host.invoke(Who::Device("not-a-token"), "get_projects", json!({})).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn the_update_source_info_is_for_paired_devices_only() {
+        // get_client_builds carries the host's updater key and APK certificate (an update source).
+        let host = Host::new("update_source").await;
+        for who in [Who::Stranger, Who::Device("not-a-token")] {
+            let (status, _, _) = host.invoke(who, "get_client_builds", json!({})).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, body, _) = host.invoke(Who::Loopback, "get_client_builds", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
 }

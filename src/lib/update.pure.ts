@@ -19,8 +19,9 @@ export function cmpVersions(a: string, b: string): number {
 }
 
 // ---- The desktop updater's state machine (src/lib/update.ts drives it) -------
-// check → (up to date | downloading n% → ready | failed). A build without the
-// updater key is "unsupported" for good. The browser and phone never use it.
+// check → (up to date | downloading n% → ready | failed). A build without an
+// updater key is "unsupported" for good; switching the update source starts over
+// ('reset'). The browser and phone never use it.
 
 export type UpdateState =
   | { kind: 'idle' }
@@ -36,7 +37,9 @@ export type UpdateEvent =
   | { type: 'checked'; version: string | null; canUpdate: boolean; at: number; why?: string }
   | { type: 'progress'; received: number; total: number | null }
   | { type: 'downloaded'; version: string }
-  | { type: 'error'; why: string };
+  | { type: 'error'; why: string }
+  /** The device switched its update source: start over, unless a download is under way. */
+  | { type: 'reset' };
 
 export const initialUpdateState: UpdateState = { kind: 'idle' };
 
@@ -48,6 +51,8 @@ export function canStartCheck(s: UpdateState): boolean {
 
 export function updateReducer(s: UpdateState, e: UpdateEvent): UpdateState {
   switch (e.type) {
+    case 'reset':
+      return s.kind === 'downloading' || s.kind === 'checking' || s.kind === 'idle' ? s : initialUpdateState;
     case 'check':
       return canStartCheck(s) ? { kind: 'checking' } : s;
     case 'checked':

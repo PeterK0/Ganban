@@ -282,6 +282,8 @@ async fn matching(db: &Db, ent: &Entity, filter: &EntryFilter, extra: &str, extr
 /// short batches. A posted entry stays editable until its month is closed, so this can be
 /// undone entry by entry.
 pub async fn post_matching(db: &Db, ent: &Entity, filter: EntryFilter, opts: &BulkOptions) -> Result<PostOutcome> {
+    // A reset is refused while this runs, and this while a reset runs.
+    let _busy = super::reset::begin_bulk(db, ent)?;
     let ids = matching(db, ent, &drafts(filter), "", &[]).await?;
     let mut out = PostOutcome::default();
     for chunk in ids.chunks(opts.batch.max(1)) {
@@ -355,6 +357,7 @@ pub async fn categorise_matching(
     create_rule: bool,
     opts: &BulkOptions,
 ) -> Result<CategoriseOutcome> {
+    let _busy = super::reset::begin_bulk(db, ent)?;
     let filter = EntryFilter { uncategorised: Some(true), ..drafts(filter) };
     let (ids, proposal) = {
         let mut conn = db.acquire().await?;

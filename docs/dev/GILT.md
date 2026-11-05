@@ -81,6 +81,7 @@ another component class competes):
 | `g-tile` | a project's initial in a tinted square |
 | `g-glint` | the hover sheen (off under `prefers-reduced-motion`) |
 | `g-btn` + `g-btn-pri`, `g-btn-gilt`, `g-btn-ghost`, `g-btn-danger`, `g-btn-sm` | buttons |
+| `g-danger` | on a `g-card`: a danger zone, for an action that can't be undone (with a `g-btn-danger` in it) |
 | `g-iconbtn` | a square icon button |
 | `g-lnk` | a text link button |
 | `g-st` + `g-st-progress`, `g-st-done`, `g-st-blocked` | task status marks |

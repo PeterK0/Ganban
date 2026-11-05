@@ -6,7 +6,9 @@
 #   ops/build-clients.sh [--dry-run]
 #
 # Each client's version is <major>.<minor> from src-tauri/tauri.conf.json plus the commit count
-# (1.0.<git rev-list --count HEAD>); Android's version code is 500000 + count, which only grows.
+# (1.0.<git rev-list --count HEAD>). Android's version code sorts the build between the release it
+# follows (tauri.conf.json's version) and the next (ops/version-code.mjs), so phones move between
+# GitHub Releases and this host's builds.
 # Published atomically into <APP_DIR>/client-builds/{desktop/<target>-<arch>,android}/ with a
 # manifest.json: the new file goes in first, then the manifest, then the old file goes. A client
 # whose tool or key is missing is skipped, and a failed build keeps the previous one.
@@ -16,7 +18,8 @@
 # a client failing never fails the host's update.
 #
 # Both builds are on the `host` update channel (VITE_UPDATE_CHANNEL=host, ADR 0008): they update from
-# the host they're connected to, never from GitHub, and carry only the host's updater key.
+# the host they're connected to by default, and Settings → Updates can switch them to GitHub Releases
+# (GANBAN_GITHUB_REPO, default PeterK0/Ganban), whose updater key every build carries.
 #
 # Environment:
 #   GANBAN_CLIENT_BUILDS   desktop,android (the default), one of them, or none
@@ -24,6 +27,7 @@
 #   GANBAN_UPDATER_KEY     the updater's private key (default <APP_DIR>/keys/updater.key; its public
 #                          key is <key>.pub). Password: GANBAN_UPDATER_KEY_PASSWORD, else
 #                          <APP_DIR>/keys/updater.pass. Made by ops/install.sh --client-keys.
+#   GANBAN_GITHUB_REPO     the GitHub repo the apps may switch to (owner/name; default PeterK0/Ganban)
 #   GANBAN_ANDROID_KEYSTORE_PROPS  the release keystore's properties (default
 #                          <APP_DIR>/keys/keystore.properties: keyAlias, password, storeFile)
 #   ANDROID_HOME, NDK_HOME, JAVA_HOME  the Android toolchain (found under ~/Library/Android/sdk and
@@ -52,10 +56,21 @@ esac
 wants() { case ",$WANT," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 cd "$REPO"
-# The update channel, read by the frontend (import.meta.env) and by src-tauri (option_env!). A repo
-# left in the environment would mean nothing on this channel, so it goes.
+
+# True when a build script's recorded output (target/<profile>/build/*/output) names a path under
+# some other …/target/ than this checkout's: the checkout was moved or renamed since it was built.
+stale_build_paths() {
+  local dir="$1" own; own="$(cd "$REPO" && pwd -P)"
+  [ -d "$dir" ] || return 1
+  # Paths that cargo recorded, ending at a target/ folder; any outside this checkout means stale.
+  find "$dir" -maxdepth 2 -name output -type f -print0 2>/dev/null |
+    xargs -0 grep -ohE '/[^ "=:]*/target/' 2>/dev/null | sort -u |
+    grep -v -e "^$REPO/target/" -e "^$own/target/" -e "^${TARGET_DIR:-$REPO/target}/" | grep -q .
+}
+# The update channel, read by the frontend (import.meta.env) and by src-tauri (option_env!), and the
+# GitHub repo the apps may switch to.
 export VITE_UPDATE_CHANNEL=host
-unset VITE_UPDATE_REPO
+export VITE_UPDATE_REPO="${GANBAN_GITHUB_REPO:-PeterK0/Ganban}"
 COUNT="$(git rev-list --count HEAD)"
 # major.minor from the app's version; the patch is the commit count, so every commit is newer.
 APP_VERSION="$(node "$REPO/ops/json.mjs" get "$REPO/src-tauri/tauri.conf.json" version || true)"
@@ -64,7 +79,19 @@ if ! [[ "$APP_VERSION" =~ ^([0-9]+)\.([0-9]+)\. ]]; then
   exit 1
 fi
 VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$COUNT"
-CODE=$((500000 + COUNT))
+# The commits since tauri.conf.json's version last changed (the release this build follows).
+SINCE_REF="$(git log -1 --format=%H -G'^[[:space:]]*"version"[[:space:]]*:' -- src-tauri/tauri.conf.json 2>/dev/null || true)"
+if [ -n "$SINCE_REF" ]; then
+  SINCE="$(git rev-list --count "$SINCE_REF..HEAD")"
+else
+  # A shallow clone, say: the code then stops at release·1000 + 999 until the next release.
+  echo "build-clients: can't find the commit that set tauri.conf.json's version; counting all $COUNT commits" >&2
+  SINCE="$COUNT"
+fi
+CODE="$(node "$REPO/ops/version-code.mjs" host "$APP_VERSION" "$SINCE")" && [ -n "$CODE" ] || {
+  echo "build-clients: no Android version code for $APP_VERSION" >&2
+  exit 1
+}
 COMMIT="$(git rev-parse --short HEAD)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$REPO/$TARGET_DIR" ;; esac
@@ -152,6 +179,13 @@ desktop() {
   local from; from="$(log_size)"
   log "== desktop: tauri build $VERSION (darwin-$arch)${full:+, full bundle}"
   rm -f "$bundle_dir"/*.app.tar.gz "$bundle_dir"/*.app.tar.gz.sig
+  # Build-script output records absolute paths. After the checkout moves (a renamed folder), cargo
+  # doesn't rerun those scripts, and tauri-build then reads plugin permissions from the old path and
+  # fails. Clean the release build once when any recorded path points outside this checkout.
+  if stale_build_paths "$TARGET_DIR/release/build"; then
+    log "desktop: build output records another checkout's path; cleaning the release build first"
+    nice -n 10 cargo clean --release >> "$LOG" 2>&1 || true
+  fi
   if [ -n "$full" ] && ! node scripts/check-bundle-resources.mjs >> "$LOG" 2>&1; then
     result desktop "failed: the full bundle's resources are missing (scripts/check-bundle-resources.mjs)"
     return
@@ -169,7 +203,7 @@ desktop() {
   fi
   publish "$OUT/desktop/darwin-$arch" "$tarball" "Ganban_${VERSION}.app.tar.gz" \
     "version=$VERSION" "target=darwin" "arch=$arch" "pubDate=$(now)" "commit=$COMMIT" \
-    "signature=$(cat "$tarball.sig")" "size:=$(wc -c < "$tarball" | tr -d ' ')"
+    "signature=$(cat "$tarball.sig")" "size:=$(wc -c < "$tarball" | tr -d ' ')" "pubkey=$(cat "$key.pub")"
   result desktop "built $VERSION"
 }
 
@@ -234,9 +268,17 @@ android() {
     result android "failed: the APK's signature doesn't verify (apksigner)"
     return
   fi
+  # The signing certificate's SHA-256, so a phone can tell whether this APK installs over its app.
+  local cert=""
+  if [ -n "$apksigner" ]; then
+    cert="$("$apksigner" verify --print-certs "$apk" 2>/dev/null | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 || true)"
+  fi
+  if [ -z "$cert" ] && command -v keytool >/dev/null 2>&1; then
+    cert="$(keytool -list -v -keystore "$store" -alias "$alias" -storepass "$pw" 2>/dev/null | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1 || true)"
+  fi
   publish "$OUT/android" "$apk" "Ganban_${VERSION}.apk" \
     "version=$VERSION" "versionCode:=$CODE" "pubDate=$(now)" "commit=$COMMIT" \
-    "sha256=$(shasum -a 256 "$apk" | cut -d' ' -f1)" "size:=$(wc -c < "$apk" | tr -d ' ')"
+    "sha256=$(shasum -a 256 "$apk" | cut -d' ' -f1)" "size:=$(wc -c < "$apk" | tr -d ' ')" "certSha256=$cert"
   result android "built $VERSION"
 }
 

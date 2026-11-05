@@ -133,6 +133,10 @@ struct DesktopManifest {
     signature: String,
     #[serde(default)]
     notes: Option<String>,
+    /// The updater public key the bundle was signed for (manifests from before run-time
+    /// update sources have none; the host's `keys/updater.key.pub` stands in).
+    #[serde(default)]
+    pubkey: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -143,6 +147,24 @@ struct AndroidManifest {
     pub_date: String,
     file: String,
     sha256: String,
+    /// The SHA-256 of the APK's signing certificate (hex, colons allowed), when the build knew it.
+    #[serde(default)]
+    cert_sha256: Option<String>,
+}
+
+/// A certificate fingerprint as 64 lowercase hex digits, or none.
+fn cert_hex(s: &str) -> Option<String> {
+    let hex: String = s.chars().filter(|c| !matches!(c, ':' | ' ')).collect::<String>().to_ascii_lowercase();
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
+}
+
+/// The host's updater public key: the build's own word, else `<APP_DIR>/keys/updater.key.pub`.
+fn updater_pubkey(paths: &UpdatePaths, from_manifest: Option<&str>) -> Option<String> {
+    let k = from_manifest
+        .map(str::to_string)
+        .or_else(|| std::fs::read_to_string(paths.app_dir.join("keys/updater.key.pub")).ok())?;
+    let k = k.trim();
+    (!k.is_empty() && k.len() <= 1024).then(|| k.to_string())
 }
 
 /// A Tauri `{{target}}` or `{{arch}}`: `darwin`, `aarch64`, `x86_64`. Nothing that could
@@ -199,7 +221,10 @@ fn android_build(paths: &UpdatePaths) -> Option<Published<AndroidManifest>> {
 }
 
 /// `get_client_builds`: what the host offers, for Settings → Updates and the phone's check.
-/// `target`/`arch` pick a desktop build; without them, the one the host built.
+/// `target`/`arch` pick a desktop build; without them, the one the host built. Each build says
+/// what signed it, so a device can choose this host as its update source: the desktop's updater
+/// public key (`pubkey`, which the app pins) and the APK's certificate (`certSha256`, which the
+/// phone compares with its own signature).
 pub(crate) fn client_builds(paths: &UpdatePaths, target: Option<&str>, arch: Option<&str>) -> Value {
     let desktop = match (target, arch) {
         (Some(t), Some(a)) => desktop_build(paths, t, a),
@@ -207,11 +232,13 @@ pub(crate) fn client_builds(paths: &UpdatePaths, target: Option<&str>, arch: Opt
     };
     let desktop = desktop.map(|b| {
         let m = b.manifest;
-        json!({ "version": m.version, "target": m.target, "arch": m.arch, "pubDate": m.pub_date, "size": b.size })
+        let pubkey = updater_pubkey(paths, m.pubkey.as_deref());
+        json!({ "version": m.version, "target": m.target, "arch": m.arch, "pubDate": m.pub_date, "size": b.size, "pubkey": pubkey })
     });
     let android = android_build(paths).map(|b| {
         let m = b.manifest;
-        json!({ "version": m.version, "versionCode": m.version_code, "pubDate": m.pub_date, "size": b.size, "sha256": m.sha256 })
+        let cert = m.cert_sha256.as_deref().and_then(cert_hex);
+        json!({ "version": m.version, "versionCode": m.version_code, "pubDate": m.pub_date, "size": b.size, "sha256": m.sha256, "certSha256": cert })
     });
     json!({ "desktop": desktop, "android": android })
 }
@@ -631,10 +658,39 @@ mod tests {
         assert_eq!(v["android"]["versionCode"], 500975);
         assert_eq!(v["android"]["sha256"], "abc");
         assert_eq!(client_builds(&f.paths, Some("windows"), Some("x86_64"))["desktop"], Value::Null);
+        // What signed the builds: unknown on old manifests without a key file.
+        assert_eq!(v["desktop"]["pubkey"], Value::Null);
+        assert_eq!(v["android"]["certSha256"], Value::Null);
         // A manifest naming a file outside its folder publishes nothing.
         let m = f.paths.builds().join("android/manifest.json");
         std::fs::write(&m, json!({ "version": "1", "versionCode": 1, "pubDate": "", "file": "../../update-status.json", "sha256": "" }).to_string()).unwrap();
         assert_eq!(client_builds(&f.paths, None, None)["android"], Value::Null);
+    }
+
+    #[test]
+    fn client_builds_say_what_signed_them() {
+        let f = Fixture::new("signers", true);
+        // An old manifest: the host's key file stands in for the desktop's key.
+        std::fs::create_dir_all(f.paths.app_dir.join("keys")).unwrap();
+        std::fs::write(f.paths.app_dir.join("keys/updater.key.pub"), "HOSTKEY\n").unwrap();
+        assert_eq!(client_builds(&f.paths, None, None)["desktop"]["pubkey"], "HOSTKEY");
+        // The manifest's own key wins: it's the one the bundle was signed for.
+        let desk = f.paths.builds().join("desktop/darwin-aarch64/manifest.json");
+        let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&desk).unwrap()).unwrap();
+        m["pubkey"] = json!("SIGNEDWITH");
+        std::fs::write(&desk, m.to_string()).unwrap();
+        assert_eq!(client_builds(&f.paths, None, None)["desktop"]["pubkey"], "SIGNEDWITH");
+        // keytool's colon form becomes plain lowercase hex; anything else is unknown.
+        let droid = f.paths.builds().join("android/manifest.json");
+        let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&droid).unwrap()).unwrap();
+        let colons = (0..32).map(|i| format!("{:02X}", i * 7 % 256)).collect::<Vec<_>>().join(":");
+        m["certSha256"] = json!(colons);
+        std::fs::write(&droid, m.to_string()).unwrap();
+        let hex = client_builds(&f.paths, None, None)["android"]["certSha256"].as_str().unwrap().to_string();
+        assert_eq!(hex, colons.replace(':', "").to_lowercase());
+        m["certSha256"] = json!("not a fingerprint");
+        std::fs::write(&droid, m.to_string()).unwrap();
+        assert_eq!(client_builds(&f.paths, None, None)["android"]["certSha256"], Value::Null);
     }
 
     #[tokio::test]
@@ -650,6 +706,7 @@ mod tests {
         // Members read the builds, but never start or watch an update.
         let builds = crate::commands::run(&as_(mia), "get_client_builds", json!({})).await.unwrap();
         assert_eq!(builds["android"]["versionCode"], 500975);
+        assert!(builds["desktop"].get("pubkey").is_some() && builds["android"].get("certSha256").is_some(), "{builds}");
         for cmd in ["start_host_update", "get_host_update_status"] {
             assert!(crate::commands::run(&as_(mia), cmd, json!({})).await.unwrap_err().is_forbidden(), "{cmd}");
         }

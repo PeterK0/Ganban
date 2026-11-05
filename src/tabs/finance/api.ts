@@ -4,6 +4,7 @@
 // `invokePrivate`, so amounts and payees never reach the console log.
 import { invokePrivate } from '../../lib/api';
 import type { ImportStage } from './importJob.pure';
+import type { ResetCounts } from './resetJob.pure';
 import { splitsToJournal } from './money.pure';
 
 const actingUser = () => Number(localStorage.getItem('currentUserId')) || undefined;
@@ -580,3 +581,21 @@ export const getSettings = () => call<FinSettings>('fin_get_settings');
 export const updateSettings = (reminder: Partial<FinSettings['reminder']>) => call<FinSettings>('fin_update_settings', { input: { reminder } });
 export const updateImportSettings = (input: { postOlder?: boolean; postOlderDays?: number }) =>
   call<FinSettings>('fin_update_settings', { input: { import: input } });
+
+// ── Starting over (§ Starting over) ──────────────────────────────────────────
+
+export interface ResetJob {
+  job_id: number;
+  state: 'running' | 'done' | 'failed';
+  /** Rows deleted of the total. */
+  done: number;
+  total: number;
+  started_at: string;
+  finished_at: string | null;
+  result: { removed: ResetCounts; kept_rules: boolean } | null;
+  error: string | null;
+}
+export const resetPreview = () => call<ResetCounts>('fin_reset_preview');
+/** Starts deleting all of the caller's finance data; follow it with `resetStatus`. */
+export const startReset = (confirm: string, keepRules: boolean) => call<ResetJob>('fin_reset', { confirm, keepRules });
+export const resetStatus = (jobId?: number) => call<ResetJob | null>('fin_reset_status', jobId == null ? {} : { jobId });

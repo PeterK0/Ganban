@@ -346,16 +346,24 @@ jobs:
           echo "$KEY_B64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      # The version code grows with the version (Tauri's formula, set explicitly): Android refuses
-      # an update whose code isn't larger. The app compares versions by the release's tag.
+      # The version code grows with the version (ops/version-code.mjs, set explicitly): Android refuses
+      # an update whose code isn't larger, and a host's builds sort between two releases. The app
+      # learns the release keystore's certificate (VITE_GITHUB_ANDROID_CERT, public), so a phone on
+      # a host's builds knows whether GitHub's APK installs over it.
       - name: Build APK
         env:
           NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
           RUST_BACKTRACE: 1
           VERSION: ${{ needs.prepare.outputs.version }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          code="$(node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); console.log(a * 1e6 + b * 1e3 + c)' "$VERSION")"
+          code="$(node ops/version-code.mjs release "$VERSION")"
+          if [ -f "$RUNNER_TEMP/keystore.jks" ] && [ -z "${VITE_GITHUB_ANDROID_CERT-}" ]; then
+            VITE_GITHUB_ANDROID_CERT="$(keytool -list -v -keystore "$RUNNER_TEMP/keystore.jks" -alias "$ALIAS" -storepass:env PASSWORD | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1)"
+            export VITE_GITHUB_ANDROID_CERT
+          fi
           npx tauri android build --apk --config "{\"bundle\":{\"android\":{\"versionCode\":$code}}}"
 
       # One APK named for the release; the phone app takes the release's signed .apk asset.

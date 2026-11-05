@@ -1,13 +1,14 @@
-// The desktop app updates itself from its host (ADR 0007, docs/design/UPDATES.md). The
-// host builds and signs the app; Tauri's updater (driven by the Rust commands in
-// src-tauri/src/app_update.rs) checks, downloads in the background, verifies the
-// signature and swaps the app in on "Restart". A build from GitHub Releases asks
-// GitHub instead (ADR 0008), unless this device turned "Check GitHub for new
-// versions" off; then it sends nothing at all.
+// The desktop app updates itself (ADR 0007, ADR 0008, docs/design/UPDATES.md) from the
+// device's update source: This server (the host it's connected to, which builds and signs
+// the app) or GitHub Releases. Tauri's updater (driven by the Rust commands in
+// src-tauri/src/app_update.rs) checks, downloads in the background, verifies the signature
+// and swaps the app in on "Restart". GitHub is asked only while "Check GitHub for new
+// versions" is on; off, this device sends GitHub nothing. This server's updater key is
+// pinned on the device the first time, and a different one waits for the user's word.
 //
-// It checks at launch, every 6 hours, and when Settings → Updates opens. Only the
-// installed desktop app takes part: the browser UI is served live by the host and
-// the phone has its own path (src/mobile, lane upd-android).
+// It checks at launch, every 6 hours, when Settings → Updates opens and when the source
+// changes. Only the installed desktop app takes part: the browser UI is served live by the
+// host and the phone has its own path (src/lib/apkUpdate.ts).
 //
 // Also here: the host's client builds (`get_client_builds`) and the owner's
 // "Update the server" (`start_host_update` / `get_host_update_status`), all against the
@@ -19,16 +20,9 @@ import { isTauri, isMobilePlatform, isWebClient, invokeOnHost, getOnHost, getDev
 import { confirmDialog } from './confirm';
 import { listWorkspaces, getActiveWorkspace } from './workspaces';
 import { flushBeforeRestart } from './restartFlush';
-import { UPDATE_CHANNEL, githubRepoToAsk } from './updateChannel';
-import {
-  GITHUB_BROKEN,
-  canStartCheck,
-  initialUpdateState,
-  isGithubBuild,
-  updateReducer,
-  type UpdateEvent,
-  type UpdateState,
-} from './update.pure';
+import { githubChecksOn, githubRepoToAsk, pinHostKey, pinnedHostKey, setUpdateSource, updateSource } from './updateChannel';
+import { canStartCheck, githubLatestReleaseApi, initialUpdateState, updateReducer, type UpdateEvent, type UpdateState } from './update.pure';
+import { decideHostKey, keyFingerprint, type PinDecision, type SourceStatus, type UpdateSource } from './updateSource.pure';
 
 export { describeUpdateState, downloadPercent } from './update.pure';
 export type { UpdateState } from './update.pure';
@@ -97,29 +91,104 @@ type DownloadEvent = { event: 'progress'; data: { received: number; total: numbe
 
 const why = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Check the host and, when it has a newer build, download it in the background.
- * A no-op off the desktop app, while a check or download runs, or once a build
+/** What the Rust side knows about the update sources (`update_sources`). */
+export interface UpdateSources {
+  enabled: boolean;
+  channel: 'host' | 'github';
+  repo: string | null;
+  githubReason: string | null;
+  githubKey: string;
+  buildKey: string | null;
+}
+
+let sourcesInfo: Promise<UpdateSources | null> | null = null;
+export function updateSources(): Promise<UpdateSources | null> {
+  if (!isDesktopApp()) return Promise.resolve(null);
+  sourcesInfo ??= invoke<UpdateSources>('update_sources').catch(() => null);
+  return sourcesInfo;
+}
+
+/** This server's key as the device sees it: its pin (else a host build's own key) against
+ * what the host advertises. */
+export async function hostKeyDecision(advertised: string | null | undefined): Promise<PinDecision> {
+  const own = (await updateSources())?.buildKey ?? null;
+  return decideHostKey(pinnedHostKey() ?? own, advertised);
+}
+
+/** A key change waiting for the user's word (Settings → Updates shows it). */
+let keyChange: Extract<PinDecision, { kind: 'changed' }> | null = null;
+export function pendingKeyChange() {
+  return keyChange;
+}
+
+/** Trust the server's new key, then check it. */
+export async function trustHostKey(): Promise<void> {
+  if (!keyChange) return;
+  const was = keyFingerprint(keyChange.was) ?? 'unknown';
+  const now = keyFingerprint(keyChange.key) ?? 'unknown';
+  const ok = await confirmDialog(
+    `This server's update key changed from ${was} to ${now}. Trust the new key only if you changed the server's signing keys yourself. Trust it?`,
+  );
+  if (!ok) return;
+  pinHostKey(keyChange.key);
+  keyChange = null;
+  dispatch({ type: 'reset' });
+  await checkForUpdate();
+}
+
+/** Switch where this device updates from, then check there now. */
+export async function switchUpdateSource(source: UpdateSource): Promise<void> {
+  // A check or download under way belongs to the old source: Settings disables the choice meanwhile.
+  if (state.kind === 'checking' || state.kind === 'downloading') return;
+  setUpdateSource(source);
+  keyChange = null;
+  dispatch({ type: 'reset' });
+  await checkForUpdate();
+}
+
+/** Check the device's update source and, when it offers another build, download it in the
+ * background. A no-op off the desktop app, while a check or download runs, or once a build
  * is waiting for its restart. */
 export async function checkForUpdate(): Promise<void> {
   if (!isDesktopApp() || !canStartCheck(state)) return;
-  // A GitHub build asks GitHub (the Rust side picks the URL and sends no token),
-  // and nothing at all while the switch is off.
-  const github = isGithubBuild(UPDATE_CHANNEL);
-  if (UPDATE_CHANNEL.kind === 'github-broken') {
-    dispatch({ type: 'check' });
-    dispatch({ type: 'checked', version: null, canUpdate: false, at: Date.now(), why: GITHUB_BROKEN });
-    return;
-  }
-  if (github && !githubRepoToAsk()) return;
+  // A dev build has no source: Rust says it can't update itself.
+  const source = updateSource();
+  // Off, GitHub gets nothing at all.
+  if (source === 'github' && !githubChecksOn()) return;
   dispatch({ type: 'check' });
-  const host = github ? { url: '', token: null } : updateHost();
-  if (!host) {
-    dispatch({ type: 'error', why: 'No host to update from. Connect to your host first.' });
-    return;
+  let args: { baseUrl: string; token: string | null; source: UpdateSource | null; hostKey: string | null };
+  if (source === 'github') {
+    args = { baseUrl: '', token: null, source, hostKey: null };
+  } else {
+    const host = updateHost();
+    if (!host) {
+      dispatch({ type: 'error', why: 'No host to update from. Connect to your host first.' });
+      return;
+    }
+    // The key the host advertises, against the device's pin.
+    let advertised: string | null = null;
+    let buildsErr: string | null = null;
+    try {
+      advertised = (await getClientBuilds()).desktop?.pubkey ?? null;
+    } catch (e) {
+      buildsErr = why(e);
+    }
+    const d = await hostKeyDecision(advertised);
+    if (d.kind === 'unknown' && buildsErr) {
+      dispatch({ type: 'error', why: `Couldn't ask the server for its build: ${buildsErr}` });
+      return;
+    }
+    if (d.kind === 'changed') {
+      keyChange = d;
+      dispatch({ type: 'error', why: "This server's update key changed. Trust the new key in Settings → Updates before updating from it." });
+      return;
+    }
+    if (d.kind === 'first') pinHostKey(d.key);
+    args = { baseUrl: host.url, token: host.token, source, hostKey: d.kind === 'unknown' ? null : d.key };
   }
   let found: UpdateCheck;
   try {
-    found = await invoke<UpdateCheck>('update_check', { baseUrl: host.url, token: host.token });
+    found = await invoke<UpdateCheck>('update_check', args);
   } catch (e) {
     dispatch({ type: 'error', why: why(e) });
     return;
@@ -142,6 +211,41 @@ export async function checkForUpdate(): Promise<void> {
   } catch (e) {
     dispatch({ type: 'error', why: why(e) });
   }
+}
+
+/** GitHub's latest release tag (no token, no cookies), or null. Only while the switch is on. */
+export async function githubLatestVersion(): Promise<string | null> {
+  const repo = githubRepoToAsk();
+  if (!repo) return null;
+  const res = await fetch(githubLatestReleaseApi(repo), { headers: { Accept: 'application/vnd.github+json' }, credentials: 'omit', cache: 'no-store' });
+  if (!res.ok) return null;
+  const tag = ((await res.json()) as { tag_name?: string }).tag_name ?? '';
+  return tag.replace(/^v/i, '') || null;
+}
+
+/** Both sources as Settings → Updates shows them. */
+export async function desktopSourceStatuses(builds: ClientBuilds | null, buildsErr: string | null): Promise<Record<UpdateSource, SourceStatus & { fingerprint?: string | null }>> {
+  const info = await updateSources();
+  const githubOn = githubChecksOn();
+  const latestGh = info?.repo ? await githubLatestVersion().catch(() => null) : null;
+  const chosen = updateSource() === 'github';
+  const github: SourceStatus = info?.repo
+    ? { available: true, latest: latestGh, why: !chosen ? 'Asked once you choose it.' : githubOn ? null : 'Checking GitHub is off.' }
+    : { available: false, latest: null, why: info?.githubReason ?? "This build can't update itself." };
+  let host: SourceStatus & { fingerprint?: string | null };
+  if (!updateHost()) host = { available: false, latest: null, why: 'Not connected to a server.' };
+  else if (buildsErr) host = { available: false, latest: null, why: buildsErr };
+  else if (!builds?.desktop) host = { available: false, latest: null, why: builds ? 'The server has no desktop build yet.' : null };
+  else {
+    const d = await hostKeyDecision(builds.desktop.pubkey);
+    const fp = d.kind === 'unknown' ? null : keyFingerprint(d.key);
+    const fingerprint = fp && info && d.kind !== 'unknown' && d.key === info.githubKey.trim() ? `${fp} (the GitHub Releases key)` : fp;
+    host =
+      d.kind === 'unknown'
+        ? { available: false, latest: builds.desktop.version, why: "The server doesn't advertise its update key yet (update the server first)." }
+        : { available: true, latest: builds.desktop.version, why: d.kind === 'changed' ? "The server's update key changed." : null, fingerprint };
+  }
+  return { github, host };
 }
 
 /** Save what's open, swap the downloaded build in and relaunch. A save that
@@ -180,8 +284,10 @@ export async function appVersion(): Promise<string> {
 // ---- The host's side ----------------------------------------------------------
 
 export interface ClientBuilds {
-  desktop: { version: string; target: string; arch: string; pubDate: string; size: number } | null;
-  android: { version: string; versionCode: number; pubDate: string; size: number; sha256: string } | null;
+  /** `pubkey`: the updater key the build is signed for (null on an older host). */
+  desktop: { version: string; target: string; arch: string; pubDate: string; size: number; pubkey?: string | null } | null;
+  /** `certSha256`: the APK's signing certificate (null on an older host). */
+  android: { version: string; versionCode: number; pubDate: string; size: number; sha256: string; certSha256?: string | null } | null;
 }
 
 export interface HostUpdateStatus {

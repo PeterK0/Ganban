@@ -251,6 +251,13 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_fin_entries_group ON fin_entries(entity_id, status, group_key)",
         "CREATE INDEX IF NOT EXISTS idx_fin_pairs_entry_a ON fin_pairs(entry_a)",
         "CREATE INDEX IF NOT EXISTS idx_fin_pairs_entry_b ON fin_pairs(entry_b)",
+        // Deleting an entry looks up the rows that point at it (`reset`): reversals, FX
+        // adjustments, schedules and their releases.
+        "CREATE INDEX IF NOT EXISTS idx_fin_entries_reverses ON fin_entries(reverses_id) WHERE reverses_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_fin_pairs_adjust ON fin_pairs(adjust_entry_id) WHERE adjust_entry_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_fin_schedules_entry ON fin_schedules(entry_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fin_schedules_deferral ON fin_schedules(deferral_entry_id) WHERE deferral_entry_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_fin_schedule_releases_entry ON fin_schedule_releases(entry_id) WHERE entry_id IS NOT NULL",
         "CREATE TABLE IF NOT EXISTS fin_group_suggestions (\
             entity_id INTEGER NOT NULL REFERENCES fin_entities(id) ON DELETE CASCADE, \
             group_key TEXT NOT NULL, \

@@ -28,3 +28,8 @@ on the build they have.
 - The host can restart itself on the owner's command, so the update runs as its own launchd job, not as a child of
   the server.
 - Host updates take longer (the client builds add about 10–20 minutes), but they run after the server is back up.
+
+## Amendment (2026-11-05)
+
+A device now chooses where its app updates from (ADR 0011), and the host's builds use version codes that sort between
+releases instead of `500000 + count`. A host-built app asks GitHub only when its device chooses GitHub Releases.

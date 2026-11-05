@@ -78,13 +78,17 @@ pub async fn start(db: &Db, ent: &Entity) -> Result<SuggestJob, AppError> {
         finished_at: None,
         error: None,
     };
-    {
+    let busy = {
         let mut jobs = jobs().lock().unwrap_or_else(|e| e.into_inner());
         if jobs.get(&k).is_some_and(|j| j.state == "running") {
             return Err(AppError::InvalidInput("suggestions are already running: wait for them to finish".into()));
         }
+        // Counted as bulk work for its whole run: refused while a reset runs, and a reset is
+        // refused while it runs (`finance::reset`).
+        let busy = ganban_core::finance::reset::begin_bulk(db, ent)?;
         jobs.insert(k.clone(), job.clone());
-    }
+        busy
+    };
     let (db, ent, id) = (db.clone(), ent.clone(), job.job_id);
     let work_key = k.clone();
     let work = tokio::spawn(async move {
@@ -112,6 +116,7 @@ pub async fn start(db: &Db, ent: &Entity) -> Result<SuggestJob, AppError> {
     // A second task records the outcome, so even a panic ends the job.
     tokio::spawn(async move {
         let outcome = work.await;
+        drop(busy);
         update(&k, id, |j| {
             j.finished_at = Some(now());
             match outcome {

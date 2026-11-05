@@ -64,6 +64,7 @@ Ganban's documentation, grouped by who it's for. New here? Start with the [READM
 | [0007](design/adr/0007-clients-update-from-the-host.md) | Clients update from the host, which builds and signs them. |
 | [0009](design/adr/0009-finance-is-private-to-its-user.md) | Finance is private to its user; the owner bypass stops at Finance. |
 | [0010](design/adr/0010-the-double-entry-ledger.md) | A double-entry ledger: source lines apart from journal entries; edit until close, then reverse. |
+| [0011](design/adr/0011-each-device-chooses-its-update-source.md) | Each device chooses where its app updates from: GitHub Releases or This server. |
 
 ### Diagrams and mockups
 

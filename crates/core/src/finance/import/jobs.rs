@@ -85,6 +85,9 @@ pub fn start_with(db: &Db, ent: &Entity, req: ImportRequest, mut opts: ImportOpt
     let next = NEXT.get_or_init(|| AtomicU64::new(chrono::Utc::now().timestamp_millis().max(1) as u64));
     let k = key(db, ent);
     let job = {
+        // The reset's map first, then the jobs' (the order `reset::start` takes them in).
+        let activity = crate::finance::reset::activity();
+        crate::finance::reset::refuse_in(&activity, &crate::finance::reset::key(db, ent))?;
         let mut jobs = jobs().lock().unwrap_or_else(|e| e.into_inner());
         if jobs.get(&k).is_some_and(|j| j.state == "running") {
             return Err(AppError::InvalidInput("an import is already running: wait for it to finish".into()));
@@ -144,6 +147,11 @@ pub fn start_with(db: &Db, ent: &Entity, req: ImportRequest, mut opts: ImportOpt
         });
     });
     Ok(job)
+}
+
+/// Whether the user has an import running.
+pub fn is_running(db: &Db, ent: &Entity) -> bool {
+    jobs().lock().unwrap_or_else(|e| e.into_inner()).get(&key(db, ent)).is_some_and(|j| j.state == "running")
 }
 
 /// The words a failed job shows: validation messages as they are, anything else (a

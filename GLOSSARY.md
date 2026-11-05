@@ -72,9 +72,14 @@ The host's second listener, which serves only share links and is the one part pu
 _Avoid_: public server, gateway
 
 **Update channel**:
-Where a build of the apps updates from, fixed when it's built: `host` (the host that built it), `github` (the repo's
-GitHub Releases) or none (a dev build). Each channel signs with its own key (ADR 0008).
-_Avoid_: update source, release track
+What a build of the apps is, fixed when it's built: `host` (built by a host), `github` (built for the repo's GitHub
+Releases) or none (a dev build). It sets the default **update source** (ADR 0008, ADR 0011).
+_Avoid_: release track
+
+**Update source**:
+Where a device's app updates from, chosen per device in Settings → Updates: GitHub Releases or This server (the paired
+host's builds). The build's update channel is only the default (ADR 0011).
+_Avoid_: update channel (that's the build's), update server
 
 **Side pane**:
 The resizable panel on the right of Home, the calendar and a project's tasks that shows the selected task or event

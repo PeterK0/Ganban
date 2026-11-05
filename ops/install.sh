@@ -114,6 +114,18 @@ client_keys() {
     echo "  Back up the folder $keys: losing the key means installing the desktop apps by hand once."
   fi
 
+  # Which key it is: its id, and whether it's the project's (GitHub Releases') key, which lets
+  # devices switch between this host's builds and GitHub's (docs/design/UPDATES.md § The update source).
+  if [ -f "$key.pub" ]; then
+    local kid
+    kid="$( (base64 -d < "$key.pub" 2>/dev/null || base64 -D < "$key.pub" 2>/dev/null) | sed -n 's/.*minisign public key:* *\([0-9A-Fa-f]\{16\}\).*/\1/p' | head -n 1 || true)"
+    if [ -n "$kid" ] && cmp -s <(tr -d '[:space:]' < "$key.pub") <(tr -d '[:space:]' < "$REPO/src-tauri/updater/github.pub" 2>/dev/null); then
+      echo "  key id $kid: the GitHub Releases key (src-tauri/updater/github.pub), so devices can switch sources freely"
+    elif [ -n "$kid" ]; then
+      echo "  key id $kid: this host's own key (not the GitHub Releases key)"
+    fi
+  fi
+
   say "the Android release keystore: $props"
   if [ ! -f "$props" ]; then
     cat <<EOF
@@ -161,6 +173,16 @@ EOF
   if command -v keytool >/dev/null 2>&1; then
     GANBAN_KS_PW="$kpw" keytool -list -keystore "$store" -alias "$alias" -storepass:env GANBAN_KS_PW >/dev/null 2>&1 \
       || die "keytool can't open the key '$alias' in $store with that password"
+    # The certificate's SHA-256: the APKs install only over an app signed with the same one.
+    local fp gh=""
+    fp="$(GANBAN_KS_PW="$kpw" keytool -list -v -keystore "$store" -alias "$alias" -storepass:env GANBAN_KS_PW 2>/dev/null | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1 || true)"
+    [ -f "$REPO/src-tauri/updater/github-android-cert.txt" ] && gh="$(tr -d ':[:space:]' < "$REPO/src-tauri/updater/github-android-cert.txt" | tr 'A-F' 'a-f')"
+    if [ -n "$fp" ]; then
+      echo "  certificate SHA-256 $fp"
+      if [ -n "$gh" ] && [ "$(printf '%s' "$fp" | tr -d ':' | tr 'A-F' 'a-f')" = "$gh" ]; then
+        echo "  that's the GitHub Releases certificate (src-tauri/updater/github-android-cert.txt): phones can switch sources freely"
+      fi
+    fi
   fi
   case "$(ls -l "$props" | cut -c5-10)" in ------) ;; *) warn "$props is readable by others: chmod 600 it" ;; esac
   echo "  ok: key '$alias' in $store"

@@ -170,7 +170,7 @@ const deadPort = await new Promise((r) => {
   writeFileSync(join(s.bin, 'keytool'), [
     '#!/bin/bash', 'echo "keytool $*" >> "$(dirname "$0")/keys.log"',
     'case "$1" in -genkeypair) while [ $# -gt 0 ]; do [ "$1" = -keystore ] && f="$2"; shift; done; [ -n "$GANBAN_KS_PW" ] && echo ks > "$f" ;;',
-    '  -list) [ "$GANBAN_KS_PW" = right ] ;; esac',
+    '  -list) [ "$GANBAN_KS_PW" = right ] || exit 1; [ "$2" = -v ] && echo "	 SHA256: AB:CD:EF"; exit 0 ;; esac',
   ].join('\n'));
   chmodSync(join(s.bin, 'npx'), 0o755);
   chmodSync(join(s.bin, 'keytool'), 0o755);
@@ -202,6 +202,14 @@ const deadPort = await new Promise((r) => {
   chmodSync(join(s.data, 'keys/keystore.properties'), 0o644);
   const right = await s.run('install.sh', '--client-keys');
   ok(right.code === 0 && right.out.includes("ok: key 'mine'") && right.err.includes('readable by others'), 'a good keystore is ok (and a loose mode is flagged)', right.all);
+  ok(right.out.includes('certificate SHA-256 AB:CD:EF'), "it shows the keystore certificate's SHA-256", right.out);
+  // The updater key's id, and whether it is the project's (GitHub Releases') key.
+  s.put('data/keys/updater.key.pub', Buffer.from('untrusted comment: minisign public key: 0123456789ABCDEF\nRWS\n').toString('base64'));
+  const own = await s.run('install.sh', '--client-keys');
+  ok(own.out.includes("key id 0123456789ABCDEF: this host's own key"), "it names the host's own updater key", own.out);
+  s.put('data/keys/updater.key.pub', readFileSync(join(root, 'src-tauri/updater/github.pub'), 'utf8'));
+  const project = await s.run('install.sh', '--client-keys');
+  ok(project.out.includes('key id E2AABA5857DB92BF: the GitHub Releases key'), 'and recognises the GitHub Releases key', project.out);
   s.put('data/keys/keystore.properties', 'keyAlias=mine\npassword=right\nstoreFile=/nowhere.jks\n');
   const gone = await s.run('install.sh', '--client-keys');
   ok(gone.code === 1 && gone.err.includes("which isn't there"), 'a missing keystore file is reported', gone.all);
@@ -315,7 +323,7 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
   mkdirSync(join(repo, 'src-tauri/gen/android'), { recursive: true });
   writeFileSync(join(repo, 'live/BUILD'), 'old1');
   writeFileSync(join(repo, 'src-tauri/tauri.conf.json'), JSON.stringify({ productName: 'Ganban', version: appVersion }, null, 2));
-  for (const f of ['update.sh', 'build-clients.sh', 'json.mjs']) writeFileSync(join(repo, 'ops', f), readFileSync(join(root, 'ops', f)));
+  for (const f of ['update.sh', 'build-clients.sh', 'json.mjs', 'version-code.mjs']) writeFileSync(join(repo, 'ops', f), readFileSync(join(root, 'ops', f)));
   const stub = (name, body) => writeFileSync(join(repo, 'ops', name), `#!/bin/bash\n${body}\n`);
   stub('build.sh', buildFails ? 'echo "cargo: error" >&2; exit 101' : `mkdir -p "$1" && echo ${newBuild} > "$1/BUILD"${bad ? ' && touch "$1/BAD"' : ''}`);
   stub('smoke.sh', 'echo "smoke ok: server $(cat "$1/BUILD"), web x"');
@@ -518,12 +526,13 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
   const d = u.manifest('desktop/darwin-aarch64');
   ok(d?.version === '1.0.975' && d.signature === 'SIGNATURE' && d.file === 'Ganban_1.0.975.app.tar.gz' && d.target === 'darwin' && d.arch === 'aarch64' && d.size === 7, 'the desktop manifest', JSON.stringify(d));
   const a = u.manifest('android');
-  ok(a?.versionCode === 500975 && a.file === 'Ganban_1.0.975.apk' && /^[0-9a-f]{64}$/.test(a.sha256) && a.size === 4, 'the Android manifest (versionCode 500000 + count, sha256)', JSON.stringify(a));
+  ok(a?.versionCode === 1000000975 && a.file === 'Ganban_1.0.975.apk' && /^[0-9a-f]{64}$/.test(a.sha256) && a.size === 4 && 'certSha256' in a, 'the Android manifest (versionCode after release 1.0.0, sha256, the certificate field)', JSON.stringify(a));
+  ok(d.pubkey === 'PUBKEY', 'the desktop manifest names the public key it was signed for', JSON.stringify(d));
   ok(readdirSync(join(u.s.data, 'client-builds/android')).sort().join(' ') === 'Ganban_1.0.975.apk manifest.json', 'the previous build is replaced, nothing left over');
   ok(readdirSync(join(u.s.data, 'client-builds/desktop/darwin-aarch64')).sort().join(' ') === 'Ganban_1.0.975.app.tar.gz Ganban_1.0.975.app.tar.gz.sig manifest.json', 'the desktop folder holds the bundle, its .sig and the manifest');
   const conf = u.s.read('bin/configs.seen');
-  ok(conf.includes('"version": "1.0.975"') && conf.includes('"createUpdaterArtifacts": true') && conf.includes('"pubkey": "PUBKEY"') && conf.includes('"versionCode": 500975'), 'the version, updater artifacts, public key and version code go in through --config', conf);
-  ok(u.s.read('bin/channel.seen') === 'build channel=host repo=unset\nandroid channel=host repo=unset\n', 'both clients build on the host update channel, with no GitHub repo', u.s.read('bin/channel.seen'));
+  ok(conf.includes('"version": "1.0.975"') && conf.includes('"createUpdaterArtifacts": true') && conf.includes('"pubkey": "PUBKEY"') && conf.includes('"versionCode": 1000000975'), 'the version, updater artifacts, public key and version code go in through --config', conf);
+  ok(u.s.read('bin/channel.seen') === 'build channel=host repo=PeterK0/Ganban\nandroid channel=host repo=PeterK0/Ganban\n', 'both clients build on the host update channel, with the GitHub repo they may switch to', u.s.read('bin/channel.seen'));
   ok(u.s.read('bin/props.seen').includes(`storeFile=${u.s.data}/keys/release.jks`), 'gradle saw the keystore properties, with an absolute storeFile', u.s.read('bin/props.seen'));
   ok(readFileSync(join(u.repo, 'src-tauri/gen/android/keystore.properties'), 'utf8') === 'mine\n', "and the checkout's own properties are put back after");
   ok(u.tools.includes('npx tauri build --bundles app --ci --config') && u.tools.includes('npx tauri android build --apk --target aarch64 --ci --config'), 'the right tauri commands', u.tools);
@@ -547,7 +556,7 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
 {
   // The clients take major.minor from tauri.conf.json; the patch stays the commit count.
   const u = await fakeUpdate({ newBuild: 'c5', clients: 'built', appVersion: '2.3.1' });
-  ok(u.out.includes('desktop: built 2.3.975') && u.manifest('android')?.versionCode === 500975, 'the client version follows tauri.conf.json (2.3.<count>), the version code still 500000 + count', u.all);
+  ok(u.out.includes('desktop: built 2.3.975') && u.manifest('android')?.versionCode === 2003001975, 'the client version follows tauri.conf.json (2.3.<count>), the version code sorts after release 2.3.1', u.all);
 }
 {
   const u = await fakeUpdate({ newBuild: 'c6', clients: 'built', appVersion: 'oops' });

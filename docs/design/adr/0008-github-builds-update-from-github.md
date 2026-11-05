@@ -36,3 +36,10 @@ fork's releases, signed with the fork's key.
   an update signed with another key.
 - Apps from before this change (1.0.1 and older) carry no updater: they move onto GitHub updates with one last
   manual install.
+
+## Amendment (2026-11-05): the channel is only the default
+
+ADR 0011 makes the update source a per-device choice: every build now carries the project's public key, so a host
+build can update from GitHub Releases, and a GitHub build from its host (with the host's key, pinned on the device).
+"One key for both channels" stays rejected: the keys are still separate, and the app picks one per check. Android
+version codes from 1.0.10 on are `·1000` (ADR 0011 § Versions across sources).

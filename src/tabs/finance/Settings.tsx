@@ -1,8 +1,10 @@
 // Finance settings: the weekly reminder to import bank statements (on or off, the weekday and the
-// time, host-local). The host sends it as a notification with no amounts in it.
+// time, host-local). The host sends it as a notification with no amounts in it. At the bottom, a
+// danger zone deletes all finance data to start over.
 import { useEffect, useState } from 'react';
 import { DecoHeading } from '../../components/gilt';
 import * as fin from './api';
+import ResetFinance from './ResetFinance';
 import { WEEKDAYS, weekdayName } from './reports.pure';
 import { MUTED, errText, useFinance } from './shared';
 
@@ -90,6 +92,8 @@ export default function Settings() {
       <p className={`text-sm ${MUTED} g-read`}>
         Bank data comes in by import, so a weekly import keeps the overview, budgets and forecast current.
       </p>
+      <DecoHeading>Start over</DecoHeading>
+      <ResetFinance />
     </div>
   );
 }

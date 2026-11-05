@@ -101,7 +101,14 @@ async function channelModule(channel, repo) {
   C.setGithubChecksOn(true);
   ok(C.githubRepoToAsk() === 'PeterK0/Ganban' && !store.has('ganban.updates.github'), 'switched back on, the default again');
   const H = await channelModule('host', 'PeterK0/Ganban');
-  ok(H.UPDATE_CHANNEL.kind === 'host' && H.githubRepoToAsk() === null, 'a host build never asks GitHub, switch or not');
+  ok(H.UPDATE_CHANNEL.kind === 'host' && H.githubRepoToAsk() === null, 'a host build never asks GitHub, switch or not, until the device chooses it');
+  H.setUpdateSource('github');
+  ok(H.updateSource() === 'github' && H.githubRepoToAsk() === 'PeterK0/Ganban', 'chosen, it asks the repo its build was given');
+  H.setGithubChecksOn(false);
+  ok(H.githubRepoToAsk() === null, 'and the switch still silences it');
+  H.setGithubChecksOn(true);
+  H.setUpdateSource('host');
+  ok(H.githubRepoToAsk() === null, 'back on This server, GitHub hears nothing');
   const B = await channelModule('github', '');
   ok(B.UPDATE_CHANNEL.kind === 'github-broken' && B.githubRepoToAsk() === null, 'a github build without its repo asks nobody');
 }
