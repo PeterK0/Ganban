@@ -20,10 +20,28 @@ pub struct Reminder {
     pub time: String,
 }
 
+/// The import option: post lines older than `post_older_days` days straight away.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportSettings {
+    pub post_older: bool,
+    pub post_older_days: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Settings {
     pub reminder: Reminder,
+    pub import: ImportSettings,
 }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPatch {
+    pub post_older: Option<bool>,
+    pub post_older_days: Option<u32>,
+}
+
+/// The longest cut-off the import option takes, in days (ten years).
+pub const MAX_POST_OLDER_DAYS: u32 = 3_650;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +55,7 @@ pub struct ReminderPatch {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPatch {
     pub reminder: Option<ReminderPatch>,
+    pub import: Option<ImportPatch>,
 }
 
 /// One user's reminder, for the host's check.
@@ -51,13 +70,17 @@ pub struct DueCheck {
 }
 
 pub async fn get_settings(db: &Db, ent: &Entity) -> Result<Settings> {
-    let row: Option<(bool, String, String)> =
-        sqlx::query_as("SELECT reminder_enabled, reminder_weekday, reminder_time FROM fin_settings WHERE entity_id = ?")
-            .bind(ent.id)
-            .fetch_optional(db)
-            .await?;
-    let (enabled, weekday, time) = row.unwrap_or((true, "Mon".into(), "09:00".into()));
-    Ok(Settings { reminder: Reminder { enabled, weekday, time } })
+    let row: Option<(bool, String, String, bool, i64)> = sqlx::query_as(
+        "SELECT reminder_enabled, reminder_weekday, reminder_time, import_post_older, import_post_older_days FROM fin_settings WHERE entity_id = ?",
+    )
+    .bind(ent.id)
+    .fetch_optional(db)
+    .await?;
+    let (enabled, weekday, time, post_older, days) = row.unwrap_or((true, "Mon".into(), "09:00".into(), false, 30));
+    Ok(Settings {
+        reminder: Reminder { enabled, weekday, time },
+        import: ImportSettings { post_older, post_older_days: days.clamp(1, MAX_POST_OLDER_DAYS as i64) as u32 },
+    })
 }
 
 fn check_weekday(s: &str) -> Result<String> {
@@ -93,16 +116,31 @@ pub async fn update_settings(db: &Db, ent: &Entity, patch: SettingsPatch) -> Res
             next.reminder.time = check_time(&t)?;
         }
     }
+    if let Some(i) = patch.import {
+        if let Some(on) = i.post_older {
+            next.import.post_older = on;
+        }
+        if let Some(days) = i.post_older_days {
+            if !(1..=MAX_POST_OLDER_DAYS).contains(&days) {
+                return Err(AppError::InvalidInput(format!("the days are 1 to {MAX_POST_OLDER_DAYS}")));
+            }
+            next.import.post_older_days = days;
+        }
+    }
     let mut tx = db.begin().await?;
     sqlx::query(
-        "INSERT INTO fin_settings (entity_id, reminder_enabled, reminder_weekday, reminder_time) VALUES (?, ?, ?, ?) \
+        "INSERT INTO fin_settings (entity_id, reminder_enabled, reminder_weekday, reminder_time, import_post_older, import_post_older_days) \
+         VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT(entity_id) DO UPDATE SET reminder_enabled = excluded.reminder_enabled, \
-           reminder_weekday = excluded.reminder_weekday, reminder_time = excluded.reminder_time",
+           reminder_weekday = excluded.reminder_weekday, reminder_time = excluded.reminder_time, \
+           import_post_older = excluded.import_post_older, import_post_older_days = excluded.import_post_older_days",
     )
     .bind(ent.id)
     .bind(next.reminder.enabled)
     .bind(&next.reminder.weekday)
     .bind(&next.reminder.time)
+    .bind(next.import.post_older)
+    .bind(next.import.post_older_days as i64)
     .execute(&mut *tx)
     .await?;
     // A new day or time counts from now: moving it to an hour already past this week

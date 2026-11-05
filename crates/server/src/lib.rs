@@ -110,6 +110,7 @@ mod events;
 mod email_oauth;
 mod finance_rates;
 mod finance_tools;
+mod finance_suggest_job;
 mod finance_reminder;
 mod foldersync;
 mod hostmon;

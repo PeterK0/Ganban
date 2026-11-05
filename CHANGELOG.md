@@ -9,6 +9,25 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-05
+
+### Added
+
+- **Finance: work a big inbox in minutes.** A new "By payee" view groups the inbox (thousands of lines become a
+  few hundred payees). One click sorts a whole group and offers to remember it as a rule. "Post all matching" and
+  "Categorise all matching as…" act on everything the filter matches, not just the loaded page. "Suggest categories
+  for all unsorted" fills in suggestions group by group, on a local model.
+- **Finance: an Import option** to post lines older than a chosen number of days straight away (off by default),
+  so settled history can skip the inbox.
+- **Finance: bulk review of transfers:** "Same money for all like this" and "Accept all at ≥ N%".
+
+### Fixed
+
+- **Finance: obvious transfers pair automatically.** Repeated pocket moves of the same amount (common with Revolut)
+  no longer pile up for review. Both sides of a move carry the same timestamp, and identical moves between the same
+  two accounts are interchangeable. Transfers already waiting are re-checked and cleared on start.
+- Finance: the inbox's date filters start empty ("Any date") instead of showing today to today.
+
 ## [1.0.8] - 2026-11-04
 
 ### Fixed

@@ -45,6 +45,8 @@ pub struct ImportRequest {
     pub bytes: Vec<u8>,
     pub profile_key: String,
     pub account_map: HashMap<String, AccountChoice>,
+    /// Post the lines older than this many days straight away (after pairing and rules).
+    pub post_older_than_days: Option<u32>,
 }
 
 /// A user on a database: the key of their latest job. The database file is in the
@@ -73,7 +75,11 @@ pub fn start(db: &Db, ent: &Entity, req: ImportRequest) -> Result<ImportJob> {
     start_with(db, ent, req, ImportOptions::default())
 }
 
-pub fn start_with(db: &Db, ent: &Entity, req: ImportRequest, opts: ImportOptions) -> Result<ImportJob> {
+pub fn start_with(db: &Db, ent: &Entity, req: ImportRequest, mut opts: ImportOptions) -> Result<ImportJob> {
+    if let Some(days) = req.post_older_than_days {
+        let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(days.into());
+        opts.post_before = Some(cutoff.format("%Y-%m-%d").to_string());
+    }
     // Ids that a restart won't hand out again.
     static NEXT: OnceLock<AtomicU64> = OnceLock::new();
     let next = NEXT.get_or_init(|| AtomicU64::new(chrono::Utc::now().timestamp_millis().max(1) as u64));

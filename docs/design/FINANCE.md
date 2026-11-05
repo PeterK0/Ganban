@@ -44,7 +44,7 @@ All tables are prefixed `fin_`. They're host-only and never synced to offline re
 | `fin_accounts` | id, entity_id, ledger_account_id UNIQUE, kind (`current` `savings` `card` `cash` `loan`), name, institution, currency, iban_mask NULL, profile_key NULL, archived, created_at | A bank, vault, card, cash or loan account the user holds. Its ledger account is an asset (current, savings, cash) or a liability (card, loan) in its currency. |
 | `fin_import_batches` | id, entity_id, file_name, profile_key, imported_at, rows_total, rows_new, rows_duplicate, status (`running` `done`) | One per import. `running` until its import finishes, so a rerun finishes an interrupted one. |
 | `fin_source_lines` | id, entity_id, account_id, batch_id, hash, dedupe_key, occurred_at NULL, booked_date, value_date NULL, description, payee NULL, amount_minor, currency, fee_minor, balance_minor NULL, bank_category NULL, kind_hint NULL (`card` `transfer` `exchange` `interest` `fee` `refund` `topup` `atm` `other`), raw_json, dismissed_at NULL, created_at; UNIQUE(entity_id, account_id, hash) | Verbatim imported rows. Manual entries have none. Deleting an entry marks its source line dismissed, so a re-import doesn't bring it back. |
-| `fin_entries` | id, entity_id, date, description, payee NULL, status (`draft` `posted` `reversed`), source_line_id NULL, reverses_id NULL, notes NULL, created_at, updated_at | One source line makes at most one entry. Imports arrive as `draft` (the inbox). |
+| `fin_entries` | id, entity_id, date, description, payee NULL, status (`draft` `posted` `reversed`), source_line_id NULL, reverses_id NULL, notes NULL, group_key NULL, created_at, updated_at | One source line makes at most one entry. Imports arrive as `draft` (the inbox). `group_key` is a draft's payee group (§ The inbox at scale). |
 | `fin_lines` | id, entry_id, ledger_account_id, amount_minor, currency, functional_minor, rate, memo NULL | At least two lines per entry, balanced on `functional_minor`. |
 | `fin_pairs` | id, entity_id, kind (`transfer` `fx`), entry_a, entry_b, adjust_entry_id NULL, status (`auto` `review` `confirmed` `rejected`), score, created_at | A transfer between own accounts. Both bank entries post their counter line to `transfers_clearing`, so a matched pair nets to 0. An FX pair adds an adjusting entry for the realised difference. |
 | `fin_rules` | id, entity_id, position, conditions_json, action_json, learned, hits, created_at | Conditions: description or payee pattern, amount range, account, bank category, kind hint. Action: one category, or splits by fixed amount or percentage. |
@@ -89,7 +89,7 @@ are `YYYY-MM-DD`.
 | `fin_list_accounts` | `includeArchived?` | `FinAccount[]` with `balance_minor` (account currency, posted and draft separately) and `balance_functional_minor` |
 | `fin_create_account` | `input {kind, name, institution?, currency, ibanMask?, openingBalanceMinor?, openingDate?}` | `FinAccount`. Creates its ledger account and posts the opening balance against `opening_equity`. |
 | `fin_update_account` / `fin_archive_account` | `accountId, input` / `accountId` | `FinAccount` |
-| `fin_list_entries` | `filter {from?, to?, accountId?, ledgerAccountId?, status?, uncategorised?, search?}, limit?, offset?` | `{entries: Entry[], total}`; `Entry` includes its `lines`, `pair` and `scheduled` (tied to a recognition schedule, so its lines, date and deletion are refused) |
+| `fin_list_entries` | `filter {from?, to?, accountId?, ledgerAccountId?, status?, uncategorised?, search?, groupKey?}, limit?, offset?` | `{entries: Entry[], total}`; `Entry` includes its `lines`, `pair` and `scheduled` (tied to a recognition schedule, so its lines, date and deletion are refused) |
 | `fin_create_entry` | `input {date, description, payee?, lines: [{ledgerAccountId, amountMinor, currency, functionalMinor?}]}` | `Entry` (a manual journal, posted, which must balance) |
 | `fin_update_entry` | `entryId, input` | `Entry`. Open periods only; a closed period answers `InvalidInput("closed period: reverse it instead")`. |
 | `fin_categorise` | `entryId, splits: [{ledgerAccountId, amountMinor}]` | `Entry`. Replaces the non-bank side of a bank entry. Splits carry the debit sign, the opposite of the bank line, so a −4200 card payment takes splits summing to +4200; the bank line's sign is accepted too. |
@@ -105,11 +105,13 @@ are `YYYY-MM-DD`.
 |---|---|---|
 | `fin_list_profiles` | — | `Profile[] {key, name, builtIn, mapping}` |
 | `fin_preview_import` | `fileName, contentBase64, profileKey?` | `{format: "csv"\|"xlsx", profileKey?, confidence, header: string[], rows: ParsedRow[] (first 50), accounts: [{guess_key, name, institution?, currency, kind, iban_mask?, matched_account_id?}], sample: string[][] (the first 30 raw rows, for the wizard), warnings: string[]}` |
-| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}` | `ImportJob`, running: the import goes on in the background (§ Import pipeline, Large imports). Refused while the user has one running. A wrong profile or another user's account is refused here; anything else ends the job `failed`. Lines of accounts left out of `accountMap` are skipped with a warning |
-| `fin_import_status` | `jobId?` | `ImportJob \| null`: that job (another user's is not found), else the user's latest. `ImportJob {job_id, state: running\|done\|failed, stage: reading\|rates\|accounts\|rows\|pairing\|rules\|done, done, total (rows, in the stage), file_name, started_at, finished_at?, result?: {batch_id, created, duplicates, paired, review, categorised_by_rules, refunds, warnings}, error?}` |
+| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}, postOlderThanDays?` (1–3650: post the lines dated before that many days ago, after pairing and rules) | `ImportJob`, running: the import goes on in the background (§ Import pipeline, Large imports). Refused while the user has one running. A wrong profile or another user's account is refused here; anything else ends the job `failed`. Lines of accounts left out of `accountMap` are skipped with a warning |
+| `fin_import_status` | `jobId?` | `ImportJob \| null`: that job (another user's is not found), else the user's latest. `ImportJob {job_id, state: running\|done\|failed, stage: reading\|rates\|accounts\|rows\|pairing\|rules\|done, done, total (rows, in the stage), file_name, started_at, finished_at?, result?: {batch_id, created, duplicates, paired, review, categorised_by_rules, refunds, posted, warnings}, error?}` |
 | `fin_save_profile` / `fin_delete_profile` | `input {key, name, mapping}` / `key` | `Profile` |
-| `fin_list_pairs` | `status?` | `Pair[]` with both entries |
+| `fin_list_pairs` | `status?` | `Pair[]` with both entries and `like_key` (the kind, both bank accounts and each side's description pattern: what "all like this" groups by) |
 | `fin_resolve_pair` | `pairId, accept` | `Pair` |
+| `fin_resolve_pairs` | `pairIds (at most 1000), accept` | `{resolved, skipped}`: each pair as `fin_resolve_pair`, in its own transaction; one that's gone, another user's or has an entry categorised since is skipped. The review list's "Same money for all like this" and "Accept all at ≥ N%" (N defaults to the auto bar, 75) call it after confirming the count |
+| `fin_rescore_pairs` | — | `{confirmed, review}`: the pairs waiting for review, scored again with the current rules (§ Import pipeline, Pairing rules); the ones that now qualify are booked. The review list calls it when it opens, and the host runs it once at startup after the rules change. Running it again changes nothing |
 | `fin_pair_entries` | `entryA, entryB` | `Pair` (a manual match) |
 | `fin_list_rules` / `fin_create_rule` / `fin_update_rule` / `fin_delete_rule` | — / `input` / `ruleId, input` / `ruleId` | `Rule` |
 | `fin_suggest_rule` | `entryId` | `Rule \| null`: a rule drafted from this entry's correction, offered after the second identical fix; its `conditions` and `action` come back in `fin_create_rule`'s input shape |
@@ -155,7 +157,7 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
    backfilled at startup, so they match the same way.
 5. **Draft entries:** each bank line is drafted against `uncategorised_*`. Then, in this order:
    - **Transfer and FX pairing:** the same amount and currency with opposite signs within 3 days across the user's
-     accounts. An FX pair matches "Exchanged to" legs by time and the bank's amounts.
+     accounts. An FX pair matches "Exchanged to" legs by time and the bank's amounts. See Pairing rules below.
    - **Pocket counterparts:** a pocket's side, when the file lacks it, is written in, and taken over by the real
      line in a later import.
    - **Rules,** on unpaired entries only, so a rule can't grab a transfer leg.
@@ -163,6 +165,16 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
 
    Uncertain matches go to `review`. A foreign-currency line needs an ECB rate for its date: the import works out
    the (currency, date) pairs the file needs and fetches the missing ones before it writes anything.
+
+**Pairing rules** (`finance/pairing.rs`). A transfer match scores 0.5, plus 0.2 for the same day (0.1 a day
+apart), plus 0.15 when both legs are transfers, plus 0.3 when the bank names the other account (a pocket), plus 0.05
+when both descriptions have the same pattern (lower case, without a leading "to"/"from" or words with digits, so "To
+pocket Rent" and "From pocket Rent" agree), capped at 1.0. Two legs the bank stamped within a minute of each other
+(`occurred_at`, Revolut's Started Date) score 1.0 outright. A match at 0.75 or more is booked without asking unless a
+rival (another match for one of its legs) scores within 0.1, with two exceptions: a match stamped at the same moment
+isn't held up by rivals without that, and a rival that only swaps a leg for an identical one (the same account,
+amount, currency and day) gives the same books, so it doesn't count. Such legs pair in time order, by the bank's
+timestamp, else by line order (a leg whose description matches goes first). Rivals that differ (another account, another day) still send the match to review.
 
 **Large imports.** `fin_import` starts a background job and answers at once; `fin_import_status` reports the stage,
 rows done of the total, and the result. One import per user at a time, kept in the host's memory. The job writes in
@@ -174,6 +186,45 @@ only for the lines the rerun's file holds). The database runs in WAL mode
 with a 15 s busy timeout (`crates/core/src/db.rs`), and per-request bookkeeping such as a device's last-seen stamp
 waits for the lock in the background rather than holding up or failing the request.
 
+## The inbox at scale
+
+A full bank history puts ten thousand drafts in the inbox. The host does the bulk work, so the screen never loads or
+groups them all (`crates/core/src/finance/inbox.rs`).
+
+- **Everything a filter matches.** `fin_post_matching` and `fin_categorise_matching` take the inbox's filter (as
+  `fin_list_entries`; drafts only, whatever `status` says) and act on every draft it matches, not just the page
+  shown. They write in short `BEGIN IMMEDIATE` transactions of 200 entries with a short pause after each, as the
+  import does, and audit each entry. A posted entry stays editable until its month is closed, so a bulk post is
+  undone entry by entry. Drafts dated in a closed month, or waiting in a transfer pair to review, are left and
+  counted.
+- **Categorising** gives the category to every matching draft whose whole counter side is still uncategorised
+  (beside the bank's fee) and that isn't a transfer or exchange leg. It returns the rule that would file such lines
+  (a payee group's merchant pattern and direction, else the search text, with the account), or creates it with
+  `createRule`.
+- **Payee groups.** Each draft gets a `group_key`: its direction (`out` for money spent, `in` for money received)
+  and its merchant (`rules::merchant_key`: the payee, else the description without digits and punctuation), as
+  `out:green market`. Keys are filled when the inbox first groups (and again after an entry's text changes).
+  `fin_inbox_groups` returns a page of groups, the most drafts first. A `groupKey` filter narrows any of these
+  commands to one group.
+- **Suggestions per group.** `fin_suggest_groups` starts a background job (one per user, in the host's memory)
+  that asks the local model about every group with uncategorised drafts that it hasn't asked about yet, 15 groups a
+  prompt, on the same terms as § Category suggestions (a group's latest description, payee and amount). It stores one
+  suggestion per group in `fin_group_suggestions`; the user takes it group by group. Taking or dismissing it ends
+  it. Without a local model the job is refused and the button hidden.
+- **Import option.** The Import screen offers "Post lines older than [30] days straight away", off by default and
+  remembered per user (`fin_settings.import_post_older`, `import_post_older_days`). Those lines are paired and run
+  through the rules first, then posted, uncategorised or not; a line in a pair to review stays in the inbox.
+- **Indexes:** `fin_entries(entity_id, status, date)` and `(entity_id, status, group_key)`, and `fin_pairs(entry_a)`
+  and `(entry_b)` for the transfer-leg checks.
+
+| Command | Args | Returns |
+|---|---|---|
+| `fin_post_matching` | `filter` | `{posted, closed, review}` (drafts left: their month is closed, or they wait in a pair to review) |
+| `fin_categorise_matching` | `filter, ledgerAccountId, createRule?` | `{categorised, skipped, rule: Rule \| null, rule_input: RuleInput \| null}`. The category must be an income or expense account (not uncategorised). `createRule` without a group or search to match on is refused. |
+| `fin_inbox_groups` | `filter, limit? (50, ≤ 500), offset?` | `{groups: [{key, label, direction: out\|in, count, total_minor (functional), first_date, last_date, category_id, uncategorised, paired, suggested_ledger_account_id}], total_groups, total_lines}` |
+| `fin_dismiss_group_suggestion` | `groupKey` | `{}` |
+| `fin_suggest_groups` / `fin_suggest_groups_status` | — | `SuggestJob {job_id, state: running\|done\|failed, done, total (groups), suggested, started_at, finished_at?, error?}` / the latest, or `null` |
+
 ## The interface (lane C)
 
 - `src/tabs/finance/module.tsx` registers the tab module, with `rail: {label: "Finance", icon, view}`.
@@ -184,7 +235,11 @@ waits for the lock in the background rather than holding up or failing the reque
   - **Overview:** wave 1 shows accounts with balances, the inbox count and the review count. Wave 2 adds budgets,
     the forecast and net worth.
   - **Transactions:** the drafts inbox and the posted list, filters, inline categorising with a category picker,
-    a splits editor, bulk post, and the rule suggestion after a correction.
+    a splits editor, bulk post, and the rule suggestion after a correction. The inbox pages on scroll. "Select all"
+    ticks the lines shown and says so; "Post all N matching" and "Categorise all N unsorted as…" act on everything
+    the filters match, after a confirm with the count (§ The inbox at scale). **By payee** shows the host's payee
+    groups: one pick sorts a group and offers "and remember as a rule". The date filters read "Any date" while
+    empty (WebKit draws an empty date field with today's date).
   - **Accounts:** list, create with an opening balance, archive.
   - **Import:** file, preview, profile (or the mapping wizard), account mapping, import with a progress bar (a
     refreshed page finds the running import), and the result with the review list.
@@ -213,7 +268,7 @@ Months are `YYYY-MM`. The commands live in `crates/server/src/commands/finance_r
 | `fin_budgets` | id, entity_id, ledger_account_id, month NULL, amount_minor, created_at, updated_at; UNIQUE(entity_id, ledger_account_id, month) | A monthly target for an expense account. `month` NULL is the standing target for every month; a row with a month overrides it. No carry-over. |
 | `fin_planned` | id, entity_id, date, description, amount_minor, ledger_account_id NULL, account_id NULL, created_at, updated_at | A planned one-off. `amount_minor` is its cash effect: positive in, negative out. |
 | `fin_recurring` | id, entity_id, key, label, cadence (`weekly` `monthly` `quarterly` `yearly`), amount_minor, amount_low_minor, amount_high_minor, ledger_account_id NULL, account_id NULL, occurrences, first_date, last_date, next_date, status (`suggested` `confirmed` `dismissed`), created_at, updated_at; UNIQUE(entity_id, key) | A detected recurring payment or receipt. `key` is the normalised payee; the amounts are cash effects like `fin_planned`'s. |
-| `fin_settings` | entity_id PK, reminder_enabled (default 1), reminder_weekday (default `Mon`), reminder_time (default `09:00`), reminder_last_at NULL | Per-user finance settings. The reminder time is host-local. |
+| `fin_settings` | entity_id PK, reminder_enabled (default 1), reminder_weekday (default `Mon`), reminder_time (default `09:00`), reminder_last_at NULL, import_post_older (default 0), import_post_older_days (default 30) | Per-user finance settings. The reminder time is host-local. |
 
 The chart gains three system keys, `prepayments`, `accrued_expenses` and `receivables` (the existing accounts, found by
 code on older entities), and one account, *Deferred income* (liability, `deferred_income`), created when first needed.
@@ -321,7 +376,7 @@ on the desktop and on the phone (`src/lib/notificationFeed.ts`) while the app is
 | `fin_forecast` | `month` | `{month, as_of, opening_minor, end_minor, low_minor, high_minor, lines: [{kind, label, date?, amount_minor, low_minor, high_minor, ledger_account_id?, ref_id?}], categories: [{ledger_account_id, name, class, actual_minor, projected_minor, median_minor, history_months, budget_minor?}], warnings: [{ledger_account_id, name, budget_minor, projected_minor, over_minor}]}`. Category amounts are natural (spent or received, positive). |
 | `fin_statement` | `kind (position\|profit_loss\|cash_flow\|equity), period, comparatives?` | `{kind, period, from, to, currency, comparative: {period, from, to}\|null, rows, checks}` |
 | `fin_statement_csv` | as `fin_statement` | `{file_name, content}`: one row per statement row, amounts in major units |
-| `fin_get_settings` / `fin_update_settings` | — / `input {reminder: {enabled?, weekday?, time?}}` | `{reminder: {enabled, weekday, time}}`. `weekday` is `Mon`…`Sun`, `time` is `HH:MM`. |
+| `fin_get_settings` / `fin_update_settings` | — / `input {reminder?: {enabled?, weekday?, time?}, import?: {postOlder?, postOlderDays?}}` | `{reminder: {enabled, weekday, time}, import: {post_older, post_older_days}}`. `weekday` is `Mon`…`Sun`, `time` is `HH:MM`, `postOlderDays` 1–3650 (30 by default). |
 
 ### Wave 1 changes
 

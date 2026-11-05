@@ -229,6 +229,12 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
         ("fin_source_lines", "dedupe_key", "TEXT"),
         ("fin_source_lines", "occurred_at", "TEXT"),
         ("fin_import_batches", "status", "TEXT NOT NULL DEFAULT 'done'"),
+        // The inbox's payee group of a draft (`inbox::group_key`), filled when the inbox
+        // groups; NULL until then, and again after its text changes.
+        ("fin_entries", "group_key", "TEXT"),
+        // Import option: post lines older than so many days straight away (off by default).
+        ("fin_settings", "import_post_older", "INTEGER NOT NULL DEFAULT 0"),
+        ("fin_settings", "import_post_older_days", "INTEGER NOT NULL DEFAULT 30"),
     ] {
         let has: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
             .bind(table)
@@ -239,9 +245,26 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
             sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}")).execute(pool).await?;
         }
     }
+    // The inbox lists, counts and groups drafts by status, newest first, and by payee group.
+    for sql in [
+        "CREATE INDEX IF NOT EXISTS idx_fin_entries_status_date ON fin_entries(entity_id, status, date)",
+        "CREATE INDEX IF NOT EXISTS idx_fin_entries_group ON fin_entries(entity_id, status, group_key)",
+        "CREATE INDEX IF NOT EXISTS idx_fin_pairs_entry_a ON fin_pairs(entry_a)",
+        "CREATE INDEX IF NOT EXISTS idx_fin_pairs_entry_b ON fin_pairs(entry_b)",
+        "CREATE TABLE IF NOT EXISTS fin_group_suggestions (\
+            entity_id INTEGER NOT NULL REFERENCES fin_entities(id) ON DELETE CASCADE, \
+            group_key TEXT NOT NULL, \
+            ledger_account_id INTEGER REFERENCES fin_ledger_accounts(id) ON DELETE CASCADE, \
+            created_at TEXT NOT NULL, \
+            PRIMARY KEY (entity_id, group_key))",
+    ] {
+        sqlx::query(sql).execute(pool).await?;
+    }
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_fin_source_lines_dedupe ON fin_source_lines(entity_id, account_id, dedupe_key)")
         .execute(pool)
         .await?;
     super::import::dedupe::backfill(pool).await?;
+    // Pairs that waited for review under older pairing rules get another look.
+    super::pairing::rescore_at_startup(pool).await;
     Ok(())
 }

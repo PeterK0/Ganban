@@ -6,7 +6,7 @@
 use ganban_core::finance;
 use serde_json::json;
 
-use super::{command, Access, Author, Command};
+use super::{command, reply, Access, Author, Command};
 
 const USER: Author = Author::Arg("userId");
 
@@ -23,6 +23,20 @@ pub(super) const COMMANDS: &[Command] = &[
         Box::pin(async move {
             let ent = finance::entity_for_user(cx.db, a.author()?).await?;
             crate::finance_tools::suggest_categories(cx.db, &ent, &a.i64_list("entryIds")).await
+        })
+    }),
+    // "Suggest categories for all uncategorised": a background job over the inbox's payee
+    // groups, followed with `fin_suggest_groups_status`.
+    command("fin_suggest_groups").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let ent = finance::entity_for_user(cx.db, a.author()?).await?;
+            reply(crate::finance_suggest_job::start(cx.db, &ent).await?)
+        })
+    }),
+    command("fin_suggest_groups_status").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let ent = finance::entity_for_user(cx.db, a.author()?).await?;
+            reply(crate::finance_suggest_job::status(cx.db, &ent))
         })
     }),
 ];

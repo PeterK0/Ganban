@@ -149,6 +149,11 @@ Two journal entries that are the two sides of one move between the user's own fi
 exchange), matched so the move nets to zero instead of counting as income and spending.
 _Avoid_: match, link, internal transaction
 
+**Payee group**:
+The inbox's drafts from one merchant in one direction (money spent, or money received), as the host groups them
+so one pick sorts them all. The merchant is the payee, else the description without digits and punctuation.
+_Avoid_: merchant group, cluster, bucket
+
 **Personal chat**:
 A chat in the user's personal container, listed under "Personal" in the chat list. Only its user sees it, the host
 owner included, and it's the one place the assistant may read their finances, on a local model.

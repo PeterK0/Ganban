@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use base64::Engine;
 use ganban_core::error::AppError;
 use ganban_core::finance::import::{jobs, pipeline, MAX_FILE_BYTES, TOO_LARGE};
-use ganban_core::finance::{self, pairing, rules, Entity};
+use ganban_core::finance::{self, pairing, reminder, rules, Entity};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -77,7 +77,13 @@ pub(super) const COMMANDS: &[Command] = &[
             let profile_key = a.req_str("profileKey")?;
             pipeline::check_request(cx.db, &ent, &profile_key, &account_map).await?;
             let file_name = a.opt_str("fileName").unwrap_or_default();
-            reply(jobs::start(cx.db, &ent, jobs::ImportRequest { file_name, bytes, profile_key, account_map })?)
+            let post_older_than_days = match a.opt_i64("postOlderThanDays") {
+                None => None,
+                Some(d) if (1..=i64::from(reminder::MAX_POST_OLDER_DAYS)).contains(&d) => Some(d as u32),
+                Some(_) => return Err(AppError::InvalidInput("'postOlderThanDays' is 1 to 3650".into())),
+            };
+            let req = jobs::ImportRequest { file_name, bytes, profile_key, account_map, post_older_than_days };
+            reply(jobs::start(cx.db, &ent, req)?)
         })
     }),
     // The caller's import job: `jobId`'s, else their latest (null when there's none).
@@ -101,6 +107,16 @@ pub(super) const COMMANDS: &[Command] = &[
             let accept: bool = req(a, "accept")?;
             reply(pairing::resolve_pair(cx.db, &entity(cx, a).await?, a.req_i64("pairId")?, accept).await?)
         })
+    }),
+    command("fin_resolve_pairs").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let accept: bool = req(a, "accept")?;
+            let ids: Vec<i64> = req(a, "pairIds")?;
+            reply(pairing::resolve_pairs(cx.db, &entity(cx, a).await?, &ids, accept).await?)
+        })
+    }),
+    command("fin_rescore_pairs").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move { reply(pairing::rescore_pairs(cx.db, &entity(cx, a).await?).await?) })
     }),
     command("fin_pair_entries").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
@@ -148,7 +164,7 @@ mod tests {
     #[test]
     fn every_import_command_is_the_callers_own() {
         let names: Vec<&str> = super::COMMANDS.iter().map(|c| c.name).collect();
-        assert_eq!(names.len(), 15, "{names:?}");
+        assert_eq!(names.len(), 17, "{names:?}");
         for c in super::COMMANDS {
             assert!(c.name.starts_with("fin_"));
             assert!(matches!(c.access, Some(Access::OwnFinance)), "{} must use OwnFinance", c.name);
@@ -266,7 +282,14 @@ mod tests {
             }
             assert_eq!(http(&db, user, "fin_list_pairs", json!({})).await.unwrap(), json!([]));
             assert_eq!(http(&db, user, "fin_list_rules", json!({})).await.unwrap(), json!([]));
+            // A bulk resolve skips another user's pair; a re-score sees only the caller's.
+            let bulk = http(&db, user, "fin_resolve_pairs", json!({ "pairIds": [pair], "accept": false })).await.unwrap();
+            assert_eq!((bulk["resolved"].as_i64(), bulk["skipped"].as_i64()), (Some(0), Some(1)));
+            let re = http(&db, user, "fin_rescore_pairs", json!({})).await.unwrap();
+            assert_eq!((re["confirmed"].as_i64(), re["review"].as_i64()), (Some(0), Some(0)));
         }
+        let hers = http(&db, ana, "fin_list_pairs", json!({})).await.unwrap();
+        assert_eq!(hers[0]["status"], "auto", "Ana's pair is untouched");
     }
 
     #[tokio::test]

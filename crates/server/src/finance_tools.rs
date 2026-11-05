@@ -468,7 +468,7 @@ fn statement_period(period: &str, today: NaiveDate) -> ganban_core::Result<Strin
 
 /// At most this many lines per suggestion request (one prompt per batch of [`BATCH`]).
 pub const MAX_SUGGEST: usize = 60;
-const BATCH: usize = 15;
+pub const BATCH: usize = 15;
 const SUGGEST_TIMEOUT_SECS: u64 = 120;
 
 /// What the local model sees of one bank line: its description, payee and amount.
@@ -554,13 +554,9 @@ pub fn parse_reply<'a>(reply: &str, items: &[SuggestItem], expense: &'a [String]
         .collect()
 }
 
-/// Suggest a category for each of the caller's entries, from the host's local model. Returns
-/// `[{entry_id, ledger_account_id}]`, `null` where the model had nothing that fits. Entries
-/// that aren't the caller's are "not found", as everywhere in Finance.
-pub async fn suggest_categories(db: &Db, ent: &Entity, entry_ids: &[i64]) -> ganban_core::Result<Value> {
-    if entry_ids.len() > MAX_SUGGEST {
-        return Err(bad(format!("at most {MAX_SUGGEST} lines at a time")));
-    }
+/// The chart's expense and income categories the model may pick from (no uncategorised or
+/// FX accounts), as `(id, name)`.
+pub async fn suggestable_categories(db: &Db, ent: &Entity) -> ganban_core::Result<(Vec<(i64, String)>, Vec<(i64, String)>)> {
     let chart = finance::list_ledger_accounts(db, ent, false).await?;
     let usable = |class: &str| -> Vec<(i64, String)> {
         chart
@@ -570,9 +566,45 @@ pub async fn suggest_categories(db: &Db, ent: &Entity, entry_ids: &[i64]) -> gan
             .map(|l| (l.id, l.name.clone()))
             .collect()
     };
-    let (expense, income) = (usable("expense"), usable("income"));
+    Ok((usable("expense"), usable("income")))
+}
+
+/// Asks the local model about up to [`BATCH`] lines: each one's category id, or `None`.
+pub async fn ask_batch(
+    client: &OllamaClient,
+    params: &ChatParams,
+    items: &[SuggestItem],
+    expense: &[(i64, String)],
+    income: &[(i64, String)],
+) -> ganban_core::Result<Vec<Option<i64>>> {
     let names = |v: &[(i64, String)]| v.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>();
-    let (expense_names, income_names) = (names(&expense), names(&income));
+    let (expense_names, income_names) = (names(expense), names(income));
+    let prompt = build_prompt(items, &expense_names, &income_names);
+    let messages = [json!({ "role": "user", "content": prompt })];
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(SUGGEST_TIMEOUT_SECS), client.chat_json(params, &messages))
+        .await
+        .map_err(|_| bad("the local model took too long to answer".into()))?
+        // Ollama's error text is the engine's, not the user's data, but keep it out anyway.
+        .map_err(|_| bad("the local model didn't answer; check the engine in Settings → AI".into()))?;
+    let picked = parse_reply(&reply, items, &expense_names, &income_names);
+    Ok(items
+        .iter()
+        .zip(picked)
+        .map(|(it, name)| {
+            let side = if it.amount_minor < 0 { expense } else { income };
+            name.and_then(|n| side.iter().find(|(_, m)| m == n).map(|(id, _)| *id))
+        })
+        .collect())
+}
+
+/// Suggest a category for each of the caller's entries, from the host's local model. Returns
+/// `[{entry_id, ledger_account_id}]`, `null` where the model had nothing that fits. Entries
+/// that aren't the caller's are "not found", as everywhere in Finance.
+pub async fn suggest_categories(db: &Db, ent: &Entity, entry_ids: &[i64]) -> ganban_core::Result<Value> {
+    if entry_ids.len() > MAX_SUGGEST {
+        return Err(bad(format!("at most {MAX_SUGGEST} lines at a time")));
+    }
+    let (expense, income) = suggestable_categories(db, ent).await?;
     let accounts = finance::list_accounts(db, ent, true).await?;
 
     let mut items: Vec<(i64, SuggestItem)> = Vec::new();
@@ -594,17 +626,8 @@ pub async fn suggest_categories(db: &Db, ent: &Entity, entry_ids: &[i64]) -> gan
     let mut out: Vec<Value> = Vec::new();
     for batch in items.chunks(BATCH) {
         let only: Vec<SuggestItem> = batch.iter().map(|(_, it)| it.clone()).collect();
-        let prompt = build_prompt(&only, &expense_names, &income_names);
-        let messages = [json!({ "role": "user", "content": prompt })];
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(SUGGEST_TIMEOUT_SECS), client.chat_json(&params, &messages))
-            .await
-            .map_err(|_| bad("the local model took too long to answer".into()))?
-            // Ollama's error text is the engine's, not the user's data, but keep it out anyway.
-            .map_err(|_| bad("the local model didn't answer; check the engine in Settings → AI".into()))?;
-        let picked = parse_reply(&reply, &only, &expense_names, &income_names);
-        for ((entry_id, it), name) in batch.iter().zip(picked) {
-            let side = if it.amount_minor < 0 { &expense } else { &income };
-            let id = name.and_then(|n| side.iter().find(|(_, m)| m == n).map(|(id, _)| *id));
+        let picked = ask_batch(&client, &params, &only, &expense, &income).await?;
+        for ((entry_id, _), id) in batch.iter().zip(picked) {
             out.push(json!({ "entry_id": entry_id, "ledger_account_id": id }));
         }
     }

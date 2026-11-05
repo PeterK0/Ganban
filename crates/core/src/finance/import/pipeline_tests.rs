@@ -387,3 +387,138 @@ async fn rejecting_an_fx_pair_removes_its_adjustment() {
     assert_eq!(ledger_sum(&db, &ent, clearing).await, 0);
     assert_eq!(ledger_sum(&db, &ent, sys_la(&db, &ent, system::FX_REALISED_GAIN).await).await, 0);
 }
+
+/// The bank's moments of a run of same-amount pocket moves: several a week, some on
+/// the same day, two of them 30 seconds apart.
+const MOVES: [&str; 9] = [
+    "2026-10-01 09:00:01",
+    "2026-10-01 17:30:12",
+    "2026-10-03 08:15:00",
+    "2026-10-05 12:00:00",
+    "2026-10-06 10:00:00",
+    "2026-10-06 10:00:30",
+    "2026-10-08 07:45:00",
+    "2026-10-08 21:10:05",
+    "2026-10-10 13:00:00",
+];
+
+/// A Revolut export of [`MOVES`]: the current account's side in time order, then the
+/// savings side backwards, so line order and time order disagree.
+fn pocket_moves() -> Vec<u8> {
+    let mut lines: Vec<String> = MOVES
+        .iter()
+        .map(|t| format!("Transfer,Current,{t},{t},Pocket Withdrawal,30.00,0.00,EUR,COMPLETED,"))
+        .collect();
+    lines.extend(MOVES.iter().rev().map(|t| format!("Transfer,Savings,{t},{t},Pocket Withdrawal,-30.00,0.00,EUR,COMPLETED,")));
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    revolut(&refs)
+}
+
+fn current_and_savings() -> HashMap<String, AccountChoice> {
+    map(vec![("revolut:current:EUR", create("current", "Current", "EUR")), ("revolut:savings:EUR", create("savings", "Savings", "EUR"))])
+}
+
+/// Pairs with this status whose two legs the bank stamped at the same second.
+async fn same_moment_pairs(db: &Db, ent: &Entity, status: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fin_pairs p \
+         JOIN fin_entries ea ON ea.id = p.entry_a JOIN fin_source_lines sa ON sa.id = ea.source_line_id \
+         JOIN fin_entries eb ON eb.id = p.entry_b JOIN fin_source_lines sb ON sb.id = eb.source_line_id \
+         WHERE p.entity_id = ? AND p.status = ? AND sa.occurred_at = sb.occurred_at",
+    )
+    .bind(ent.id)
+    .bind(status)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn pair_count(db: &Db, ent: &Entity, status: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = ?").bind(ent.id).bind(status).fetch_one(db).await.unwrap()
+}
+
+#[tokio::test]
+async fn repeated_pocket_moves_pair_by_the_banks_time() {
+    let db = test_db("pocket_runs").await;
+    let ent = user(&db, 7).await;
+    let r = import_file(&db, &ent, "r.csv", &pocket_moves(), "revolut", current_and_savings()).await.unwrap();
+    assert_eq!((r.created, r.paired, r.review), (18, 9, 0));
+    assert_eq!(same_moment_pairs(&db, &ent, "auto").await, 9, "each leg meets its own moment");
+    assert_eq!(ledger_sum(&db, &ent, sys_la(&db, &ent, system::TRANSFERS_CLEARING).await).await, 0);
+}
+
+#[tokio::test]
+async fn the_same_amount_to_two_accounts_waits_and_bulk_accepts() {
+    let db = test_db("ambiguous").await;
+    let ent = user(&db, 7).await;
+    let file = revolut(&[
+        "Transfer,Current,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer out,-30.00,0.00,EUR,COMPLETED,",
+        "Transfer,Savings,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,COMPLETED,",
+        "Transfer,Vault,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,COMPLETED,",
+    ]);
+    let mut m = current_and_savings();
+    m.insert("revolut:vault:EUR".into(), create("savings", "Vault", "EUR"));
+    let r = import_file(&db, &ent, "a.csv", &file, "revolut", m).await.unwrap();
+    assert_eq!((r.paired, r.review), (0, 1));
+    // A re-score leaves a real choice alone.
+    let re = pairing::rescore_pairs(&db, &ent).await.unwrap();
+    assert_eq!((re.confirmed, re.review), (0, 1));
+    let pairs = pairing::list_pairs(&db, &ent, Some("review")).await.unwrap();
+    assert!(pairs[0].like_key.starts_with("transfer:") && pairs[0].like_key.contains("transfer in"));
+    let ids: Vec<i64> = pairs.iter().map(|p| p.id).chain([pairs[0].id, 999_999]).collect();
+    let bulk = pairing::resolve_pairs(&db, &ent, &ids, true).await.unwrap();
+    assert_eq!((bulk.resolved, bulk.skipped), (1, 1), "a repeated id counts once; an unknown one is skipped");
+    assert_eq!(pair_count(&db, &ent, "confirmed").await, 1);
+}
+
+#[tokio::test]
+async fn waiting_pairs_are_rescored_once_and_again_changes_nothing() {
+    let db = test_db("rescore").await;
+    let ent = user(&db, 7).await;
+    import_file(&db, &ent, "r.csv", &pocket_moves(), "revolut", current_and_savings()).await.unwrap();
+    // Put the books back the way older rules left them: every move waiting for review,
+    // most with the wrong leg.
+    let ids: Vec<i64> = pairing::list_pairs(&db, &ent, None).await.unwrap().iter().map(|p| p.id).collect();
+    assert_eq!(pairing::resolve_pairs(&db, &ent, &ids, false).await.unwrap().resolved, 9);
+    sqlx::query("DELETE FROM fin_pairs").execute(&db).await.unwrap();
+    let legs = |sign: &str| {
+        format!(
+            "SELECT e.id FROM fin_entries e JOIN fin_source_lines s ON s.id = e.source_line_id \
+             WHERE e.entity_id = {} AND s.amount_minor {sign} 0 ORDER BY e.id",
+            ent.id
+        )
+    };
+    let outs: Vec<i64> = sqlx::query_scalar(&legs("<")).fetch_all(&db).await.unwrap();
+    let ins: Vec<i64> = sqlx::query_scalar(&legs(">")).fetch_all(&db).await.unwrap();
+    assert_eq!((outs.len(), ins.len()), (9, 9));
+    for (a, b) in outs.iter().zip(&ins) {
+        sqlx::query(
+            "INSERT INTO fin_pairs (entity_id, kind, entry_a, entry_b, status, score, created_at) \
+             VALUES (?, 'transfer', ?, ?, 'review', 0.85, '2026-10-11')",
+        )
+        .bind(ent.id)
+        .bind(a)
+        .bind(b)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    assert!(same_moment_pairs(&db, &ent, "review").await < 9);
+
+    // The startup pass clears them, each with its own moment.
+    sqlx::query("DELETE FROM app_settings WHERE key = 'fin_pairing_rules'").execute(&db).await.unwrap();
+    pairing::rescore_at_startup(&db).await;
+    assert_eq!((pair_count(&db, &ent, "review").await, same_moment_pairs(&db, &ent, "auto").await), (0, 9));
+    assert_eq!(pair_count(&db, &ent, "auto").await, 9);
+    assert_eq!(ledger_sum(&db, &ent, sys_la(&db, &ent, system::TRANSFERS_CLEARING).await).await, 0);
+
+    // Again, by the command or at the next start: nothing changes.
+    let before: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("SELECT id, entry_a, entry_b, status FROM fin_pairs ORDER BY id").fetch_all(&db).await.unwrap();
+    let re = pairing::rescore_pairs(&db, &ent).await.unwrap();
+    assert_eq!((re.confirmed, re.review), (0, 0));
+    pairing::rescore_at_startup(&db).await;
+    let after: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("SELECT id, entry_a, entry_b, status FROM fin_pairs ORDER BY id").fetch_all(&db).await.unwrap();
+    assert_eq!(before, after);
+}

@@ -97,6 +97,8 @@ export interface EntryFilter {
   status?: EntryStatus;
   uncategorised?: boolean;
   search?: string;
+  /** One payee group of the inbox (`InboxGroup.key`). */
+  groupKey?: string;
 }
 
 export interface TrialRow {
@@ -211,6 +213,8 @@ export interface ImportResult {
   categorised_by_rules: number;
   /** Refunds given the category of the expense they return. */
   refunds: number;
+  /** Lines older than the chosen cut-off, posted straight away. */
+  posted?: number;
   /** Rows skipped while parsing, and lines of accounts left out of the map. */
   warnings: string[];
 }
@@ -224,6 +228,8 @@ export interface Pair {
   entry_b: Entry;
   adjust_entry_id: number | null;
   created_at: string;
+  /** What "all like this" groups by: the kind, both accounts and the description patterns. */
+  like_key: string;
 }
 
 export interface Rule {
@@ -303,8 +309,8 @@ export const listProfiles = () => call<Profile[]>('fin_list_profiles');
 export const previewImport = (fileName: string, contentBase64: string, profileKey?: string) =>
   call<ImportPreview>('fin_preview_import', { fileName, contentBase64, profileKey });
 /** Starts the import as a background job on the host; follow it with `importStatus`. */
-export const runImport = (fileName: string, contentBase64: string, profileKey: string, accountMap: Record<string, AccountMapTarget>) =>
-  call<ImportJob>('fin_import', { fileName, contentBase64, profileKey, accountMap });
+export const runImport = (fileName: string, contentBase64: string, profileKey: string, accountMap: Record<string, AccountMapTarget>, postOlderThanDays?: number) =>
+  call<ImportJob>('fin_import', { fileName, contentBase64, profileKey, accountMap, postOlderThanDays });
 /** The job with this id, else the user's latest (null when there's none). */
 export const importStatus = (jobId?: number) => call<ImportJob | null>('fin_import_status', jobId == null ? {} : { jobId });
 export const saveProfile = (input: { key: string; name: string; mapping: ProfileMapping }) => call<Profile>('fin_save_profile', { input });
@@ -312,6 +318,9 @@ export const deleteProfile = (key: string) => call<Profile>('fin_delete_profile'
 
 export const listPairs = (status?: PairStatus) => call<Pair[]>('fin_list_pairs', { status });
 export const resolvePair = (pairId: number, accept: boolean) => call<Pair>('fin_resolve_pair', { pairId, accept });
+export const resolvePairs = (pairIds: number[], accept: boolean) =>
+  call<{ resolved: number; skipped: number }>('fin_resolve_pairs', { pairIds, accept });
+export const rescorePairs = () => call<{ confirmed: number; review: number }>('fin_rescore_pairs');
 export const pairEntries = (entryA: number, entryB: number) => call<Pair>('fin_pair_entries', { entryA, entryB });
 
 export const listRules = () => call<Rule[]>('fin_list_rules');
@@ -337,6 +346,51 @@ export const suggestCategories = (entryIds: number[]) =>
   call<{ entry_id: number; ledger_account_id: number | null }[]>('fin_suggest_categories', { entryIds });
 /** The most lines one suggestion request takes (the host's cap). */
 export const MAX_SUGGEST = 60;
+
+// ── The inbox at scale: everything a filter matches, and payee groups ────────
+
+/** Posts every draft the filter matches, on the host. Left: `closed` (their month is closed) and `review` (a transfer to confirm). */
+export const postMatching = (filter: EntryFilter) => call<{ posted: number; closed: number; review: number }>('fin_post_matching', { filter });
+export interface CategoriseMatching {
+  categorised: number;
+  skipped: number;
+  /** The rule created with it, when asked. */
+  rule: Rule | null;
+  /** The rule for the same lines, offered as "remember as a rule" when not created. */
+  rule_input: RuleInput | null;
+}
+/** Gives every matching draft that's still uncategorised (not a transfer leg) this category. */
+export const categoriseMatching = (filter: EntryFilter, ledgerAccountId: number, createRule = false) =>
+  call<CategoriseMatching>('fin_categorise_matching', { filter, ledgerAccountId, createRule });
+export interface InboxGroup {
+  key: string;
+  label: string;
+  direction: 'out' | 'in';
+  count: number;
+  /** In the functional currency. */
+  total_minor: number;
+  first_date: string;
+  last_date: string;
+  category_id: number | null;
+  uncategorised: number;
+  /** Transfer or exchange legs. */
+  paired: number;
+  suggested_ledger_account_id: number | null;
+}
+export const inboxGroups = (filter: EntryFilter, limit = 50, offset = 0) =>
+  call<{ groups: InboxGroup[]; total_groups: number; total_lines: number }>('fin_inbox_groups', { filter, limit, offset });
+export const dismissGroupSuggestion = (groupKey: string) => call<Record<string, never>>('fin_dismiss_group_suggestion', { groupKey });
+export interface SuggestJob {
+  job_id: number;
+  state: 'running' | 'done' | 'failed';
+  done: number;
+  total: number;
+  suggested: number;
+  error: string | null;
+}
+/** Asks the local model about every uncategorised payee group, in the background. */
+export const suggestGroups = () => call<SuggestJob>('fin_suggest_groups');
+export const suggestGroupsStatus = () => call<SuggestJob | null>('fin_suggest_groups_status');
 
 /** Uploads ride the command table as base64, capped at 1.5 MB by the host. */
 export const MAX_IMPORT_BYTES = 1.5 * 1024 * 1024;
@@ -519,6 +573,10 @@ export const statementCsv = (kind: StatementKind, period: string, comparatives =
 export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 export interface FinSettings {
   reminder: { enabled: boolean; weekday: Weekday; time: string };
+  /** Import option: post lines older than `post_older_days` days straight away. */
+  import: { post_older: boolean; post_older_days: number };
 }
 export const getSettings = () => call<FinSettings>('fin_get_settings');
 export const updateSettings = (reminder: Partial<FinSettings['reminder']>) => call<FinSettings>('fin_update_settings', { input: { reminder } });
+export const updateImportSettings = (input: { postOlder?: boolean; postOlderDays?: number }) =>
+  call<FinSettings>('fin_update_settings', { input: { import: input } });

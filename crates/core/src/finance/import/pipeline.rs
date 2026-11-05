@@ -183,6 +183,8 @@ pub struct ImportResult {
     pub categorised_by_rules: usize,
     /// Refunds given the category of the expense they return.
     pub refunds: usize,
+    /// Lines older than the cut-off the user chose, posted straight away.
+    pub posted: usize,
     /// Rows skipped while parsing, and lines of accounts left out of the map.
     pub warnings: Vec<String>,
 }
@@ -287,6 +289,9 @@ pub struct ImportOptions {
     /// import would take the lock straight back and starve every other write.
     pub pause: std::time::Duration,
     pub pass_pause: std::time::Duration,
+    /// Post the new lines dated before this day (`YYYY-MM-DD`) once they've been paired
+    /// and ruled, instead of leaving them in the inbox. `None`: post nothing.
+    pub post_before: Option<String>,
 }
 
 impl Default for ImportOptions {
@@ -297,6 +302,7 @@ impl Default for ImportOptions {
             fail_after_chunks: None,
             pause: std::time::Duration::from_millis(110),
             pass_pause: std::time::Duration::from_millis(25),
+            post_before: None,
         }
     }
 }
@@ -625,6 +631,19 @@ pub async fn import_file_with(
         tx.commit().await?;
         tokio::time::sleep(opts.pass_pause).await;
         report(Stage::Rules, ((n + 1) * step).min(ids.len()), ids.len());
+    }
+
+    // History the bank settled long ago skips the inbox when the user asks: posted after
+    // pairing and the rules, so it goes in as well sorted as it can be.
+    if let Some(before) = opts.post_before.as_deref() {
+        let mut out = crate::finance::inbox::PostOutcome::default();
+        for chunk in ids.chunks(step) {
+            let mut tx = write_tx(db).await?;
+            crate::finance::inbox::post_ids_in(&mut tx, ent, chunk, Some(before), &mut out).await?;
+            tx.commit().await?;
+            tokio::time::sleep(opts.pass_pause).await;
+        }
+        result.posted = out.posted;
     }
 
     let mut tx = write_tx(db).await?;

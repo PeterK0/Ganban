@@ -42,7 +42,12 @@ pub struct Candidate {
     pub entry_id: i64,
     pub account_id: i64,
     pub date: NaiveDate,
+    /// The booking time (Revolut's Completed Date), for exchange legs.
     pub at: Option<NaiveDateTime>,
+    /// The bank's own timestamp of the line (Revolut's Started Date, to the second).
+    pub occurred_at: Option<NaiveDateTime>,
+    /// The bank's description of the line.
+    pub description: String,
     /// The bank line, signed, excluding the fee.
     pub amount_minor: i64,
     pub currency: String,
@@ -83,7 +88,26 @@ fn is_transferish(k: Option<&str>) -> bool {
     matches!(k, Some("transfer" | "topup"))
 }
 
-fn transfer_score(a: &Candidate, b: &Candidate) -> Option<f64> {
+/// How close the bank's timestamps of two legs must be to call them one move.
+pub const SAME_MOMENT_SECS: i64 = 60;
+
+/// A bank description reduced to its pattern: lower case, without a leading "to" or
+/// "from" and without words that hold digits (references, dates). "To pocket Rent"
+/// and "From pocket Rent" both become "pocket rent".
+pub fn description_key(description: &str) -> String {
+    let lower = description.trim().to_lowercase();
+    let rest = lower.strip_prefix("to ").or_else(|| lower.strip_prefix("from ")).unwrap_or(&lower);
+    rest.split_whitespace().filter(|w| !w.chars().any(|c| c.is_ascii_digit())).collect::<Vec<_>>().join(" ")
+}
+
+/// Both legs carry the bank's timestamp, within [`SAME_MOMENT_SECS`] of each other.
+fn same_moment(a: &Candidate, b: &Candidate) -> bool {
+    matches!((a.occurred_at, b.occurred_at), (Some(x), Some(y)) if (x - y).num_seconds().abs() <= SAME_MOMENT_SECS)
+}
+
+/// The score of two legs as one transfer, and whether the bank stamped them at the
+/// same moment (which settles it: 1.0).
+fn transfer_score(a: &Candidate, b: &Candidate) -> Option<(f64, bool)> {
     if a.currency != b.currency || a.amount_minor == 0 || a.amount_minor != -b.amount_minor {
         return None;
     }
@@ -93,6 +117,9 @@ fn transfer_score(a: &Candidate, b: &Candidate) -> Option<f64> {
     let days = (a.date - b.date).num_days().abs();
     if days > TRANSFER_DAYS {
         return None;
+    }
+    if same_moment(a, b) {
+        return Some((1.0, true));
     }
     let mut s = 0.5;
     s += match days {
@@ -113,7 +140,12 @@ fn transfer_score(a: &Candidate, b: &Candidate) -> Option<f64> {
     if a.counterpart_account == Some(b.account_id) || b.counterpart_account == Some(a.account_id) {
         s += 0.3;
     }
-    Some(f64::min(s, 1.0))
+    // The same words on both legs ("Pocket Withdrawal" twice) are a small hint.
+    let (da, db) = (description_key(&a.description), description_key(&b.description));
+    if !da.is_empty() && da == db {
+        s += 0.05;
+    }
+    Some((f64::min(s, 1.0), false))
 }
 
 /// Units of `to` per unit of `from` the bank applied, from the two legs' amounts.
@@ -162,40 +194,88 @@ fn fx_score(a: &Candidate, b: &Candidate, ecb: &dyn Fn(&str, &str, NaiveDate) ->
     Some(f64::min(s, 1.0))
 }
 
+/// A scored match, with what the rival check needs.
+struct Scored {
+    p: Proposal,
+    /// Stamped by the bank at the same moment.
+    timed: bool,
+    /// Indexes into the candidates: the money-out and the money-in leg.
+    out: usize,
+    inn: usize,
+}
+
 /// Proposes pairs among the candidates, best first. Each entry joins at most one
-/// pair, and one with a rival within 0.1 of its score goes to review.
+/// pair, and one with a rival within 0.1 of its score goes to review, except:
+///
+/// - a pair the bank stamped at the same moment isn't held up by rivals without that;
+/// - a rival that only swaps one leg for an identical one (the same account, amount,
+///   currency and day) gives the same books, so it doesn't count. Such legs pair in
+///   time order: by the bank's timestamp, else by line order. (A leg whose description
+///   matches scores 0.05 more, so it goes first.)
 pub fn propose_pairs(c: &[Candidate], ecb: &dyn Fn(&str, &str, NaiveDate) -> Option<f64>) -> Vec<Proposal> {
-    let mut all: Vec<Proposal> = Vec::new();
+    // Time order of the legs: the bank's timestamp, else the order the lines came in.
+    let mut order: Vec<usize> = (0..c.len()).collect();
+    order.sort_by(|&x, &y| c[x].occurred_at.cmp(&c[y].occurred_at).then(c[x].entry_id.cmp(&c[y].entry_id)));
+    let mut rank = vec![0usize; c.len()];
+    for (r, &i) in order.iter().enumerate() {
+        rank[i] = r;
+    }
+    let mut all: Vec<Scored> = Vec::new();
     for i in 0..c.len() {
         for j in i + 1..c.len() {
             let (a, b) = (&c[i], &c[j]);
             if a.account_id == b.account_id || !(a.fresh || b.fresh) {
                 continue;
             }
-            if let Some(score) = transfer_score(a, b) {
-                all.push(Proposal { a: a.entry_id, b: b.entry_id, kind: PairKind::Transfer, score, auto: false });
+            let (out, inn) = if a.amount_minor < 0 { (i, j) } else { (j, i) };
+            let (kind, score, timed) = if let Some((score, timed)) = transfer_score(a, b) {
+                (PairKind::Transfer, score, timed)
             } else if let Some(score) = fx_score(a, b, ecb) {
-                all.push(Proposal { a: a.entry_id, b: b.entry_id, kind: PairKind::Fx, score, auto: false });
-            }
+                (PairKind::Fx, score, false)
+            } else {
+                continue;
+            };
+            all.push(Scored { p: Proposal { a: a.entry_id, b: b.entry_id, kind, score, auto: false }, timed, out, inn });
         }
     }
-    all.sort_by(|x, y| y.score.total_cmp(&x.score).then(x.a.cmp(&y.a)).then(x.b.cmp(&y.b)));
+    all.sort_by(|x, y| {
+        y.p.score
+            .total_cmp(&x.p.score)
+            .then(y.timed.cmp(&x.timed))
+            .then(rank[x.out].cmp(&rank[y.out]))
+            .then(rank[x.inn].cmp(&rank[y.inn]))
+    });
+    // The same books either way: `q` swaps one of `p`'s legs for one on the same
+    // account and day (the amount and currency already agree).
+    let interchangeable = |p: &Scored, q: &Scored| {
+        let swap = |x: usize, y: usize| c[x].account_id == c[y].account_id && c[x].date == c[y].date;
+        p.p.kind == PairKind::Transfer
+            && q.p.kind == PairKind::Transfer
+            && ((p.out == q.out && swap(p.inn, q.inn)) || (p.inn == q.inn && swap(p.out, q.out)))
+    };
+    // The matches each leg is in, so the rival check looks only at those.
+    let mut by_leg: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (n, p) in all.iter().enumerate() {
+        by_leg.entry(p.out).or_default().push(n);
+        by_leg.entry(p.inn).or_default().push(n);
+    }
     let mut taken: HashSet<i64> = HashSet::new();
     let mut out = Vec::new();
-    for p in &all {
-        if taken.contains(&p.a) || taken.contains(&p.b) {
+    for (n, p) in all.iter().enumerate() {
+        if taken.contains(&p.p.a) || taken.contains(&p.p.b) {
             continue;
         }
-        let rival = all.iter().any(|q| {
-            !std::ptr::eq(p, q)
-                && (q.a == p.a || q.b == p.b || q.a == p.b || q.b == p.a)
-                && !taken.contains(&q.a)
-                && !taken.contains(&q.b)
-                && q.score >= p.score - 0.1
+        let rival = by_leg[&p.out].iter().chain(&by_leg[&p.inn]).map(|&m| (m, &all[m])).any(|(m, q)| {
+            m != n
+                && !taken.contains(&q.p.a)
+                && !taken.contains(&q.p.b)
+                && q.p.score + 1e-9 >= p.p.score - 0.1
+                && !(p.timed && !q.timed)
+                && !interchangeable(p, q)
         });
-        taken.insert(p.a);
-        taken.insert(p.b);
-        out.push(Proposal { auto: p.score >= AUTO_SCORE && !rival, ..p.clone() });
+        taken.insert(p.p.a);
+        taken.insert(p.p.b);
+        out.push(Proposal { auto: p.p.score >= AUTO_SCORE && !rival, ..p.p.clone() });
     }
     out
 }
@@ -427,53 +507,83 @@ pub(crate) async fn plan_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
         return Ok(Vec::new());
     }
     let by_id: HashMap<i64, &Fresh> = fresh.iter().map(|f| (f.entry_id, f)).collect();
-    let fresh_ids: HashSet<i64> = by_id.keys().copied().collect();
-    let dates: Vec<String> = {
-        let mut v = Vec::new();
-        for f in fresh {
-            v.push(get_entry_in(conn, ent, f.entry_id).await?.date);
-        }
-        v
-    };
+    let mut dates = Vec::new();
+    for f in fresh {
+        dates.push(get_entry_in(conn, ent, f.entry_id).await?.date);
+    }
     let parse = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
     let (Some(min), Some(max)) = (dates.iter().filter_map(|d| parse(d)).min(), dates.iter().filter_map(|d| parse(d)).max()) else {
         return Ok(Vec::new());
     };
-    let from = (min - Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
-    let to = (max + Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
-    type Row = (i64, String, i64, i64, String, Option<String>, String);
+    let mut cands = candidates_in(conn, ent, s, min - Duration::days(TRANSFER_DAYS), max + Duration::days(TRANSFER_DAYS), false, &|_| true).await?;
+    for c in &mut cands {
+        if let Some(f) = by_id.get(&c.entry_id) {
+            c.fresh = true;
+            c.at = f.at.or(c.at);
+            c.fx_currency = f.fx_currency.clone();
+            c.counterpart_account = f.counterpart_account;
+        }
+    }
+    propose_with_rates(conn, &cands).await
+}
+
+/// The bank entries between two dates that could still pair: not reversed, on no live
+/// pair (or, with `with_review`, on a pair waiting for review), uncategorised or on
+/// clearing, and kept by `keep` (on the date). None is fresh yet.
+async fn candidates_in(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &Sys,
+    from: NaiveDate,
+    to: NaiveDate,
+    with_review: bool,
+    keep: &(dyn Fn(NaiveDate) -> bool + Sync),
+) -> Result<Vec<Candidate>> {
+    type Row = (i64, String, i64, i64, String, Option<String>, String, Option<String>, String);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT e.id, e.date, s.account_id, s.amount_minor, s.currency, s.kind_hint, s.raw_json \
+        "SELECT e.id, e.date, s.account_id, s.amount_minor, s.currency, s.kind_hint, s.raw_json, s.occurred_at, s.description \
          FROM fin_entries e JOIN fin_source_lines s ON s.id = e.source_line_id \
          WHERE e.entity_id = ? AND e.status != 'reversed' AND e.date BETWEEN ? AND ? \
-           AND NOT EXISTS (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) AND p.status != 'rejected')",
+           AND NOT EXISTS (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) \
+                           AND p.status != 'rejected' AND NOT (? AND p.status = 'review'))",
     )
     .bind(ent.id)
-    .bind(&from)
-    .bind(&to)
+    .bind(from.format("%Y-%m-%d").to_string())
+    .bind(to.format("%Y-%m-%d").to_string())
+    .bind(with_review)
     .fetch_all(&mut *conn)
     .await?;
     let mut cands = Vec::new();
-    for (id, date, account_id, amount, currency, kind, raw) in rows {
+    for (id, date, account_id, amount, currency, kind, raw, occurred, description) in rows {
+        let Ok(date) = NaiveDate::parse_from_str(&date, "%Y-%m-%d") else { continue };
+        if !keep(date) {
+            continue;
+        }
         let v = bank_view(conn, ent, s, id).await?;
         if !(v.is_uncategorised(s) || v.is_clearing(s)) {
             continue;
         }
-        let f = by_id.get(&id).copied();
         cands.push(Candidate {
             entry_id: id,
             account_id,
-            date: parse(&date).unwrap_or(min),
-            at: f.and_then(|f| f.at).or_else(|| at_from_raw(&raw)),
+            date,
+            at: at_from_raw(&raw),
+            occurred_at: occurred.and_then(|t| NaiveDateTime::parse_from_str(&t, "%Y-%m-%d %H:%M:%S").ok()),
+            description,
             amount_minor: amount,
             currency,
             kind_hint: kind,
-            fx_currency: f.and_then(|f| f.fx_currency.clone()),
-            counterpart_account: f.and_then(|f| f.counterpart_account),
-            fresh: fresh_ids.contains(&id),
+            fx_currency: None,
+            counterpart_account: None,
+            fresh: false,
         });
     }
-    // ECB rates for the FX plausibility check, read up front (the matcher is pure).
+    Ok(cands)
+}
+
+/// [`propose_pairs`], with the ECB rates for the FX plausibility check read up front
+/// (the matcher is pure).
+async fn propose_with_rates(conn: &mut Conn, cands: &[Candidate]) -> Result<Vec<Proposal>> {
     let mut spot: Vec<((String, String, NaiveDate), f64)> = Vec::new();
     for a in cands.iter().filter(|c| c.kind_hint.as_deref() == Some("exchange")) {
         for b in cands.iter().filter(|c| c.kind_hint.as_deref() == Some("exchange") && c.currency != a.currency) {
@@ -490,7 +600,7 @@ pub(crate) async fn plan_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
     let ecb = |f: &str, t: &str, d: NaiveDate| {
         spot.iter().find(|((a, b, dd), _)| a == f && b == t && *dd == d).map(|(_, r)| *r)
     };
-    Ok(propose_pairs(&cands, &ecb))
+    Ok(propose_pairs(cands, &ecb))
 }
 
 /// Books proposed pairs. A side that got paired or categorised since the proposal was
@@ -658,6 +768,9 @@ pub struct Pair {
     pub created_at: String,
     pub entry_a: Entry,
     pub entry_b: Entry,
+    /// What "all like this" groups by: the kind, both bank accounts and the pattern of
+    /// each side's description ([`description_key`]). Filled in by [`list_pairs`].
+    pub like_key: String,
 }
 
 type PairRow = (i64, String, i64, i64, Option<i64>, String, f64, String);
@@ -680,6 +793,7 @@ async fn get_pair_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<Pair> {
         status: r.5,
         score: r.6,
         created_at: r.7,
+        like_key: String::new(),
     })
 }
 
@@ -698,11 +812,30 @@ pub async fn list_pairs(db: &Db, ent: &Entity, status: Option<&str>) -> Result<V
     .bind(status)
     .fetch_all(&mut *conn)
     .await?;
+    let banks: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>("SELECT ledger_account_id, id FROM fin_accounts WHERE entity_id = ?")
+        .bind(ent.id)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .collect();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        out.push(get_pair_in(&mut conn, ent, id).await?);
+        let mut p = get_pair_in(&mut conn, ent, id).await?;
+        p.like_key = like_key(&p, &banks);
+        out.push(p);
     }
     Ok(out)
+}
+
+/// [`Pair::like_key`]: the sides ordered by bank account, so either order matches.
+fn like_key(p: &Pair, banks: &HashMap<i64, i64>) -> String {
+    let side = |e: &Entry| {
+        let account = e.lines.iter().find_map(|l| banks.get(&l.ledger_account_id)).copied().unwrap_or(0);
+        (account, description_key(&e.description))
+    };
+    let mut sides = [side(&p.entry_a), side(&p.entry_b)];
+    sides.sort();
+    format!("{}:{}:{}|{}:{}", p.kind, sides[0].0, sides[0].1, sides[1].0, sides[1].1)
 }
 
 /// Accept or reject a pair. Accepting books it (both to clearing, FX adjusted) unless it
@@ -802,6 +935,226 @@ pub async fn pair_entries(db: &Db, ent: &Entity, entry_a: i64, entry_b: i64) -> 
     Ok(out)
 }
 
+/// What a bulk resolve did: pairs resolved, and pairs skipped (gone, not the user's,
+/// or with an entry categorised since).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct BulkOutcome {
+    pub resolved: usize,
+    pub skipped: usize,
+}
+
+/// The most pairs one bulk resolve takes.
+pub const BULK_MAX: usize = 1000;
+
+/// Accept or reject many pairs at once, each as [`resolve_pair`] does, in its own short
+/// transaction. A pair that can't be resolved is skipped, not fatal.
+pub async fn resolve_pairs(db: &Db, ent: &Entity, ids: &[i64], accept: bool) -> Result<BulkOutcome> {
+    if ids.len() > BULK_MAX {
+        return Err(AppError::InvalidInput(format!("at most {BULK_MAX} pairs at once")));
+    }
+    let mut seen = HashSet::new();
+    let mut out = BulkOutcome::default();
+    for &id in ids.iter().filter(|id| seen.insert(**id)) {
+        match resolve_pair(db, ent, id, accept).await {
+            Ok(_) => out.resolved += 1,
+            Err(e) if skippable(&e) => out.skipped += 1,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
+}
+
+/// What a re-score did: pairs it booked, and how many still wait for review.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct RescoreOutcome {
+    pub confirmed: usize,
+    pub review: usize,
+}
+
+/// Re-scores the pairs waiting for review with the current rules, and books the ones
+/// that now qualify. A better match for a waiting leg replaces its pair; a leg freed
+/// that way pairs again if it can. Runs passes until nothing changes, so running it
+/// again does nothing.
+pub async fn rescore_pairs(db: &Db, ent: &Entity) -> Result<RescoreOutcome> {
+    let mut out = RescoreOutcome::default();
+    let mut loose: HashSet<i64> = HashSet::new();
+    // Each pass that changes something books a pair or pairs a freed leg, so this ends;
+    // the cap is only a guard.
+    for _ in 0..100 {
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        let (changed, confirmed) = rescore_pass(&mut tx, ent, &mut loose).await?;
+        tx.commit().await?;
+        out.confirmed += confirmed;
+        if !changed {
+            break;
+        }
+    }
+    out.review = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = 'review'")
+        .bind(ent.id)
+        .fetch_one(db)
+        .await? as usize;
+    Ok(out)
+}
+
+/// Books a proposal inside a savepoint. `None` when a side can't take it (a closed
+/// month), with nothing written.
+async fn try_book(conn: &mut Conn, ent: &Entity, s: &Sys, p: &Proposal) -> Result<Option<Option<i64>>> {
+    use sqlx::Connection;
+    let mut sp = conn.begin().await?;
+    let booked = async {
+        let a = bank_view(&mut sp, ent, s, p.a).await?;
+        let b = bank_view(&mut sp, ent, s, p.b).await?;
+        book(&mut sp, ent, s, &a, &b, p.kind).await
+    }
+    .await;
+    match booked {
+        Ok(adjust) => {
+            sp.commit().await?;
+            Ok(Some(adjust))
+        }
+        Err(e) if skippable(&e) => {
+            sp.rollback().await?;
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// One re-score pass. Returns whether it changed which pairs exist or their status,
+/// and how many it booked.
+async fn rescore_pass(conn: &mut Conn, ent: &Entity, loose: &mut HashSet<i64>) -> Result<(bool, usize)> {
+    let review: Vec<(i64, i64, i64, f64)> =
+        sqlx::query_as("SELECT id, entry_a, entry_b, score FROM fin_pairs WHERE entity_id = ? AND status = 'review'")
+            .bind(ent.id)
+            .fetch_all(&mut *conn)
+            .await?;
+    if review.is_empty() && loose.is_empty() {
+        return Ok((false, 0));
+    }
+    let s = sys(conn, ent).await?;
+    let mut by_leg: HashMap<i64, (i64, i64, i64, f64)> = HashMap::new();
+    for r in &review {
+        by_leg.insert(r.1, *r);
+        by_leg.insert(r.2, *r);
+    }
+    let legs: HashSet<i64> = by_leg.keys().chain(loose.iter()).copied().collect();
+    // Look around each waiting leg far enough to see its rivals' other legs too.
+    let mut window: HashSet<NaiveDate> = HashSet::new();
+    for &leg in &legs {
+        let date: Option<String> = sqlx::query_scalar("SELECT date FROM fin_entries WHERE id = ? AND entity_id = ?")
+            .bind(leg)
+            .bind(ent.id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if let Some(d) = date.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()) {
+            for k in -2 * TRANSFER_DAYS..=2 * TRANSFER_DAYS {
+                window.insert(d + Duration::days(k));
+            }
+        }
+    }
+    let (Some(&from), Some(&to)) = (window.iter().min(), window.iter().max()) else {
+        return Ok((false, 0));
+    };
+    let mut cands = candidates_in(conn, ent, &s, from, to, true, &|d| window.contains(&d)).await?;
+    for c in &mut cands {
+        c.fresh = true;
+    }
+    let proposals = propose_with_rates(conn, &cands).await?;
+    let (mut changed, mut confirmed) = (false, 0);
+    let mut gone: HashSet<i64> = HashSet::new();
+    for p in proposals {
+        if !(legs.contains(&p.a) || legs.contains(&p.b)) {
+            continue;
+        }
+        let mut existing: Vec<(i64, i64, i64, f64)> = Vec::new();
+        for leg in [p.a, p.b] {
+            if let Some(r) = by_leg.get(&leg).filter(|r| !gone.contains(&r.0)) {
+                if !existing.iter().any(|e| e.0 == r.0) {
+                    existing.push(*r);
+                }
+            }
+        }
+        let exact = matches!(existing.as_slice(), [e] if (e.1 == p.a && e.2 == p.b) || (e.1 == p.b && e.2 == p.a));
+        if exact {
+            let (id, _, _, score) = existing[0];
+            if p.auto {
+                let Some(adjust) = try_book(conn, ent, &s, &p).await? else { continue };
+                sqlx::query("UPDATE fin_pairs SET status = 'auto', score = ?, adjust_entry_id = ? WHERE id = ?")
+                    .bind(p.score)
+                    .bind(adjust)
+                    .bind(id)
+                    .execute(&mut *conn)
+                    .await?;
+                let before = serde_json::json!({ "status": "review", "score": score });
+                let after = serde_json::json!({ "status": "auto", "score": p.score });
+                audit(conn, ent, "rescore", "pair", Some(id), Some(&before), Some(&after)).await?;
+                changed = true;
+                confirmed += 1;
+            } else if (score - p.score).abs() > 1e-9 {
+                sqlx::query("UPDATE fin_pairs SET score = ? WHERE id = ?").bind(p.score).bind(id).execute(&mut *conn).await?;
+            }
+        } else if p.auto {
+            let Some(adjust) = try_book(conn, ent, &s, &p).await? else { continue };
+            for (id, a, b, _) in &existing {
+                sqlx::query("DELETE FROM fin_pairs WHERE id = ? AND entity_id = ?").bind(id).bind(ent.id).execute(&mut *conn).await?;
+                let before = serde_json::json!({ "status": "review", "entry_a": a, "entry_b": b });
+                audit(conn, ent, "delete", "pair", Some(*id), Some(&before), None).await?;
+                gone.insert(*id);
+                loose.extend([*a, *b].into_iter().filter(|e| *e != p.a && *e != p.b));
+            }
+            insert_pair(conn, ent, p.kind, p.a, p.b, adjust, "auto", p.score).await?;
+            loose.remove(&p.a);
+            loose.remove(&p.b);
+            changed = true;
+            confirmed += 1;
+        } else if existing.is_empty() {
+            insert_pair(conn, ent, p.kind, p.a, p.b, None, "review", p.score).await?;
+            loose.remove(&p.a);
+            loose.remove(&p.b);
+            changed = true;
+        }
+    }
+    Ok((changed, confirmed))
+}
+
+/// The version of the pairing rules the waiting pairs were last re-scored with.
+const RULES_KEY: &str = "fin_pairing_rules";
+const RULES_VERSION: &str = "2";
+
+/// Re-scores every entity's waiting pairs once after the pairing rules change.
+/// Idempotent; runs at startup. A failure leaves the marker unset, so the next start
+/// tries again, and never stops the host from starting.
+pub(crate) async fn rescore_at_startup(pool: &Db) {
+    let done: Option<String> = sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?")
+        .bind(RULES_KEY)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    if done.as_deref() == Some(RULES_VERSION) {
+        return;
+    }
+    let ids: Vec<i64> = match sqlx::query_scalar("SELECT DISTINCT entity_id FROM fin_pairs WHERE status = 'review'").fetch_all(pool).await {
+        Ok(ids) => ids,
+        Err(_) => return,
+    };
+    let mut all_done = true;
+    for id in ids {
+        let ent: Option<Entity> = sqlx::query_as("SELECT * FROM fin_entities WHERE id = ?").bind(id).fetch_optional(pool).await.ok().flatten();
+        let Some(ent) = ent else { continue };
+        // One entity's failure doesn't hold up the others.
+        all_done &= rescore_pairs(pool, &ent).await.is_ok();
+    }
+    if !all_done {
+        return;
+    }
+    let _ = sqlx::query("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(RULES_KEY)
+        .bind(RULES_VERSION)
+        .execute(pool)
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,6 +1165,8 @@ mod tests {
             account_id: account,
             date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
             at: None,
+            occurred_at: None,
+            description: String::new(),
             amount_minor: amount,
             currency: cur.into(),
             kind_hint: kind.map(String::from),
@@ -899,6 +1254,103 @@ mod tests {
         a.counterpart_account = Some(20);
         let high = propose_pairs(&[a, b], &none)[0].score;
         assert!(high > low + 0.25);
+    }
+
+    fn ts(s: &str) -> Option<NaiveDateTime> {
+        Some(NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap())
+    }
+
+    fn timed(mut x: Candidate, at: &str) -> Candidate {
+        x.occurred_at = ts(at);
+        x
+    }
+
+    fn pairs_of(p: &[Proposal]) -> Vec<(i64, i64, bool)> {
+        let mut v: Vec<_> = p.iter().map(|p| (p.a.min(p.b), p.a.max(p.b), p.auto)).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn the_same_moment_settles_it_over_rivals() {
+        let cands = vec![
+            timed(c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer")), "2026-10-01 10:00:00"),
+            timed(c(2, 20, "2026-10-01", 3_000, "EUR", Some("transfer")), "2026-10-01 10:00:30"),
+            timed(c(3, 30, "2026-10-01", 3_000, "EUR", Some("transfer")), "2026-10-01 16:00:00"),
+        ];
+        let p = propose_pairs(&cands, &none);
+        assert_eq!(pairs_of(&p), vec![(1, 2, true)]);
+        assert_eq!(p[0].score, 1.0);
+    }
+
+    #[test]
+    fn the_same_moment_counts_across_midnight() {
+        let cands = vec![
+            timed(c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer")), "2026-10-01 23:59:50"),
+            timed(c(2, 20, "2026-10-02", 3_000, "EUR", Some("transfer")), "2026-10-02 00:00:10"),
+            timed(c(3, 20, "2026-10-01", 3_000, "EUR", Some("transfer")), "2026-10-01 08:00:00"),
+        ];
+        assert_eq!(pairs_of(&propose_pairs(&cands, &none)), vec![(1, 2, true)]);
+    }
+
+    #[test]
+    fn identical_legs_pair_in_line_order_without_asking() {
+        // Two moves of the same amount between the same accounts on one day.
+        let cands = vec![
+            c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer")),
+            c(2, 10, "2026-10-01", -3_000, "EUR", Some("transfer")),
+            c(3, 20, "2026-10-01", 3_000, "EUR", Some("transfer")),
+            c(4, 20, "2026-10-01", 3_000, "EUR", Some("transfer")),
+        ];
+        assert_eq!(pairs_of(&propose_pairs(&cands, &none)), vec![(1, 3, true), (2, 4, true)]);
+    }
+
+    #[test]
+    fn identical_legs_pair_by_the_banks_time() {
+        let cands = vec![
+            timed(c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer")), "2026-10-01 09:00:00"),
+            timed(c(2, 10, "2026-10-01", -3_000, "EUR", Some("transfer")), "2026-10-01 18:00:00"),
+            timed(c(3, 20, "2026-10-01", 3_000, "EUR", Some("transfer")), "2026-10-01 18:00:00"),
+            timed(c(4, 20, "2026-10-01", 3_000, "EUR", Some("transfer")), "2026-10-01 09:00:00"),
+        ];
+        assert_eq!(pairs_of(&propose_pairs(&cands, &none)), vec![(1, 4, true), (2, 3, true)]);
+    }
+
+    #[test]
+    fn the_same_amount_to_two_accounts_still_asks() {
+        let out = c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer"));
+        let to_b = c(2, 20, "2026-10-01", 3_000, "EUR", Some("transfer"));
+        let to_c = c(3, 30, "2026-10-01", 3_000, "EUR", Some("transfer"));
+        let p = propose_pairs(&[out.clone(), to_b.clone(), to_c.clone()], &none);
+        assert!(!p[0].auto);
+        // Stamped at the same moment, too: still two candidates.
+        let at = "2026-10-01 10:00:00";
+        let p = propose_pairs(&[timed(out, at), timed(to_b, at), timed(to_c, at)], &none);
+        assert!(!p[0].auto);
+    }
+
+    #[test]
+    fn a_rival_on_another_day_still_asks() {
+        let cands = vec![
+            c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer")),
+            c(2, 20, "2026-10-01", 3_000, "EUR", Some("transfer")),
+            c(3, 20, "2026-10-02", 3_000, "EUR", Some("transfer")),
+        ];
+        let p = propose_pairs(&cands, &none);
+        assert_eq!(pairs_of(&p), vec![(1, 2, false)]);
+    }
+
+    #[test]
+    fn matching_descriptions_lift_the_score_a_little() {
+        let mut a = c(1, 10, "2026-10-01", -3_000, "EUR", Some("transfer"));
+        let mut b = c(2, 20, "2026-10-02", 3_000, "EUR", Some("transfer"));
+        let low = propose_pairs(&[a.clone(), b.clone()], &none)[0].score;
+        a.description = "To pocket Rent".into();
+        b.description = "From pocket Rent".into();
+        let high = propose_pairs(&[a, b], &none)[0].score;
+        assert!((high - low - 0.05).abs() < 1e-9, "{low} {high}");
+        assert_eq!(description_key("Pocket Withdrawal"), description_key("pocket  withdrawal"));
+        assert_eq!(description_key("Transfer 12345 Rent"), "transfer rent");
     }
 
     #[test]

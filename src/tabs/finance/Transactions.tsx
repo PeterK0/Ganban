@@ -3,6 +3,8 @@
 // ("file these under Groceries from now on"), offered once here. An entry in a closed month is
 // locked: it offers a reversal instead. A posted entry can be spread over months. With a local model
 // on the host, "Suggest" asks it for a category; a suggestion is only shown until the user takes it.
+// A big inbox is worked on the host: "Post all N matching" and "Categorise all N matching as…" act on
+// every draft the filters match, and "By payee" groups the drafts so one pick sorts a whole payee.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { confirmDialog } from '../../lib/confirm';
 import * as fin from './api';
@@ -11,6 +13,8 @@ import { correctionDate, formatMonth, isLocked, monthOf } from './reports.pure';
 import { AccountPicker, Empty, MUTED, Money, errText, isUncategorised, splitEntry, useFinance } from './shared';
 import SpreadDialog from './Spread';
 import { useRailShell } from '../../components/RailViews';
+import InboxGroups, { useLoadMore } from './InboxGroups';
+import { bulkErrorText, categorisedText, categoriseAllConfirm, count, isFiltered, postAllConfirm, postedText, selectLabel } from './inbox.pure';
 
 /** Only income and expense lines are categories; an opening balance or a transfer isn't re-sorted here. */
 const isCategory = (l: fin.LedgerAccount | undefined) => !!l && (l.class === 'income' || l.class === 'expense');
@@ -27,6 +31,11 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [uncategorised, setUncategorised] = useState(false);
+  // The inbox by payee (host-grouped), and one payee group's lines opened from it.
+  const [byPayee, setByPayee] = useState(false);
+  const [group, setGroup] = useState<{ key: string; label: string } | null>(null);
+  // Unsorted drafts matching the filters, over every page: the "Categorise all N matching" count.
+  const [unsortedTotal, setUnsortedTotal] = useState(0);
   const [entries, setEntries] = useState<fin.Entry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -39,6 +48,7 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
   const [suggested, setSuggested] = useState<Record<number, number | null>>({});
   const [asking, setAsking] = useState<Set<number>>(new Set());
   const [spreading, setSpreading] = useState<fin.Entry | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   // On a phone the dates and "unsorted only" fold away behind one button.
   const touch = useRailShell() === 'touch';
   const [moreFilters, setMoreFilters] = useState(false);
@@ -61,8 +71,9 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
       from: from || undefined,
       to: to || undefined,
       uncategorised: uncategorised || undefined,
+      groupKey: group?.key,
     }),
-    [view, accountId, debounced, from, to, uncategorised],
+    [view, accountId, debounced, from, to, uncategorised, group],
   );
 
   const load = useCallback(
@@ -70,11 +81,18 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
       const my = ++seq.current;
       setLoading(true);
       try {
-        const r = await fin.listEntries(filter, PAGE, append ? entries.length : 0);
+        const countUnsorted = !append && filter.status === 'draft' && !filter.uncategorised;
+        const [r, u] = await Promise.all([
+          fin.listEntries(filter, PAGE, append ? entries.length : 0),
+          countUnsorted ? fin.listEntries({ ...filter, uncategorised: true }, 1, 0).then((x) => x.total) : Promise.resolve(null),
+        ]);
         if (my !== seq.current) return;
         setEntries((prev) => (append ? [...prev, ...r.entries] : r.entries));
         setTotal(r.total);
-        if (!append) setSelected(new Set());
+        if (!append) {
+          setSelected(new Set());
+          setUnsortedTotal(u ?? (filter.uncategorised ? r.total : 0));
+        }
       } catch (e) {
         if (my === seq.current) setMsg(errText(e));
       } finally {
@@ -113,6 +131,38 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
       await Promise.all([load(), reloadAll()]);
     } catch (e) {
       setMsg(errText(e));
+    }
+  };
+
+  /** Everything the filters match, not just the page: confirmed with the count, done on the host. */
+  const postAll = async () => {
+    if (!(await confirmDialog(postAllConfirm(total, isFiltered(filter), locale)))) return;
+    setBulkBusy(true);
+    try {
+      const r = await fin.postMatching(filter);
+      setMsg(postedText(r.posted, r.closed + r.review, locale));
+      await Promise.all([load(), reloadAll()]);
+    } catch (e) {
+      setMsg(bulkErrorText(errText(e)));
+      window.setTimeout(() => void Promise.all([load(), reloadAll()]), 8000);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const categoriseAll = async (ledgerAccountId: number) => {
+    const name = ledgerById.get(ledgerAccountId)?.name ?? 'that category';
+    if (!(await confirmDialog(categoriseAllConfirm(unsortedTotal, name, locale)))) return;
+    setBulkBusy(true);
+    try {
+      const r = await fin.categoriseMatching(filter, ledgerAccountId);
+      setMsg(categorisedText(r.categorised, r.skipped, name, locale));
+      await Promise.all([load(), reloadAll()]);
+    } catch (e) {
+      setMsg(bulkErrorText(errText(e)));
+      window.setTimeout(() => void Promise.all([load(), reloadAll()]), 8000);
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -214,6 +264,9 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
   const toAsk = canSuggest ? pickSuggestable(entries.map(suggestRow), suggested, fin.MAX_SUGGEST) : [];
   const ready = entries.filter((e) => suggested[e.id] != null).length;
   const allSelected = drafts.length > 0 && drafts.every((d) => selected.has(d.id));
+  const showGroups = view === 'draft' && byPayee && !group;
+  const more = !loading && entries.length < total;
+  const sentinel = useLoadMore(more && !showGroups, () => void load(true));
   const toggle = (id: number) =>
     setSelected((s) => {
       const n = new Set(s);
@@ -234,11 +287,38 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
               ['all', 'All'],
             ] as [StatusView, string][]
           ).map(([v, label]) => (
-            <button key={v} role="tab" aria-selected={view === v} className="g-chip" onClick={() => setView(v)}>
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              className="g-chip"
+              onClick={() => {
+                setView(v);
+                setGroup(null);
+              }}
+            >
               {label}
             </button>
           ))}
         </div>
+        {view === 'draft' && (
+          <div className="g-seg" role="tablist" aria-label="How the inbox is shown">
+            <button role="tab" aria-selected={!byPayee} className="g-chip" onClick={() => setByPayee(false)}>
+              Lines
+            </button>
+            <button
+              role="tab"
+              aria-selected={byPayee}
+              className="g-chip"
+              onClick={() => {
+                setByPayee(true);
+                setGroup(null);
+              }}
+            >
+              By payee
+            </button>
+          </div>
+        )}
         <select className="g-field g-field-sm !w-auto max-w-[220px]" value={accountId ?? ''} onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : undefined)} aria-label="Account">
           <option value="">All accounts</option>
           {accounts.map((a) => (
@@ -256,12 +336,12 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
         )}
         {(!touch || moreFilters) && (
         <>
-        <label className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
-          From <input type="date" className="g-field g-field-sm !w-auto" value={from} onChange={(e) => setFrom(e.target.value)} />
-        </label>
-        <label className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
-          to <input type="date" className="g-field g-field-sm !w-auto" value={to} onChange={(e) => setTo(e.target.value)} />
-        </label>
+        <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
+          From <DateFilter label="From" value={from} onChange={setFrom} />
+        </span>
+        <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
+          to <DateFilter label="To" value={to} onChange={setTo} />
+        </span>
         <label className={`flex items-center gap-2 text-sm ${MUTED} ${touch ? 'min-h-[44px]' : 'min-h-[32px]'}`}>
           <input type="checkbox" checked={uncategorised} onChange={(e) => setUncategorised(e.target.checked)} /> Unsorted only
         </label>
@@ -269,12 +349,24 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
         )}
       </div>
 
+      {group && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className={MUTED}>Payee:</span>
+          <span className="g-tag">{group.label || '(no description)'}</span>
+          <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setGroup(null)}>
+            {byPayee ? 'Back to payees' : 'Show all lines'}
+          </button>
+        </div>
+      )}
+
+      {showGroups && <InboxGroups filter={filter} canSuggest={canSuggest} onShowLines={(g) => setGroup({ key: g.key, label: g.label })} />}
+
       {/* Bulk actions */}
-      {drafts.length > 0 && (
+      {!showGroups && drafts.length > 0 && (
         <div className="g-inset flex flex-wrap items-center gap-3 px-3 py-2">
           <label className="flex items-center gap-2 text-sm text-subtext-1">
             <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(drafts.map((d) => d.id)))} aria-label="Select every draft shown" />
-            {selected.size ? `${selected.size} selected` : 'Select all'}
+            {selectLabel(selected.size, drafts.length, view === 'draft' ? total : drafts.length, locale)}
           </label>
           <span className="ml-auto flex flex-wrap items-center gap-2">
             {canSuggest && (toAsk.length > 0 || asking.size > 0) && (
@@ -296,6 +388,23 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
               Post {selected.size || ''}
             </button>
           </span>
+          {view === 'draft' && (
+            <span className="w-full flex flex-wrap items-center gap-2 border-t border-gilt-b pt-2">
+              <span className={`text-sm ${MUTED}`}>Everything matching, not just the {count(drafts.length, locale)} shown:</span>
+              {unsortedTotal > 0 && (
+                <AccountPicker
+                  label="Categorise all matching"
+                  value={null}
+                  placeholder={bulkBusy ? 'Working…' : `Categorise all ${count(unsortedTotal, locale)} unsorted as…`}
+                  onChange={(id) => void categoriseAll(id)}
+                  className="flex-1 min-w-[220px] max-w-[320px]"
+                />
+              )}
+              <button className="g-btn g-btn-ghost g-btn-sm ml-auto" disabled={bulkBusy} onClick={() => void postAll()}>
+                Post all {count(total, locale)} matching
+              </button>
+            </span>
+          )}
         </div>
       )}
 
@@ -315,7 +424,7 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
 
       {msg && <p className="text-sm text-subtext-1">{msg}</p>}
 
-      {!loading && entries.length === 0 ? (
+      {showGroups ? null : !loading && entries.length === 0 ? (
         <Empty title={view === 'draft' ? 'The inbox is empty' : 'No transactions'}>{view === 'draft' ? 'Imported lines land here to be sorted and posted.' : 'Nothing matches these filters.'}</Empty>
       ) : (
         <div className="g-plain" role="list">
@@ -344,15 +453,66 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
         </div>
       )}
       {spreading && <SpreadDialog entry={spreading} onClose={() => setSpreading(null)} onDone={() => void reloadAll()} />}
-      <div className={`flex items-center gap-3 text-sm ${MUTED}`}>
-        {loading ? 'Loading…' : `${entries.length} of ${total}`}
-        {!loading && entries.length < total && (
+      {!showGroups && (
+      <div ref={sentinel} className={`flex items-center gap-3 text-sm ${MUTED}`}>
+        {loading ? 'Loading…' : `${count(entries.length, locale)} of ${count(total, locale)}`}
+        {more && (
           <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void load(true)}>
             Show more
           </button>
         )}
       </div>
+      )}
     </div>
+  );
+}
+
+/** A date filter that reads "Any date" while empty. An empty date field shows today's date in
+ * WebKit (the desktop app, Safari), which looked like a today-to-today filter. */
+function DateFilter({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!editing || !ref.current) return;
+    ref.current.focus();
+    try {
+      (ref.current as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+    } catch {
+      /* not every engine opens the picker from code */
+    }
+  }, [editing]);
+  if (!value && !editing) {
+    return (
+      <button className="g-field g-field-sm !w-auto text-left" aria-label={`${label}: any date`} onClick={() => setEditing(true)}>
+        Any date
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        ref={ref}
+        type="date"
+        className="g-field g-field-sm !w-auto"
+        value={value}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={(e) => !e.target.value && setEditing(false)}
+      />
+      {value && (
+        <button
+          className="g-iconbtn"
+          aria-label={`Clear ${label}`}
+          title="Any date"
+          onClick={() => {
+            onChange('');
+            setEditing(false);
+          }}
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 

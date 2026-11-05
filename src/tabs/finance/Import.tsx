@@ -3,8 +3,10 @@
 // confirm the transfers the matcher wasn't sure about.
 import { useEffect, useRef, useState } from 'react';
 import { DecoHeading } from '../../components/gilt';
+import { confirmDialog } from '../../lib/confirm';
 import * as fin from './api';
 import { progressPercent, stageLabel } from './importJob.pure';
+import { AUTO_PERCENT, clampPercent, pairsAtLeast, pairsLike } from './reviewPairs.pure';
 import { formatDate } from './money.pure';
 import { Empty, MUTED, Money, errText, splitEntry, useFinance } from './shared';
 
@@ -136,11 +138,11 @@ export default function ImportView() {
               void preview(step.file, step.b64, p.key);
             }}
             onCancel={() => setStep({ at: 'pick' })}
-            onImport={async (profileKey, map) => {
+            onImport={async (profileKey, map, postOlderThanDays) => {
               setBusy(true);
               setMsg(null);
               try {
-                const job = await fin.runImport(step.file.name, step.b64, profileKey, map);
+                const job = await fin.runImport(step.file.name, step.b64, profileKey, map, postOlderThanDays);
                 setStep({ at: 'running', job });
               } catch (e) {
                 setMsg(errText(e));
@@ -175,7 +177,7 @@ function Preview({
   onProfile: (key: string) => void;
   onProfileSaved: (p: fin.Profile) => void;
   onCancel: () => void;
-  onImport: (profileKey: string, map: Record<string, fin.AccountMapTarget>) => Promise<void>;
+  onImport: (profileKey: string, map: Record<string, fin.AccountMapTarget>, postOlderThanDays?: number) => Promise<void>;
 }) {
   const { accounts, locale } = useFinance();
   const [wizard, setWizard] = useState(!preview.profile_key);
@@ -184,6 +186,21 @@ function Preview({
   );
   const live = accounts.filter((a) => !a.archived);
   const profileKey = preview.profile_key;
+  // "Post lines older than N days straight away": off by default, remembered per user on the host.
+  const [postOlder, setPostOlder] = useState<{ on: boolean; days: string }>({ on: false, days: '30' });
+  useEffect(() => {
+    fin
+      .getSettings()
+      .then((s) => setPostOlder({ on: s.import.post_older, days: String(s.import.post_older_days) }))
+      .catch(() => {});
+  }, []);
+  const postDays = Math.round(Number(postOlder.days));
+  const daysOk = Number.isFinite(postDays) && postDays >= 1 && postDays <= 3650;
+  const savePostOlder = (next: { on: boolean; days: string }) => {
+    setPostOlder(next);
+    const d = Math.round(Number(next.days));
+    if (Number.isFinite(d) && d >= 1 && d <= 3650) void fin.updateImportSettings({ postOlder: next.on, postOlderDays: d }).catch(() => {});
+  };
 
   const go = () => {
     if (!profileKey) return;
@@ -195,7 +212,7 @@ function Preview({
           ? { create: { kind: g.kind, name: g.name, currency: g.currency, institution: g.institution ?? profiles.find((p) => p.key === profileKey)?.name } }
           : v;
     }
-    void onImport(profileKey, out);
+    void onImport(profileKey, out, postOlder.on && daysOk ? postDays : undefined);
   };
 
   return (
@@ -280,11 +297,30 @@ function Preview({
         </div>
       )}
 
+      <div className="space-y-1">
+        <label className="flex flex-wrap items-center gap-2 text-sm text-text min-h-[32px]">
+          <input type="checkbox" checked={postOlder.on} onChange={(e) => savePostOlder({ ...postOlder, on: e.target.checked })} />
+          Post lines older than
+          <input
+            className="g-field g-field-sm !w-[72px] text-right tabular-nums"
+            inputMode="numeric"
+            value={postOlder.days}
+            onChange={(e) => savePostOlder({ ...postOlder, days: e.target.value })}
+            aria-label="Days"
+            aria-invalid={!daysOk}
+          />
+          days straight away
+        </label>
+        <p className={`text-xs ${MUTED} pl-6`}>
+          For history your bank settled long ago: those lines are paired and run through your rules, then posted instead of waiting in the inbox. Posted lines stay editable until their month is closed.
+        </p>
+      </div>
+
       <div className="flex justify-end gap-2">
         <button className="g-btn g-btn-ghost" onClick={onCancel}>
           Cancel
         </button>
-        <button className="g-btn g-btn-pri" disabled={!profileKey || busy} onClick={go}>
+        <button className="g-btn g-btn-pri" disabled={!profileKey || busy || (postOlder.on && !daysOk)} onClick={go}>
           {busy ? 'Importing…' : 'Import'}
         </button>
       </div>
@@ -472,6 +508,7 @@ function Result({ result, onAgain }: { result: fin.ImportResult; onAgain: () => 
     ['transfers matched', result.paired],
     ['to review', result.review],
     ['refunds matched', result.refunds ?? 0],
+    ...(result.posted ? ([['posted straight away', result.posted]] as [string, number][]) : []),
   ];
   return (
     <div className="g-card g-corners p-5 space-y-4">
@@ -501,15 +538,34 @@ function Result({ result, onAgain }: { result: fin.ImportResult; onAgain: () => 
   );
 }
 
-/** Transfers the matcher wasn't sure of: both sides, and a yes or no. */
+/** Transfers the matcher wasn't sure of: both sides, and a yes or no, one by one or in bulk. */
 function ReviewList() {
   const { accountByLedger, locale, reload, reviewCount } = useFinance();
   const [pairs, setPairs] = useState<fin.Pair[] | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [bar, setBar] = useState(String(AUTO_PERCENT));
+  const [busy, setBusy] = useState(false);
+  const rescored = useRef(false);
 
   useEffect(() => {
-    fin.listPairs('review').then(setPairs).catch((e) => setMsg(errText(e)));
-  }, [reviewCount]);
+    // Once per visit, the waiting pairs get another look with the current rules first.
+    const first = !rescored.current;
+    rescored.current = true;
+    let stale = false;
+    (first ? fin.rescorePairs() : Promise.resolve(null))
+      .catch(() => null)
+      .then((r) => {
+        if (r?.confirmed) void reload();
+        return fin.listPairs('review');
+      })
+      .then((ps) => {
+        if (!stale) setPairs(ps);
+      })
+      .catch((e) => setMsg(errText(e)));
+    return () => {
+      stale = true;
+    };
+  }, [reviewCount, reload]);
 
   const resolve = async (p: fin.Pair, accept: boolean) => {
     try {
@@ -521,7 +577,28 @@ function ReviewList() {
     }
   };
 
+  /** "Same money" for many pairs in one call, after saying how many. */
+  const acceptMany = async (chosen: fin.Pair[], what: string) => {
+    if (!chosen.length) return;
+    const n = chosen.length;
+    if (!(await confirmDialog(`Mark ${n} ${n === 1 ? 'pair' : 'pairs'} ${what} as the same money?`))) return;
+    setBusy(true);
+    try {
+      const r = await fin.resolvePairs(chosen.map((p) => p.id), true);
+      setMsg(r.skipped ? `${r.skipped} skipped: they changed since. Pair those by hand.` : null);
+      setPairs(await fin.listPairs('review'));
+      void reload();
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!pairs?.length && !msg) return null;
+  const likeCount = new Map<string, number>();
+  for (const p of pairs ?? []) likeCount.set(p.like_key, (likeCount.get(p.like_key) ?? 0) + 1);
+  const atBar = pairsAtLeast(pairs ?? [], clampPercent(bar));
   const side = (e: fin.Entry) => {
     const { bank, account } = splitEntry(e, accountByLedger);
     return (
@@ -539,6 +616,30 @@ function ReviewList() {
     <section className="space-y-3">
       <DecoHeading count={pairs?.length ?? 0}>To review</DecoHeading>
       {msg && <p className="text-sm text-error">{msg}</p>}
+      {!!pairs?.length && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-2">
+            <span className={MUTED}>Accept all at ≥</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              className="g-field tabular-nums w-[72px]"
+              value={bar}
+              onChange={(e) => setBar(e.target.value)}
+              aria-label="Lowest match to accept, in percent"
+            />
+            <span className={MUTED}>%</span>
+          </label>
+          <button
+            className="g-btn g-btn-gilt g-btn-sm"
+            disabled={busy || !atBar.length}
+            onClick={() => void acceptMany(atBar, `at ${clampPercent(bar)}% or more`)}
+          >
+            Accept {atBar.length}
+          </button>
+        </div>
+      )}
       {pairs?.length === 0 ? (
         <Empty title="Nothing to review" />
       ) : (
@@ -550,7 +651,16 @@ function ReviewList() {
             </div>
             {side(p.entry_a)}
             {side(p.entry_b)}
-            <div className="flex gap-2 justify-end">
+            <div className="flex flex-wrap gap-2 justify-end">
+              {(likeCount.get(p.like_key) ?? 0) > 1 && (
+                <button
+                  className="g-btn g-btn-ghost g-btn-sm"
+                  disabled={busy}
+                  onClick={() => void acceptMany(pairsLike(pairs ?? [], p), 'like this one')}
+                >
+                  Same money for all like this ({likeCount.get(p.like_key)})
+                </button>
+              )}
               <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void resolve(p, false)}>
                 Not a transfer
               </button>

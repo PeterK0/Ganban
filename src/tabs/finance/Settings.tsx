@@ -26,7 +26,7 @@ export default function Settings() {
   const save = async (patch: Partial<fin.FinSettings['reminder']>) => {
     if (!s) return;
     const before = s;
-    setS({ reminder: { ...s.reminder, ...patch } });
+    setS({ ...s, reminder: { ...s.reminder, ...patch } });
     setSaved(false);
     try {
       const r = await fin.updateSettings(patch);

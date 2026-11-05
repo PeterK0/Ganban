@@ -1,6 +1,6 @@
 [package]
 name = "ganban-server"
-version = "1.0.8"
+version = "1.0.9"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Headless HTTP daemon exposing the Ganban core over the trusted tailnet"

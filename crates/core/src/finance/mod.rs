@@ -18,6 +18,7 @@ pub mod close;
 pub mod currency;
 mod entries;
 pub mod import;
+pub mod inbox;
 pub mod pairing;
 pub mod rates;
 pub mod rules;

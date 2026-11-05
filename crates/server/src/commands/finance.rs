@@ -5,7 +5,7 @@
 //! user, the host owner included, so a row id from another entity is "not found".
 
 use ganban_core::error::AppError;
-use ganban_core::finance::{self, rates, Entity};
+use ganban_core::finance::{self, inbox, rates, Entity};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -24,6 +24,12 @@ fn arg<T: DeserializeOwned + Default>(a: &Args<'_>, key: &str) -> Result<T, AppE
         None | Some(serde_json::Value::Null) => Ok(T::default()),
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| AppError::InvalidInput(format!("invalid '{key}': {e}"))),
     }
+}
+
+/// Runs a bulk action on its own task, so it finishes on the host even when the client stops
+/// waiting (a timeout on a slow machine): every batch it starts is committed.
+async fn run_to_end<T: Send + 'static>(work: impl std::future::Future<Output = Result<T, AppError>> + Send + 'static) -> Result<T, AppError> {
+    tokio::spawn(work).await.map_err(|_| AppError::Io(std::io::Error::other("the bulk action stopped")))?
 }
 
 pub(super) const COMMANDS: &[Command] = &[
@@ -104,6 +110,35 @@ pub(super) const COMMANDS: &[Command] = &[
             reply(json!({ "posted": posted }))
         })
     }),
+    // The inbox at scale: act on every draft the filter matches, not just the page shown.
+    command("fin_post_matching").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let filter: finance::EntryFilter = arg(a, "filter")?;
+            let (db, ent) = (cx.db.clone(), entity(cx, a).await?);
+            reply(run_to_end(async move { inbox::post_matching(&db, &ent, filter, &inbox::BulkOptions::default()).await }).await?)
+        })
+    }),
+    command("fin_categorise_matching").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let filter: finance::EntryFilter = arg(a, "filter")?;
+            let (la, rule) = (a.req_i64("ledgerAccountId")?, a.opt_bool("createRule").unwrap_or(false));
+            let (db, ent) = (cx.db.clone(), entity(cx, a).await?);
+            reply(run_to_end(async move { inbox::categorise_matching(&db, &ent, filter, la, rule, &inbox::BulkOptions::default()).await }).await?)
+        })
+    }),
+    command("fin_inbox_groups").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            let filter: finance::EntryFilter = arg(a, "filter")?;
+            let (limit, offset) = (a.opt_i64("limit").unwrap_or(50), a.opt_i64("offset").unwrap_or(0));
+            reply(inbox::inbox_groups(cx.db, &entity(cx, a).await?, filter, limit, offset).await?)
+        })
+    }),
+    command("fin_dismiss_group_suggestion").access(Access::OwnFinance).author(USER).run(|cx, a| {
+        Box::pin(async move {
+            inbox::dismiss_group_suggestion(cx.db, &entity(cx, a).await?, &a.req_str("groupKey")?).await?;
+            reply(json!({}))
+        })
+    }),
     command("fin_delete_entry").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             finance::delete_entry(cx.db, &entity(cx, a).await?, a.req_i64("entryId")?).await?;
@@ -124,6 +159,10 @@ pub(super) const COMMANDS: &[Command] = &[
         Box::pin(async move { reply(rates::rate_on(cx.db, &a.req_str("currency")?, &a.req_str("date")?).await?) })
     }),
 ];
+
+#[cfg(test)]
+#[path = "finance_inbox_tests.rs"]
+mod inbox_tests;
 
 #[cfg(test)]
 mod tests {

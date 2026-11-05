@@ -146,6 +146,8 @@ pub struct EntryFilter {
     pub status: Option<String>,
     pub uncategorised: Option<bool>,
     pub search: Option<String>,
+    /// One payee group of the inbox (`fin_inbox_groups`' `key`).
+    pub group_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -237,26 +239,27 @@ async fn assemble(conn: &mut Conn, r: EntryRow) -> Result<Entry> {
     })
 }
 
-/// The entity's entries, newest first, filtered.
-pub async fn list_entries(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64, offset: i64) -> Result<EntryPage> {
-    let mut conn = db.acquire().await?;
+/// The `FROM … WHERE …` of a filter over the entity's entries (alias `e`), with its binds.
+/// Every id the filter names must be the entity's own. A `group_key` filter needs the keys
+/// filled first ([`super::inbox::fill_group_keys`]).
+pub(crate) async fn filter_sql(conn: &mut Conn, ent: &Entity, filter: &EntryFilter) -> Result<(String, Vec<Bind>)> {
     let mut sql = String::from(" FROM fin_entries e WHERE e.entity_id = ?");
     let mut binds: Vec<Bind> = vec![Bind::I(ent.id)];
-    if let Some(from) = &filter.from {
+    if let Some(from) = filter.from.as_deref().filter(|s| !s.trim().is_empty()) {
         sql.push_str(" AND e.date >= ?");
         binds.push(Bind::S(check_date(from)?));
     }
-    if let Some(to) = &filter.to {
+    if let Some(to) = filter.to.as_deref().filter(|s| !s.trim().is_empty()) {
         sql.push_str(" AND e.date <= ?");
         binds.push(Bind::S(check_date(to)?));
     }
     if let Some(account) = filter.account_id {
-        let la = get_account_in(&mut conn, ent, account).await?.ledger_account_id;
+        let la = get_account_in(conn, ent, account).await?.ledger_account_id;
         sql.push_str(" AND EXISTS (SELECT 1 FROM fin_lines l WHERE l.entry_id = e.id AND l.ledger_account_id = ?)");
         binds.push(Bind::I(la));
     }
     if let Some(la) = filter.ledger_account_id {
-        get_ledger_account_in(&mut conn, ent, la).await?;
+        get_ledger_account_in(conn, ent, la).await?;
         sql.push_str(" AND EXISTS (SELECT 1 FROM fin_lines l WHERE l.entry_id = e.id AND l.ledger_account_id = ?)");
         binds.push(Bind::I(la));
     }
@@ -278,24 +281,28 @@ pub async fn list_entries(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64
         let pat = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
         binds.extend([Bind::S(pat.clone()), Bind::S(pat.clone()), Bind::S(pat)]);
     }
+    if let Some(key) = &filter.group_key {
+        sql.push_str(" AND e.group_key = ?");
+        binds.push(Bind::S(key.clone()));
+    }
+    Ok((sql, binds))
+}
+
+/// The entity's entries, newest first, filtered.
+pub async fn list_entries(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64, offset: i64) -> Result<EntryPage> {
+    let mut conn = db.acquire().await?;
+    if filter.group_key.is_some() {
+        super::inbox::fill_group_keys(db, ent).await?;
+    }
+    let (sql, binds) = filter_sql(&mut conn, ent, &filter).await?;
     let count_sql = format!("SELECT COUNT(*){sql}");
-    let mut count = sqlx::query_scalar::<_, i64>(&count_sql);
-    for b in &binds {
-        count = match b {
-            Bind::I(i) => count.bind(*i),
-            Bind::S(s) => count.bind(s.clone()),
-        };
-    }
-    let total = count.fetch_one(&mut *conn).await?;
+    let total = bind_all!(sqlx::query_scalar::<_, i64>(&count_sql), &binds).fetch_one(&mut *conn).await?;
     let rows_sql = format!("SELECT e.*{sql} ORDER BY e.date DESC, e.id DESC LIMIT ? OFFSET ?");
-    let mut rows = sqlx::query_as::<_, EntryRow>(&rows_sql);
-    for b in &binds {
-        rows = match b {
-            Bind::I(i) => rows.bind(*i),
-            Bind::S(s) => rows.bind(s.clone()),
-        };
-    }
-    let rows = rows.bind(limit.clamp(1, 1000)).bind(offset.max(0)).fetch_all(&mut *conn).await?;
+    let rows = bind_all!(sqlx::query_as::<_, EntryRow>(&rows_sql), &binds)
+        .bind(limit.clamp(1, 1000))
+        .bind(offset.max(0))
+        .fetch_all(&mut *conn)
+        .await?;
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
         entries.push(assemble(&mut conn, r).await?);
@@ -303,7 +310,22 @@ pub async fn list_entries(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64
     Ok(EntryPage { entries, total })
 }
 
-enum Bind {
+/// Binds a filter's values, in order, to a query.
+macro_rules! bind_all {
+    ($q:expr, $binds:expr) => {{
+        let mut q = $q;
+        for b in $binds {
+            q = match b {
+                $crate::finance::entries::Bind::I(i) => q.bind(*i),
+                $crate::finance::entries::Bind::S(s) => q.bind(s.clone()),
+            };
+        }
+        q
+    }};
+}
+pub(crate) use bind_all;
+
+pub(crate) enum Bind {
     I(i64),
     S(String),
 }
@@ -609,7 +631,8 @@ pub async fn update_entry(db: &Db, ent: &Entity, id: i64, patch: EntryPatch) -> 
         let lines = prepare_lines(&mut tx, ent, &date, lines, before.source_line_id.is_none()).await?;
         replace_lines(&mut tx, id, &lines).await?;
     }
-    sqlx::query("UPDATE fin_entries SET date = ?, description = ?, payee = ?, notes = ? WHERE id = ?")
+    // The payee group is worked out again from the new text when the inbox next groups.
+    sqlx::query("UPDATE fin_entries SET date = ?, description = ?, payee = ?, notes = ?, group_key = NULL WHERE id = ?")
         .bind(&date)
         .bind(patch.description.as_deref().map(str::trim).unwrap_or(&before.description))
         .bind(match patch.payee { Some(p) => trimmed(Some(p)), None => before.payee.clone() })

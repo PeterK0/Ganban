@@ -72,6 +72,7 @@ mod tests {
         sqlx::query("UPDATE fin_entities SET created_at = '2026-01-01T00:00:00+00:00'").execute(&db).await.unwrap();
         finance::reminder::update_settings(&db, &e_ana, finance::reminder::SettingsPatch {
             reminder: Some(finance::reminder::ReminderPatch { weekday: Some("Thu".into()), ..Default::default() }),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -96,6 +97,7 @@ mod tests {
         assert_eq!(count(&db, 9).await, 0);
         finance::reminder::update_settings(&db, &e_ana, finance::reminder::SettingsPatch {
             reminder: Some(finance::reminder::ReminderPatch { enabled: Some(false), ..Default::default() }),
+            ..Default::default()
         })
         .await
         .unwrap();
