@@ -8,7 +8,9 @@ Find the symptom, then try the fix. Problems with running a headless host (the s
 - **macOS says Ganban "can't be opened" or "is damaged".** The app isn't signed with a paid certificate. Run
   `xattr -cr /Applications/Ganban.app` in Terminal once, then open it again.
 - **Windows SmartScreen blocks the installer.** Choose **More info → Run anyway**.
-- **The AppImage won't start on Linux.** Make it executable: `chmod +x Ganban_*.AppImage`.
+- **The AppImage won't start on Linux.** Make it executable: `chmod +x Ganban_*.AppImage`. If it stops with
+  `Could not create default EGL display: EGL_BAD_PARAMETER`, it's an AppImage from before this was fixed: download
+  the latest release.
 - **I chose the wrong option on the first-run screen.** If you picked **Use this machine** but meant to join
   someone, press **Join a project** at the bottom of the sidebar and paste their link.
 

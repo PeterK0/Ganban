@@ -21,7 +21,8 @@
 //! click: the signature is checked at download, the swap happens at install.
 //!
 //! A dev build (no channel and no key) doesn't register the plugin, and
-//! `update_check` says it can't update itself.
+//! `update_check` says it can't update itself. Neither does a build a distribution
+//! package installed (`package_manager`): its package manager updates it.
 
 use serde::Serialize;
 use std::sync::Mutex;
@@ -38,6 +39,8 @@ pub const GITHUB_PUBKEY: &str = include_str!("../updater/github.pub");
 #[derive(Default)]
 pub struct AppUpdate {
     pub enabled: bool,
+    /// The package manager that installed this build, if one did (`package_manager`).
+    managed_by: Option<String>,
     channel: Option<UpdateChannel>,
     /// The updater key the build was made with (a host build's host), if any.
     build_key: Option<String>,
@@ -49,13 +52,56 @@ pub struct AppUpdate {
 }
 
 impl AppUpdate {
-    pub fn new(channel: UpdateChannel, build_key: Option<String>) -> Self {
-        let enabled = can_update(&channel, build_key.as_deref());
+    pub fn new(channel: UpdateChannel, build_key: Option<String>, managed_by: Option<String>) -> Self {
+        let enabled = can_update(&channel, build_key.as_deref()) && managed_by.is_none();
         let repo = match &channel {
             UpdateChannel::Github { repo } => Some(repo.clone()),
             _ => build_repo(option_env!("VITE_UPDATE_REPO")),
         };
-        Self { enabled, channel: Some(channel), build_key, repo, ..Default::default() }
+        Self { enabled, managed_by, channel: Some(channel), build_key, repo, ..Default::default() }
+    }
+
+    /// Why this build can't update itself, when it can't.
+    fn why_not(&self) -> String {
+        match &self.managed_by {
+            Some(pm) => managed_reason(pm),
+            None => NO_KEY.into(),
+        }
+    }
+}
+
+/// The marker a distribution package installs (the Arch package `ganban-bin` writes
+/// `pacman` into it), relative to the install prefix: `<prefix>/bin/gansty` reads
+/// `<prefix>/share/ganban/package-manager`. Relative, so an AppImage (its own prefix
+/// inside its mount) never sees a package's marker on the same machine.
+pub const PACKAGE_MARKER: &str = "share/ganban/package-manager";
+
+/// The package manager that installed this build, from `PACKAGE_MARKER` beside the
+/// running executable. Such a build doesn't update itself: Tauri's updater would replace
+/// the package's files behind the package manager's back (or run `dpkg` on Arch).
+pub fn package_manager() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    package_manager_for(&exe.canonicalize().unwrap_or(exe))
+}
+
+/// `package_manager` for the executable at `exe`: the marker's first line, or "your
+/// package manager" when it's empty.
+pub fn package_manager_for(exe: &std::path::Path) -> Option<String> {
+    let prefix = exe.parent()?.parent()?;
+    let text = std::fs::read_to_string(prefix.join(PACKAGE_MARKER)).ok()?;
+    let name = text.lines().next().unwrap_or("").trim();
+    Some(if name.is_empty() { "your package manager".into() } else { name.to_string() })
+}
+
+/// What Settings → Updates says on a packaged install.
+pub fn managed_reason(pm: &str) -> String {
+    if pm == "your package manager" {
+        "Ganban is updated by your package manager, not by itself.".into()
+    } else {
+        format!("Ganban is updated by your package manager ({pm}), not by itself.")
     }
 }
 
@@ -305,7 +351,7 @@ pub async fn update_check(
 ) -> Result<UpdateCheck, String> {
     let current = app.package_info().version.to_string();
     if !state.enabled {
-        return Ok(UpdateCheck { can_update: false, current, version: None, notes: None, reason: Some(NO_KEY.into()) });
+        return Ok(UpdateCheck { can_update: false, current, version: None, notes: None, reason: Some(state.why_not()) });
     }
     let channel = state.channel.clone().unwrap_or(UpdateChannel::Host);
     let source = Source::parse(source.as_deref(), &channel);
@@ -359,7 +405,7 @@ pub enum DownloadEvent {
 #[tauri::command]
 pub async fn update_download(state: State<'_, AppUpdate>, on_event: Channel<DownloadEvent>) -> Result<String, String> {
     if !state.enabled {
-        return Err(NO_KEY.into());
+        return Err(state.why_not());
     }
     let _busy = Busy::take(&state.busy).ok_or("An update is already downloading.")?;
     let update = lock(&state.found).clone().ok_or("No update to download. Check for updates first.")?;
@@ -447,6 +493,30 @@ mod tests {
         assert!(Busy::take(&flag).is_none());
         drop(first);
         assert!(Busy::take(&flag).is_some());
+    }
+
+    #[test]
+    fn a_packaged_install_is_updated_by_its_package_manager() {
+        let dir = std::env::temp_dir().join(format!("ganban-pkg-marker-{}", std::process::id()));
+        let exe = dir.join("usr/bin/gansty");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        // No marker: the AppImage, the .deb from apt, a dev build.
+        assert_eq!(package_manager_for(&exe), None);
+        let marker = dir.join("usr").join(PACKAGE_MARKER);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "pacman\n").unwrap();
+        assert_eq!(package_manager_for(&exe).as_deref(), Some("pacman"));
+        std::fs::write(&marker, "").unwrap();
+        assert_eq!(package_manager_for(&exe).as_deref(), Some("your package manager"));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // A GitHub build that a package installed can't update itself, and says why.
+        let s = AppUpdate::new(UpdateChannel::Github { repo: "a/b".into() }, None, Some("pacman".into()));
+        assert!(!s.enabled);
+        assert_eq!(s.why_not(), "Ganban is updated by your package manager (pacman), not by itself.");
+        let s = AppUpdate::new(UpdateChannel::Github { repo: "a/b".into() }, None, None);
+        assert!(s.enabled);
+        assert_eq!(managed_reason("your package manager"), "Ganban is updated by your package manager, not by itself.");
     }
 
     #[test]

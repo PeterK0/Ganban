@@ -27,6 +27,7 @@ Ganban's documentation, grouped by who it's for. New here? Start with the [READM
 | Doc | Contents |
 |---|---|
 | [BUILDING.md](dev/BUILDING.md) | Prerequisites, the desktop app in development, the server, Android and release builds. |
+| [LINUX_PACKAGING.md](dev/LINUX_PACKAGING.md) | The AppImage on the system's graphics stack, and the Arch package. |
 | [TESTING.md](dev/TESTING.md) | Every test suite (`npm run test:*`, `cargo test`) and the throwaway QA host. |
 | [TAB_SPEC.md](dev/TAB_SPEC.md) | What a tab is made of, and what it must do to ship. |
 | [TAB_TUTORIAL.md](dev/TAB_TUTORIAL.md) | Build a "Hello" tab step by step, then give it a tool the assistant can call. |

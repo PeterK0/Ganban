@@ -63,6 +63,8 @@ jobs:
           node scripts/test-statusfilter.mjs
           node scripts/test-workspaces.mjs
           node scripts/test-invite.mjs
+          npm run test:appimage
+          bash -n packaging/arch/PKGBUILD
 
   rust:
     runs-on: ubuntu-latest

@@ -260,6 +260,60 @@ jobs:
               --data-binary @"$RUNNER_TEMP/dmg/$name" "$upload_url?name=$name" > /dev/null
           fi
 
+      # The AppImage bundles the build machine's Wayland client libraries, which clash with a newer
+      # system Mesa ("Could not create default EGL display: EGL_BAD_PARAMETER" on rolling distros),
+      # and its GTK hook forces GDK_BACKEND=x11. Strip both so it uses the system's graphics stack
+      # and runs natively on Wayland (scripts/appimage-system-graphics.sh), repack it with a pinned
+      # appimagetool, re-sign it for the updater, and replace the AppImage and its .sig on the draft
+      # before `publish` reads the signatures. A manual run's artifact is this repacked AppImage.
+      - name: Make the AppImage use the system's graphics stack
+        if: matrix.name == 'linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGETOOL_VERSION: '1.9.1'
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+        run: |
+          set -euo pipefail
+          img="$(find "$PWD/target/release/bundle/appimage" -maxdepth 1 -name '*.AppImage' | head -n 1)"
+          [ -n "$img" ] || { echo "::error::no .AppImage built"; exit 1; }
+          tool="$RUNNER_TEMP/appimagetool"
+          curl -fsSL -o "$tool" "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-x86_64.AppImage"
+          echo "$APPIMAGETOOL_SHA256  $tool" | sha256sum -c -
+          chmod +x "$tool"
+          scripts/appimage-system-graphics.sh fix "$img" "$tool"
+          # The sanity check on what was packed: extract the new AppImage and verify it again (ldd
+          # shows the graphics libraries resolving from the system).
+          rm -rf "$RUNNER_TEMP/check" && mkdir -p "$RUNNER_TEMP/check"
+          (cd "$RUNNER_TEMP/check" && "$img" --appimage-extract > /dev/null)
+          scripts/appimage-system-graphics.sh verify "$RUNNER_TEMP/check/squashfs-root"
+          rm -rf "$RUNNER_TEMP/check"
+          # The old signature is for the old bytes.
+          rm -f "$img.sig"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri signer sign "$img" < /dev/null > /dev/null
+            [ -s "$img.sig" ] || { echo "::error::the AppImage wasn't re-signed"; exit 1; }
+          fi
+          if [ "$REF_TYPE" = tag ]; then
+            # Replace the AppImage and its .sig tauri-action uploaded, under the names it gave them.
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+            upload_url="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .upload_url | sed 's/{.*}//')"
+            for suffix in .AppImage .AppImage.sig; do
+              file="$img${suffix#.AppImage}"
+              [ -f "$file" ] || continue
+              old_id="" name=""
+              read -r old_id name < <(node -e 'const a = require(process.argv[1]).find((x) => x.name.endsWith(process.argv[2])); if (a) console.log(a.id + " " + a.name)' "$RUNNER_TEMP/assets.json" "$suffix") || true
+              name="${name:-$(basename "$file")}"
+              if [ -n "$old_id" ]; then gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old_id"; fi
+              curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/octet-stream' \
+                --data-binary @"$file" "$upload_url?name=$name" > /dev/null
+            done
+          fi
+
       # Manual (non-tag) runs: keep the installers as workflow artifacts instead.
       - name: Upload installers as workflow artifacts (manual run)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -274,6 +328,49 @@ jobs:
             target/**/release/bundle/**/*.AppImage
             target/**/release/bundle/**/*.deb
           if-no-files-found: warn
+
+  # ──────────────── The Arch package (manual runs) ────────────────
+  # packaging/arch/PKGBUILD against the .deb this run built: makepkg, install, and check that the
+  # binary finds every library on Arch and that the package marks itself as pacman-updated.
+  arch-package:
+    needs: release
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: artifact
+
+      - name: makepkg against this run's .deb
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed base-devel namcap
+          deb="$(find artifact -name '*_amd64.deb' | head -n 1)"
+          [ -n "$deb" ] || { echo "::error::no .deb in the artifact"; exit 1; }
+          ver="$(basename "$deb" | sed -E 's/^Ganban_(.+)_amd64\.deb$/\1/')"
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          mkdir /build
+          cp packaging/arch/PKGBUILD /build/
+          # The source makepkg would download, already here; its checksum is this build's.
+          cp "$deb" "/build/Ganban_${ver}_amd64.deb"
+          sum="$(sha256sum "$deb" | cut -d' ' -f1)"
+          sed -i -e "s/^pkgver=.*/pkgver=$ver/" -e "s/^sha256sums=.*/sha256sums=('$sum')/" /build/PKGBUILD
+          chown -R builder /build
+          namcap /build/PKGBUILD || true
+          su builder -c 'cd /build && makepkg -s --noconfirm'
+          pkg="$(find /build -name 'ganban-bin-*.pkg.tar.zst' | head -n 1)"
+          namcap "$pkg" || true
+          pacman -U --noconfirm "$pkg"
+          test -x /usr/bin/gansty
+          test -f /usr/share/applications/Ganban.desktop
+          ls /usr/share/icons/hicolor/*/apps/gansty.png
+          [ "$(cat /usr/share/ganban/package-manager)" = pacman ]
+          if ldd /usr/bin/gansty | grep 'not found'; then echo "::error::a library is missing on Arch"; exit 1; fi
 
   # ───────────────────────── Android ─────────────────────────
   android:

@@ -121,6 +121,9 @@ channel counts as `host` (host builds from before channels). Host builds also ge
   `TAURI_SIGNING_PRIVATE_KEY` secret. tauri-action uploads the installers and the signed updater bundles: the
   `.app.tar.gz` per Mac, the `.msi` and `-setup.exe`, the `.AppImage` (and `.deb`), each with its `.sig`. Without the
   secret, the build has no updater and warns.
+- The Linux build then repacks the AppImage on the system's graphics stack (`scripts/appimage-system-graphics.sh`,
+  [LINUX_PACKAGING.md](../dev/LINUX_PACKAGING.md)), re-signs it with `tauri signer sign` and replaces the
+  `.AppImage` and its `.sig` on the draft, before `publish` reads the signatures.
 - The Android build sets the version code from `ops/version-code.mjs release <version>` (§ Versions), builds with
   `VITE_GITHUB_ANDROID_CERT` (the keystore certificate's SHA-256, from `keytool`) and uploads
   `Ganban_<version>_universal.apk`.
@@ -135,6 +138,12 @@ channel counts as `host` (host builds from before channels). Host builds also ge
 On GitHub Releases, `update_check` ignores the host and token and asks
 `https://github.com/<repo>/releases/latest/download/latest.json`, with the project key. The 6-hourly check, the
 background download and **Update ready · Restart** are unchanged.
+
+A build a distribution package installed doesn't update itself: its package manager does. The package writes the
+manager's name into `<prefix>/share/ganban/package-manager` beside `<prefix>/bin/gansty` (the Arch `ganban-bin`
+writes `pacman`). With that marker the updater isn't registered, and Settings → Updates says "Ganban is updated by
+your package manager (pacman)". The path is relative to the executable, so an AppImage on the same machine still
+updates itself.
 
 ### The phone (Android)
 

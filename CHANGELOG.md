@@ -9,6 +9,20 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-11-06
+
+### Fixed
+
+- **The Linux AppImage starts on rolling distributions and runs natively on Wayland.** It used to stop at launch
+  with "Could not create default EGL display: EGL_BAD_PARAMETER" on distributions with a newer graphics stack (Arch,
+  CachyOS), because it carried its own Wayland libraries, and it forced X11. It now uses the system's.
+
+### Added
+
+- **An Arch Linux package.** `packaging/arch/PKGBUILD` builds `ganban-bin` from the released `.deb` (`makepkg -si`)
+  on the system's own libraries. An app installed this way says it's updated by your package manager instead of
+  updating itself.
+
 ## [1.0.10] - 2026-11-05
 
 ### Added

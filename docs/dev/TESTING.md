@@ -44,6 +44,7 @@ None needs a running server, a browser or network access.
 | `npm run test:cadence` | An automation's schedule: interval, daily and weekly (`Mon,Thu 09:00`), read and written as the host parses them. |
 | `npm run test:update` | The version compare behind the host-served update check. |
 | `npm run test:apkupdate` | The phone app's self-update decisions. |
+| `npm run test:appimage` | `scripts/appimage-system-graphics.sh`: the AppImage loses its bundled graphics libraries and its forced X11 backend, and keeps the rest ([LINUX_PACKAGING.md](LINUX_PACKAGING.md)). |
 | `npm run test:updatesource` | The update source: the choice, the desktop's host key pin, the phone's certificate match, and the Android version codes (against `ops/version-code.mjs`). |
 | `npm run test:ops` | The host service scripts in `ops/` (install, backup, update), in a sandbox with fake system tools. They target macOS and launchd, so run this suite on a Mac. |
 | `npm run test:doclinks` | Every link and `docs/…` path in the repo's Markdown, comments and scripts resolves. |

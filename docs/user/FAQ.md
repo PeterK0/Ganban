@@ -45,7 +45,9 @@ Download the installer for your system from the project's GitHub **Releases** pa
 - **Mac:** the `.dmg`, for Apple Silicon (M1 and newer). Intel Macs aren't built since 1.0.7; 1.0.6 is the last Intel
   release.
 - **Windows:** the `.msi` or `.exe`.
-- **Linux:** the `.AppImage` or the `.deb`.
+- **Linux:** the `.AppImage` (any distribution, natively on Wayland or X11) or the `.deb`. On Arch and its
+  derivatives, `packaging/arch` builds a `ganban-bin` package (`makepkg -si`), which pacman updates
+  ([Getting started](GETTING_STARTED.md#linux)).
 - **Android:** the `.apk`. You only need it to use Ganban on an Android phone ([question 6](#6-how-do-i-use-ganban-from-my-phone)).
 
 The apps aren't signed with a paid developer certificate, so your system may warn you the first time. The steps for

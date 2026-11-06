@@ -53,8 +53,11 @@ pub fn run() {
     let update_channel = app_update::UpdateChannel::current();
     #[cfg(desktop)]
     let update_build_key = app_update::build_key(context.config());
+    // A build a distribution package installed (Linux) leaves updates to its package manager.
     #[cfg(desktop)]
-    let builder = if app_update::can_update(&update_channel, update_build_key.as_deref()) {
+    let update_managed_by = app_update::package_manager();
+    #[cfg(desktop)]
+    let builder = if app_update::can_update(&update_channel, update_build_key.as_deref()) && update_managed_by.is_none() {
         app_update::prepare_config(context.config_mut());
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     } else {
@@ -67,7 +70,7 @@ pub fn run() {
         use tauri::Manager;
         builder
             .setup(move |app| {
-                app.manage(app_update::AppUpdate::new(update_channel.clone(), update_build_key.clone()));
+                app.manage(app_update::AppUpdate::new(update_channel.clone(), update_build_key.clone(), update_managed_by.clone()));
                 // Logging first, so the embedded server's tracing events (and any
                 // panic) land in a rolling file under the app's log dir — a
                 // bundled .app has no console, so without this they're lost.

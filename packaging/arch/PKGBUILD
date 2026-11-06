@@ -1,0 +1,38 @@
+# Ganban for Arch Linux and its derivatives (CachyOS, EndeavourOS, Manjaro), from the released .deb.
+# The app runs on the system's own libraries (WebKitGTK, GTK, Mesa), natively on Wayland.
+#
+#   makepkg -si          build and install (from this folder)
+#   updpkgsums           after bumping pkgver to a new release, refresh sha256sums
+#
+# Ganban installed this way doesn't update itself: the marker below tells it pacman does
+# (docs/dev/LINUX_PACKAGING.md).
+
+pkgname=ganban-bin
+pkgver=1.0.10
+pkgrel=1
+pkgdesc='Local-first task and project manager with an optional local AI assistant'
+arch=('x86_64')
+url='https://github.com/PeterK0/Ganban'
+license=('AGPL-3.0-only')
+# The .deb's Depends (libwebkit2gtk-4.1-0, libgtk-3-0) in Arch's names, plus the libraries the
+# binary links directly (its DT_NEEDED entries).
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'gdk-pixbuf2' 'dbus' 'openssl' 'gcc-libs' 'glibc'
+         'librsvg' 'hicolor-icon-theme')
+optdepends=('xdg-utils: open links and files in other apps')
+provides=('ganban')
+conflicts=('ganban')
+options=('!strip' '!debug')
+source=("Ganban_${pkgver}_amd64.deb::${url}/releases/download/v${pkgver}/Ganban_${pkgver}_amd64.deb")
+sha256sums=('66c96188c383a8726dc237fd5275b7a340ebfe63669a9b667b3e42f71c031ab6')
+
+package() {
+  # The .deb holds /usr/bin/gansty, the .desktop entry and the icons.
+  bsdtar -xf data.tar.* -C "$pkgdir"
+
+  # The .deb's entry has no category; give it one so menus file it.
+  sed -i 's/^Categories=$/Categories=Office;ProjectManagement;/' "$pkgdir/usr/share/applications/Ganban.desktop"
+
+  # Updates come from pacman, not the app: <prefix>/share/ganban/package-manager names the manager.
+  install -d "$pkgdir/usr/share/ganban"
+  echo pacman > "$pkgdir/usr/share/ganban/package-manager"
+}

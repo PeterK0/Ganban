@@ -27,8 +27,14 @@ The apps aren't signed with a paid developer certificate, so each system warns y
 
 ### Linux
 
-- **AppImage:** make it executable (`chmod +x Ganban_*.AppImage`) and run it.
+- **AppImage:** make it executable (`chmod +x Ganban_*.AppImage`) and run it. It runs on any distribution,
+  rolling ones such as Arch and CachyOS included, natively on Wayland or on X11: it uses your system's graphics
+  drivers.
 - **Debian or Ubuntu:** `sudo apt install ./Ganban_*.deb`.
+- **Arch and its derivatives** (CachyOS, EndeavourOS, Manjaro): build the `ganban-bin` package from
+  `packaging/arch` in the source: `makepkg -si` in that folder. It installs the released `.deb` onto your system's
+  libraries. pacman updates it, not the app: to update, set `pkgver` in the `PKGBUILD` to the new release, run
+  `updpkgsums`, then `makepkg -si` again.
 
 On other distributions, use the AppImage.
 
