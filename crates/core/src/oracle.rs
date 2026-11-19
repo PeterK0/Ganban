@@ -156,10 +156,7 @@ pub async fn delete(db: &Db, id: i64) -> Result<()> {
 }
 
 pub async fn touch_run(db: &Db, id: i64) -> Result<()> {
-    sqlx::query("UPDATE oracle_workflows SET last_run_at = datetime('now') WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE oracle_workflows SET last_run_at = datetime('now') WHERE id = ?").bind(id).execute(db).await?;
     Ok(())
 }
 

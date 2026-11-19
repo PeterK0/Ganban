@@ -82,8 +82,8 @@ pub(crate) async fn start(db: Db, root: PathBuf, stop: impl std::future::Future<
         }
     };
     tracing::info!("share door listening on {addr} (public URL: {})", public_url().as_deref().unwrap_or("not set"));
-    let app = door::router(db, root, door::Limiter::default())
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app =
+        door::router(db, root, door::Limiter::default()).into_make_service_with_connect_info::<std::net::SocketAddr>();
     set_door_up(true);
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).with_graceful_shutdown(stop).await {
@@ -151,7 +151,11 @@ impl Kind {
     }
 
     fn parse(s: &str) -> Kind {
-        if s == "project" { Kind::Project } else { Kind::Attachment }
+        if s == "project" {
+            Kind::Project
+        } else {
+            Kind::Attachment
+        }
     }
 
     /// Where the file's bytes live.
@@ -337,7 +341,14 @@ struct ProjectFileRow {
 }
 
 fn project_candidate(f: ProjectFileRow) -> Candidate {
-    Candidate { kind: Kind::Project, id: f.id, file_name: f.file_name, rel_path: f.rel_path, is_shared: true, task_folder: None }
+    Candidate {
+        kind: Kind::Project,
+        id: f.id,
+        file_name: f.file_name,
+        rel_path: f.rel_path,
+        is_shared: true,
+        task_folder: None,
+    }
 }
 
 /// A file or folder name made safe for a zip entry and a download: no slashes, no control or
@@ -392,10 +403,7 @@ fn unique_name(taken: &mut std::collections::HashSet<String>, folder: &str, name
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.clone(), String::new()),
     };
-    (2..)
-        .map(|i| format!("{stem} ({i}){ext}"))
-        .find(|candidate| taken.insert(key(candidate)))
-        .expect("an unused name")
+    (2..).map(|i| format!("{stem} ({i}){ext}")).find(|candidate| taken.insert(key(candidate))).expect("an unused name")
 }
 
 /// A blob's size and mtime (unix seconds).
@@ -449,7 +457,10 @@ pub(crate) async fn create(db: &Db, root: &Path, new: NewLink) -> Result<ShareLi
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("task {task}")))?;
             if project.is_some_and(|p| p != of) {
-                return Err(AppError::InvalidInput(format!("task {task} isn't in project {}", project.unwrap_or_default())));
+                return Err(AppError::InvalidInput(format!(
+                    "task {task} isn't in project {}",
+                    project.unwrap_or_default()
+                )));
             }
             (of, title)
         }
@@ -485,11 +496,22 @@ pub(crate) async fn create(db: &Db, root: &Path, new: NewLink) -> Result<ShareLi
                 let local = all.iter().filter(|a| !a.3).count();
                 for (file_name, rel_path, id, is_shared) in all {
                     if is_shared {
-                        chosen.push(Candidate { kind: Kind::Attachment, id, file_name, rel_path, is_shared, task_folder: None });
+                        chosen.push(Candidate {
+                            kind: Kind::Attachment,
+                            id,
+                            file_name,
+                            rel_path,
+                            is_shared,
+                            task_folder: None,
+                        });
                     }
                 }
                 if chosen.is_empty() {
-                    return Err(if local > 0 { device_only(local) } else { AppError::InvalidInput("this task has no files to share".into()) });
+                    return Err(if local > 0 {
+                        device_only(local)
+                    } else {
+                        AppError::InvalidInput("this task has no files to share".into())
+                    });
                 }
             }
             None => {
@@ -537,7 +559,11 @@ pub(crate) async fn create(db: &Db, root: &Path, new: NewLink) -> Result<ShareLi
             }
             let task_folder = new.task_id.is_none().then(|| {
                 let t = row.title.trim();
-                if t.is_empty() { "Untitled task".to_string() } else { t.to_string() }
+                if t.is_empty() {
+                    "Untitled task".to_string()
+                } else {
+                    t.to_string()
+                }
             });
             chosen.push(Candidate {
                 kind: Kind::Attachment,
@@ -571,13 +597,20 @@ pub(crate) async fn create(db: &Db, root: &Path, new: NewLink) -> Result<ShareLi
     }
 
     // The snapshot: folder, name, size and mtime now. Files sorted by path.
-    let mut placed: Vec<(&Candidate, String, String)> = chosen.iter().map(|c| {
-        let (folder, name) = place(c);
-        (c, folder, name)
-    }).collect();
+    let mut placed: Vec<(&Candidate, String, String)> = chosen
+        .iter()
+        .map(|c| {
+            let (folder, name) = place(c);
+            (c, folder, name)
+        })
+        .collect();
     placed.sort_by(|a, b| {
-        (a.1.to_lowercase(), a.2.to_lowercase(), a.0.kind.as_str(), a.0.id)
-            .cmp(&(b.1.to_lowercase(), b.2.to_lowercase(), b.0.kind.as_str(), b.0.id))
+        (a.1.to_lowercase(), a.2.to_lowercase(), a.0.kind.as_str(), a.0.id).cmp(&(
+            b.1.to_lowercase(),
+            b.2.to_lowercase(),
+            b.0.kind.as_str(),
+            b.0.id,
+        ))
     });
     let mut missing = 0;
     let mut taken = std::collections::HashSet::new();
@@ -613,18 +646,24 @@ pub(crate) async fn create(db: &Db, root: &Path, new: NewLink) -> Result<ShareLi
     let expires_at = match new.expires_in_days {
         None => None,
         Some(d) if (1..=3650).contains(&d) => Some(Utc::now() + Duration::days(d)),
-        Some(d) => return Err(AppError::InvalidInput(format!("expiresInDays must be 1 to 3650 days or null (got {d})"))),
+        Some(d) => {
+            return Err(AppError::InvalidInput(format!("expiresInDays must be 1 to 3650 days or null (got {d})")))
+        }
     };
     let password_hash = match new.password.as_deref().filter(|p| !p.is_empty()) {
         Some(p) if p.len() > 1024 => return Err(AppError::InvalidInput("that password is too long".into())),
         Some(p) => {
             let p = p.to_string();
-            Some(tokio::task::spawn_blocking(move || hash_password(&p)).await.map_err(|e| AppError::InvalidInput(e.to_string()))??)
+            Some(
+                tokio::task::spawn_blocking(move || hash_password(&p))
+                    .await
+                    .map_err(|e| AppError::InvalidInput(e.to_string()))??,
+            )
         }
         None => None,
     };
 
-    let mut tx = db.begin().await?;
+    let mut tx = ganban_core::db::begin_write(db).await?;
     let id = sqlx::query(
         "INSERT INTO share_links (token, task_id, project_id, label, password_hash, expires_at, created_by, created_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -724,7 +763,10 @@ pub(crate) fn spawn_prepare(db: Db, root: PathBuf, link_id: i64) {
 /// Restart the preparation of every live link a restart interrupted.
 async fn resume_preparing(db: &Db, root: &Path) {
     let ids: Vec<i64> =
-        match sqlx::query_scalar("SELECT id FROM share_links WHERE prepared_at IS NULL AND revoked_at IS NULL").fetch_all(db).await {
+        match sqlx::query_scalar("SELECT id FROM share_links WHERE prepared_at IS NULL AND revoked_at IS NULL")
+            .fetch_all(db)
+            .await
+        {
             Ok(ids) => ids,
             Err(e) => {
                 tracing::warn!("share links: can't list the ones still preparing: {e}");
@@ -766,11 +808,12 @@ fn crc_of(path: &Path) -> std::io::Result<(u32, i64, i64)> {
 pub(crate) async fn prepare(db: &Db, root: &Path, link_id: i64) -> Result<()> {
     let _turn = PREPARING.acquire().await.map_err(|e| AppError::InvalidInput(e.to_string()))?;
     loop {
-        let todo: Vec<(i64, String, i64)> =
-            sqlx::query_as("SELECT n, kind, file_id FROM share_link_files WHERE link_id = ? AND crc32 IS NULL ORDER BY n")
-                .bind(link_id)
-                .fetch_all(db)
-                .await?;
+        let todo: Vec<(i64, String, i64)> = sqlx::query_as(
+            "SELECT n, kind, file_id FROM share_link_files WHERE link_id = ? AND crc32 IS NULL ORDER BY n",
+        )
+        .bind(link_id)
+        .fetch_all(db)
+        .await?;
         let mut progressed = false;
         let mut failed: Vec<i64> = Vec::new();
         for (n, kind, id) in todo {
@@ -778,14 +821,16 @@ pub(crate) async fn prepare(db: &Db, root: &Path, link_id: i64) -> Result<()> {
             let path = kind.blob(root, id);
             match tokio::task::spawn_blocking(move || crc_of(&path)).await {
                 Ok(Ok((crc, size, mtime))) => {
-                    sqlx::query("UPDATE share_link_files SET crc32 = ?, size = ?, mtime = ? WHERE link_id = ? AND n = ?")
-                        .bind(crc as i64)
-                        .bind(size)
-                        .bind(mtime)
-                        .bind(link_id)
-                        .bind(n)
-                        .execute(db)
-                        .await?;
+                    sqlx::query(
+                        "UPDATE share_link_files SET crc32 = ?, size = ?, mtime = ? WHERE link_id = ? AND n = ?",
+                    )
+                    .bind(crc as i64)
+                    .bind(size)
+                    .bind(mtime)
+                    .bind(link_id)
+                    .bind(n)
+                    .execute(db)
+                    .await?;
                     progressed = true;
                 }
                 Ok(Err(e)) => {
@@ -870,15 +915,13 @@ pub(crate) async fn live_files(db: &Db, root: &Path, link: &LinkRow) -> Result<L
         };
         if (size, mtime) != (row.size, row.mtime) {
             tracing::info!("share link {}: file {} changed on disk; re-reading it", link.id, row.n);
-            sqlx::query(
-                "UPDATE share_link_files SET crc32 = NULL, size = ?, mtime = ? WHERE link_id = ? AND n = ?",
-            )
-            .bind(size)
-            .bind(mtime)
-            .bind(link.id)
-            .bind(row.n)
-            .execute(db)
-            .await?;
+            sqlx::query("UPDATE share_link_files SET crc32 = NULL, size = ?, mtime = ? WHERE link_id = ? AND n = ?")
+                .bind(size)
+                .bind(mtime)
+                .bind(link.id)
+                .bind(row.n)
+                .execute(db)
+                .await?;
             (row.size, row.mtime, row.crc32) = (size, mtime, None);
             changed = true;
         }

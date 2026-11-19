@@ -10,12 +10,18 @@ fn journal(date: &str, payee: &str, lines: Vec<LineInput>) -> EntryInput {
 
 /// A posted bank movement: `amount` on the account against `category`.
 async fn spend(db: &Db, ent: &Entity, acct: &FinAccount, category: i64, date: &str, payee: &str, amount: i64) -> Entry {
-    let lines = vec![LineInput::new(acct.ledger_account_id, amount, &acct.currency), LineInput::new(category, -amount, "EUR")];
+    let lines =
+        vec![LineInput::new(acct.ledger_account_id, amount, &acct.currency), LineInput::new(category, -amount, "EUR")];
     create_entry(db, ent, journal(date, payee, lines)).await.unwrap()
 }
 
 async fn balance(db: &Db, ent: &Entity, la: i64, as_of: &str) -> i64 {
-    trial_balance(db, ent, as_of).await.unwrap().iter().find(|r| r.ledger_account_id == la).map_or(0, |r| r.debit_minor - r.credit_minor)
+    trial_balance(db, ent, as_of)
+        .await
+        .unwrap()
+        .iter()
+        .find(|r| r.ledger_account_id == la)
+        .map_or(0, |r| r.debit_minor - r.credit_minor)
 }
 
 fn row<'a>(s: &'a statements::Statement, key: &str) -> &'a statements::Row {
@@ -26,9 +32,13 @@ fn row<'a>(s: &'a statements::Statement, key: &str) -> &'a statements::Row {
 async fn close_retranslates_releases_and_locks_in_order() {
     let db = test_db("w2_close").await;
     let ent = user(&db, 7).await;
-    rates::store_rates(&db, &[("2026-01-01".into(), "USD".into(), 1.25), ("2026-01-30".into(), "USD".into(), 1.0)], "ecb")
-        .await
-        .unwrap();
+    rates::store_rates(
+        &db,
+        &[("2026-01-01".into(), "USD".into(), 1.25), ("2026-01-30".into(), "USD".into(), 1.0)],
+        "ecb",
+    )
+    .await
+    .unwrap();
     let eur = create_account(&db, &ent, account("current", "Everyday", "EUR", 500_000)).await.unwrap();
     // 100.00 USD at 1.25 = 80.00 EUR on opening.
     let usd = create_account(&db, &ent, account("current", "Dollars", "USD", 10_000)).await.unwrap();
@@ -36,7 +46,11 @@ async fn close_retranslates_releases_and_locks_in_order() {
 
     // A month closes after it ends, and in order.
     assert!(close::close_period(&db, &ent, "2026-02", false, "2026-02-20").await.unwrap_err().is_invalid_input());
-    assert!(close::close_period(&db, &ent, "2026-02", false, "2026-03-05").await.unwrap_err().to_string().contains("2026-01"));
+    assert!(close::close_period(&db, &ent, "2026-02", false, "2026-03-05")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("2026-01"));
 
     // January: the closing rate (the 30th, the last on or before the 31st) is 1.00.
     let jan = close::close_period(&db, &ent, "2026-01", false, "2026-02-15").await.unwrap();
@@ -53,12 +67,16 @@ async fn close_retranslates_releases_and_locks_in_order() {
     // February: a year's insurance paid ahead, spread over 12 months from February.
     let housing = la(&db, &ent, "Housing").await;
     let paid = spend(&db, &ent, &eur, housing, "2026-02-01", "Insurer", -120_000).await;
-    let sched = schedules::create_schedule(&db, &ent, schedules::ScheduleInput {
-        entry_id: paid.id,
-        ledger_account_id: None,
-        start_month: "2026-02".into(),
-        months: 12,
-    })
+    let sched = schedules::create_schedule(
+        &db,
+        &ent,
+        schedules::ScheduleInput {
+            entry_id: paid.id,
+            ledger_account_id: None,
+            start_month: "2026-02".into(),
+            months: 12,
+        },
+    )
     .await
     .unwrap();
     assert_eq!((sched.kind.as_str(), sched.amount_minor, sched.rows.len()), ("prepaid", 120_000, 12));
@@ -73,7 +91,13 @@ async fn close_retranslates_releases_and_locks_in_order() {
     assert!(delete_entry(&db, &ent, paid.id).await.unwrap_err().is_invalid_input());
 
     // Profit or loss and budgets go by recognition period, before the release posts.
-    budgets::create_budget(&db, &ent, budgets::BudgetInput { ledger_account_id: housing, month: None, amount_minor: 15_000 }).await.unwrap();
+    budgets::create_budget(
+        &db,
+        &ent,
+        budgets::BudgetInput { ledger_account_id: housing, month: None, amount_minor: 15_000 },
+    )
+    .await
+    .unwrap();
     let progress = budgets::budget_progress(&db, &ent, "2026-02").await.unwrap();
     assert_eq!((progress[0].actual_minor, progress[0].remaining_minor), (10_000, 5_000));
     let pl = statements::statement(&db, &ent, "profit_loss", "2026-02", true).await.unwrap();
@@ -96,7 +120,10 @@ async fn close_retranslates_releases_and_locks_in_order() {
     let held = close::close_period(&db, &ent, "2026-02", false, "2026-03-05").await.unwrap();
     assert!(!held.closed);
     assert_eq!(held.blockers.drafts, vec![draft.id]);
-    assert!(!close::close_period(&db, &ent, "2026-02", true, "2026-03-05").await.unwrap().closed, "drafts hold even a forced close");
+    assert!(
+        !close::close_period(&db, &ent, "2026-02", true, "2026-03-05").await.unwrap().closed,
+        "drafts hold even a forced close"
+    );
     delete_entry(&db, &ent, draft.id).await.unwrap();
     // An uncategorised posted line blocks it too.
     d.date = "2026-02-11".into();
@@ -124,18 +151,25 @@ async fn close_retranslates_releases_and_locks_in_order() {
     // After the close, reversing the paid entry takes its deferral and release with it.
     assert!(reverse_entry(&db, &ent, release.id, "2026-03-02").await.is_err(), "not the release alone");
     reverse_entry(&db, &ent, paid.id, "2026-03-02").await.unwrap();
-    assert_eq!((balance(&db, &ent, prepay, "2026-03-31").await, balance(&db, &ent, housing, "2026-03-31").await), (0, 0));
+    assert_eq!(
+        (balance(&db, &ent, prepay, "2026-03-31").await, balance(&db, &ent, housing, "2026-03-31").await),
+        (0, 0)
+    );
     assert!(schedules::list_schedules(&db, &ent, None).await.unwrap().is_empty());
 
     // An accrued bill: paid in May for March to May. April has no entries, so closing May
     // after March posts April's release too.
     let bill = spend(&db, &ent, &eur, housing, "2026-05-10", "Water", -9_000).await;
-    let accrued = schedules::create_schedule(&db, &ent, schedules::ScheduleInput {
-        entry_id: bill.id,
-        ledger_account_id: Some(housing),
-        start_month: "2026-03".into(),
-        months: 3,
-    })
+    let accrued = schedules::create_schedule(
+        &db,
+        &ent,
+        schedules::ScheduleInput {
+            entry_id: bill.id,
+            ledger_account_id: Some(housing),
+            start_month: "2026-03".into(),
+            months: 3,
+        },
+    )
     .await
     .unwrap();
     assert_eq!(accrued.kind, "accrued");
@@ -157,7 +191,11 @@ async fn a_closed_period_refuses_edits() {
     close::close_period(&db, &ent, "2026-01", false, "2026-02-02").await.unwrap();
 
     let closed = |e: AppError| e.to_string() == "Invalid input: closed period: reverse it instead";
-    assert!(closed(update_entry(&db, &ent, shop.id, EntryPatch { description: Some("x".into()), ..Default::default() }).await.unwrap_err()));
+    assert!(closed(
+        update_entry(&db, &ent, shop.id, EntryPatch { description: Some("x".into()), ..Default::default() })
+            .await
+            .unwrap_err()
+    ));
     assert!(closed(delete_entry(&db, &ent, shop.id).await.unwrap_err()));
     let line = |la: i64, amount: i64| LineInput::new(la, amount, "EUR");
     let jan = journal("2026-01-25", "Late", vec![line(eur.ledger_account_id, -100), line(groceries, 100)]);
@@ -171,7 +209,12 @@ async fn a_closed_period_refuses_edits() {
     assert_eq!(rev.reverses_id, Some(shop.id));
     // A schedule can't reach back into the closed month.
     let feb = spend(&db, &ent, &eur, groceries, "2026-02-03", "Market", -1_200).await;
-    let back = schedules::ScheduleInput { entry_id: feb.id, ledger_account_id: None, start_month: "2026-01".into(), months: 3 };
+    let back = schedules::ScheduleInput {
+        entry_id: feb.id,
+        ledger_account_id: None,
+        start_month: "2026-01".into(),
+        months: 3,
+    };
     assert!(closed(schedules::create_schedule(&db, &ent, back).await.unwrap_err()));
 }
 
@@ -183,10 +226,18 @@ async fn a_journal_across_currencies_posts_its_exchange_difference() {
     let eur = create_account(&db, &ent, account("cash", "Wallet", "EUR", 0)).await.unwrap();
     let usd = create_account(&db, &ent, account("cash", "Dollars", "USD", 0)).await.unwrap();
     // 100.00 EUR changed into 108.00 USD: 108 / 1.25 = 86.40 EUR, so 13.60 EUR lost.
-    let e = create_entry(&db, &ent, journal("2026-03-02", "Exchange desk", vec![
-        LineInput::new(usd.ledger_account_id, 10_800, "USD"),
-        LineInput::new(eur.ledger_account_id, -10_000, "EUR"),
-    ]))
+    let e = create_entry(
+        &db,
+        &ent,
+        journal(
+            "2026-03-02",
+            "Exchange desk",
+            vec![
+                LineInput::new(usd.ledger_account_id, 10_800, "USD"),
+                LineInput::new(eur.ledger_account_id, -10_000, "EUR"),
+            ],
+        ),
+    )
     .await
     .unwrap();
     assert!(balanced(&e));
@@ -194,14 +245,19 @@ async fn a_journal_across_currencies_posts_its_exchange_difference() {
     assert_eq!(e.lines.iter().find(|l| l.ledger_account_id == loss).map(|l| l.functional_minor), Some(1_360));
     // One currency still has to balance on its own.
     let groceries = la(&db, &ent, "Groceries").await;
-    let off = journal("2026-03-02", "Off", vec![LineInput::new(eur.ledger_account_id, -100, "EUR"), LineInput::new(groceries, 99, "EUR")]);
+    let off = journal(
+        "2026-03-02",
+        "Off",
+        vec![LineInput::new(eur.ledger_account_id, -100, "EUR"), LineInput::new(groceries, 99, "EUR")],
+    );
     assert!(create_entry(&db, &ent, off).await.is_err());
 }
 
 /// Six months of history: rent on the 1st, pay on the 25th, groceries twice a month.
 async fn history(db: &Db, ent: &Entity) -> (FinAccount, i64, i64) {
     let eur = create_account(db, ent, account("current", "Everyday", "EUR", 500_000)).await.unwrap();
-    let (housing, salary, groceries) = (la(db, ent, "Housing").await, la(db, ent, "Salary").await, la(db, ent, "Groceries").await);
+    let (housing, salary, groceries) =
+        (la(db, ent, "Housing").await, la(db, ent, "Salary").await, la(db, ent, "Groceries").await);
     let grocery_months = [30_000, 35_000, 32_000, 28_000, 40_000, 31_000];
     for (i, g) in grocery_months.iter().enumerate() {
         let m = format!("2026-{:02}", i + 1);
@@ -227,14 +283,24 @@ async fn the_forecast_is_stable_for_a_fixture_history() {
     for r in &found {
         recurring::resolve_recurring(&db, &ent, r.id, true).await.unwrap();
     }
-    budgets::create_budget(&db, &ent, budgets::BudgetInput { ledger_account_id: groceries, month: None, amount_minor: 30_000 }).await.unwrap();
-    recurring::create_planned(&db, &ent, recurring::PlannedInput {
-        date: "2026-07-20".into(),
-        description: "Concert tickets".into(),
-        amount_minor: -6_000,
-        ledger_account_id: None,
-        account_id: None,
-    })
+    budgets::create_budget(
+        &db,
+        &ent,
+        budgets::BudgetInput { ledger_account_id: groceries, month: None, amount_minor: 30_000 },
+    )
+    .await
+    .unwrap();
+    recurring::create_planned(
+        &db,
+        &ent,
+        recurring::PlannedInput {
+            date: "2026-07-20".into(),
+            description: "Concert tickets".into(),
+            amount_minor: -6_000,
+            ledger_account_id: None,
+            account_id: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -273,9 +339,13 @@ async fn the_forecast_is_stable_for_a_fixture_history() {
 async fn the_statements_balance_and_reconcile() {
     let db = test_db("w2_statements").await;
     let ent = user(&db, 7).await;
-    rates::store_rates(&db, &[("2026-01-01".into(), "USD".into(), 1.25), ("2026-01-30".into(), "USD".into(), 1.0)], "ecb")
-        .await
-        .unwrap();
+    rates::store_rates(
+        &db,
+        &[("2026-01-01".into(), "USD".into(), 1.25), ("2026-01-30".into(), "USD".into(), 1.0)],
+        "ecb",
+    )
+    .await
+    .unwrap();
     let eur = create_account(&db, &ent, account("current", "Everyday", "EUR", 100_000)).await.unwrap();
     create_account(&db, &ent, account("current", "Dollars", "USD", 10_000)).await.unwrap();
     let loan = create_account(&db, &ent, account("loan", "Car loan", "EUR", 0)).await.unwrap();
@@ -288,15 +358,35 @@ async fn the_statements_balance_and_reconcile() {
     // A savings move (investing), paying the card off (operating, as cards are) and a loan
     // drawn (financing).
     let line = |la: i64, amount: i64| LineInput::new(la, amount, "EUR");
-    create_entry(&db, &ent, journal("2026-01-26", "To savings", vec![line(savings.ledger_account_id, 20_000), line(eur.ledger_account_id, -20_000)]))
-        .await
-        .unwrap();
-    create_entry(&db, &ent, journal("2026-01-27", "Card bill", vec![line(card.ledger_account_id, 5_000), line(eur.ledger_account_id, -5_000)]))
-        .await
-        .unwrap();
-    create_entry(&db, &ent, journal("2026-01-28", "Loan", vec![line(eur.ledger_account_id, 50_000), line(loan.ledger_account_id, -50_000)]))
-        .await
-        .unwrap();
+    create_entry(
+        &db,
+        &ent,
+        journal(
+            "2026-01-26",
+            "To savings",
+            vec![line(savings.ledger_account_id, 20_000), line(eur.ledger_account_id, -20_000)],
+        ),
+    )
+    .await
+    .unwrap();
+    create_entry(
+        &db,
+        &ent,
+        journal(
+            "2026-01-27",
+            "Card bill",
+            vec![line(card.ledger_account_id, 5_000), line(eur.ledger_account_id, -5_000)],
+        ),
+    )
+    .await
+    .unwrap();
+    create_entry(
+        &db,
+        &ent,
+        journal("2026-01-28", "Loan", vec![line(eur.ledger_account_id, 50_000), line(loan.ledger_account_id, -50_000)]),
+    )
+    .await
+    .unwrap();
     close::close_period(&db, &ent, "2026-01", false, "2026-02-03").await.unwrap();
     spend(&db, &ent, &eur, groceries, "2026-02-05", "Market", -12_000).await;
 

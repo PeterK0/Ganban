@@ -63,13 +63,7 @@ pub struct Assignment {
 /// brief and attribution rather than erroring). The target must be a member
 /// of the task's project: an assignment to someone who can't even see the
 /// task is a data-entry error, refused here rather than discovered later.
-pub async fn assign(
-    db: &Db,
-    task_id: i64,
-    user_id: i64,
-    assigned_by: i64,
-    brief: Option<&Value>,
-) -> Result<()> {
+pub async fn assign(db: &Db, task_id: i64, user_id: i64, assigned_by: i64, brief: Option<&Value>) -> Result<()> {
     let project_id: i64 = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
         .bind(task_id)
         .fetch_optional(db)
@@ -82,9 +76,7 @@ pub async fn assign(
             .fetch_optional(db)
             .await?;
     if is_member.is_none() {
-        return Err(AppError::InvalidInput(
-            "that user is not a member of this task's project".into(),
-        ));
+        return Err(AppError::InvalidInput("that user is not a member of this task's project".into()));
     }
     // Briefs are stored verbatim (rendered client-side as content, never
     // executed) but bounded: a brief is a note, not a payload channel.
@@ -127,10 +119,8 @@ pub async fn unassign(db: &Db, task_id: i64, user_id: i64) -> Result<()> {
         .execute(db)
         .await?;
     if res.rows_affected() > 0 {
-        let project_id: Option<i64> = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
-            .bind(task_id)
-            .fetch_optional(db)
-            .await?;
+        let project_id: Option<i64> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?").bind(task_id).fetch_optional(db).await?;
         emit(DomainEvent {
             kind: "task.unassigned".into(),
             project_id,
@@ -151,11 +141,10 @@ pub async fn assign_contact(db: &Db, task_id: i64, contact_id: i64, assigned_by:
         .fetch_optional(db)
         .await?
         .ok_or_else(|| AppError::NotFound("task not found".into()))?;
-    let contact: Option<(bool, Option<i64>)> =
-        sqlx::query_as("SELECT archived, user_id FROM contacts WHERE id = ?")
-            .bind(contact_id)
-            .fetch_optional(db)
-            .await?;
+    let contact: Option<(bool, Option<i64>)> = sqlx::query_as("SELECT archived, user_id FROM contacts WHERE id = ?")
+        .bind(contact_id)
+        .fetch_optional(db)
+        .await?;
     match contact {
         None => return Err(AppError::NotFound("contact not found".into())),
         Some((true, _)) => return Err(AppError::InvalidInput("that contact is archived".into())),
@@ -193,10 +182,8 @@ pub async fn unassign_contact(db: &Db, task_id: i64, contact_id: i64) -> Result<
         .execute(db)
         .await?;
     if res.rows_affected() > 0 {
-        let project_id: Option<i64> = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
-            .bind(task_id)
-            .fetch_optional(db)
-            .await?;
+        let project_id: Option<i64> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?").bind(task_id).fetch_optional(db).await?;
         emit(DomainEvent {
             kind: "task.contact_unassigned".into(),
             project_id,
@@ -236,9 +223,7 @@ pub async fn assignees_for_task(db: &Db, task_id: i64) -> Result<Vec<Assignee>> 
             display_name,
             assigned_by,
             assigned_at,
-            brief: brief_json
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(Value::Null),
+            brief: brief_json.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null),
         })
         .chain(contacts.into_iter().map(|(contact_id, display_name, assigned_by, assigned_at)| Assignee {
             kind: "contact",
@@ -320,7 +305,19 @@ pub async fn assignments_for_user(db: &Db, user_id: i64) -> Result<Vec<Assignmen
     Ok(rows
         .into_iter()
         .map(
-            |(task_id, task_title, task_status, task_priority, task_deadline, task_updated_at, project_id, project_name, assigned_by, assigned_at, brief_json)| {
+            |(
+                task_id,
+                task_title,
+                task_status,
+                task_priority,
+                task_deadline,
+                task_updated_at,
+                project_id,
+                project_name,
+                assigned_by,
+                assigned_at,
+                brief_json,
+            )| {
                 Assignment {
                     task_id,
                     task_title,
@@ -332,9 +329,7 @@ pub async fn assignments_for_user(db: &Db, user_id: i64) -> Result<Vec<Assignmen
                     project_name,
                     assigned_by,
                     assigned_at,
-                    brief: brief_json
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or(Value::Null),
+                    brief: brief_json.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null),
                 }
             },
         )
@@ -411,10 +406,17 @@ mod tests {
         let db = test_db("contact").await;
         let (pid, tid, alice) = seed(&db).await;
         // A plain contact, an archived one, and one linked to a member.
-        for (id, name, archived, uid) in [(10, "Nikolai", 0, None), (11, "Old Bob", 1, None), (12, "Alice (contact)", 0, Some(alice))] {
+        for (id, name, archived, uid) in
+            [(10, "Nikolai", 0, None), (11, "Old Bob", 1, None), (12, "Alice (contact)", 0, Some(alice))]
+        {
             sqlx::query("INSERT INTO contacts (id, full_name, archived, user_id) VALUES (?, ?, ?, ?)")
-                .bind(id).bind(name).bind(archived).bind(uid)
-                .execute(&db).await.unwrap();
+                .bind(id)
+                .bind(name)
+                .bind(archived)
+                .bind(uid)
+                .execute(&db)
+                .await
+                .unwrap();
         }
         assign(&db, tid, alice, 1, None).await.unwrap();
         assign_contact(&db, tid, 10, 1).await.unwrap();

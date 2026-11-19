@@ -198,9 +198,19 @@ async fn execute(db: &Db, action: &Action, ev: &DomainEvent, owner: i64) -> Resu
         "comment" => {
             let task_id = target_task(ev).ok_or("no task to comment on")?;
             let content = action.text.clone().unwrap_or_default();
-            ops::create_comment(db, CreateCommentInput { task_id, content, user_id: Some(owner), parent_id: None, profile_id: None, task_ids: vec![] })
-                .await
-                .map_err(|e| e.to_string())?;
+            ops::create_comment(
+                db,
+                CreateCommentInput {
+                    task_id,
+                    content,
+                    user_id: Some(owner),
+                    parent_id: None,
+                    profile_id: None,
+                    task_ids: vec![],
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             Ok(format!("commented on task {task_id}"))
         }
         "set_task_field" => {
@@ -238,11 +248,11 @@ pub fn spawn_schedule_runner(db: Db, mut stop: tokio::sync::watch::Receiver<bool
                     if trigger.kind != "schedule" {
                         continue;
                     }
-                    let Some(spec) = trigger.every.as_deref().and_then(crate::oracle_run::parse_schedule) else { continue };
+                    let Some(spec) = trigger.every.as_deref().and_then(crate::oracle_run::parse_schedule) else {
+                        continue;
+                    };
                     let last = rule.last_fired_at.as_deref().and_then(|t| {
-                        chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|n| n.and_utc())
+                        chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S").ok().map(|n| n.and_utc())
                     });
                     if !crate::oracle_run::is_due(spec, last, chrono::Utc::now()) {
                         continue;
@@ -264,27 +274,31 @@ pub fn spawn_schedule_runner(db: Db, mut stop: tokio::sync::watch::Receiver<bool
                         Ok(t) => format!("{} (scheduled): {t}", rule.name),
                         Err(e) => format!("{} (scheduled): {e}", rule.name),
                     };
-                    let _ = ops::record_agent_action(&db, ops::NewAgentAction {
-                        status: if outcome.is_ok() { "applied" } else { "rejected" },
-                        user_id: owner,
-                        profile_id: None,
-                        project_id: None,
-                        chat_id: None,
-                        routine_id: None,
-                        tool: "rule",
-                        summary: &summary,
-                        args_json: &rule.action_json,
-                        result_json: None,
-                        model: None,
-                        prompt_tokens: None,
-                        completion_tokens: None,
-                        duration_ms: None,
-                        protocol_slug: None,
-                        protocol_version: None,
-                        content_hash: None,
-                        parent_action_id: None,
-                        approver_id: None,
-                    }).await;
+                    let _ = ops::record_agent_action(
+                        &db,
+                        ops::NewAgentAction {
+                            status: if outcome.is_ok() { "applied" } else { "rejected" },
+                            user_id: owner,
+                            profile_id: None,
+                            project_id: None,
+                            chat_id: None,
+                            routine_id: None,
+                            tool: "rule",
+                            summary: &summary,
+                            args_json: &rule.action_json,
+                            result_json: None,
+                            model: None,
+                            prompt_tokens: None,
+                            completion_tokens: None,
+                            duration_ms: None,
+                            protocol_slug: None,
+                            protocol_version: None,
+                            content_hash: None,
+                            parent_action_id: None,
+                            approver_id: None,
+                        },
+                    )
+                    .await;
                     // Stamp even on failure — a misconfigured rule must not
                     // retry every 60 seconds.
                     let _ = ops::record_rule_fired(&db, rule.id).await;
@@ -340,7 +354,10 @@ mod tests {
         let proj = ops::create_project(&db, serde_json::from_value(json!({ "name": "P" })).unwrap()).await.unwrap();
         let task = ops::create_task(
             &db,
-            serde_json::from_value(json!({ "project_id": proj.id, "title": "T", "status": "To Do", "priority": "Low" })).unwrap(),
+            serde_json::from_value(
+                json!({ "project_id": proj.id, "title": "T", "status": "To Do", "priority": "Low" }),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

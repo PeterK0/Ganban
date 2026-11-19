@@ -171,6 +171,15 @@ const STEPS: &[Step] = &[
     // Entries take their lines with them (ON DELETE CASCADE).
     step("DELETE FROM fin_entries WHERE id IN", "id", "FROM fin_entries WHERE entity_id = ?"),
     step("DELETE FROM fin_source_lines WHERE id IN", "id", "FROM fin_source_lines WHERE entity_id = ?"),
+    // Payees go with the lines they were read from (their defaults point at the old chart).
+    step("DELETE FROM fin_payee_dismissed WHERE rowid IN", "rowid", "FROM fin_payee_dismissed WHERE entity_id = ?"),
+    step("DELETE FROM fin_payee_aliases WHERE rowid IN", "rowid", "FROM fin_payee_aliases WHERE entity_id = ?"),
+    step(
+        "UPDATE fin_payees SET merged_into = NULL WHERE id IN",
+        "id",
+        "FROM fin_payees WHERE entity_id = ? AND merged_into IS NOT NULL",
+    ),
+    step("DELETE FROM fin_payees WHERE id IN", "id", "FROM fin_payees WHERE entity_id = ?"),
     step("DELETE FROM fin_import_batches WHERE id IN", "id", "FROM fin_import_batches WHERE entity_id = ?"),
     step("DELETE FROM fin_audit WHERE id IN", "id", "FROM fin_audit WHERE entity_id = ?"),
 ];
@@ -189,7 +198,10 @@ fn steps(keep_rules: bool) -> impl Iterator<Item = &'static Step> {
 async fn rows_to_go(conn: &mut Conn, ent: &Entity, keep_rules: bool) -> Result<usize> {
     let mut total: i64 = 0;
     for s in steps(keep_rules) {
-        total += sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) {}", s.from)).bind(ent.id).fetch_one(&mut *conn).await?;
+        total += sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) {}", s.from))
+            .bind(ent.id)
+            .fetch_one(&mut *conn)
+            .await?;
     }
     Ok(total.max(0) as usize)
 }
@@ -218,7 +230,7 @@ pub async fn reset(
     for s in steps(keep_rules) {
         let sql = format!("{} (SELECT {} {} LIMIT ?)", s.write, s.pick, s.from);
         loop {
-            let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+            let mut tx = crate::db::begin_write(db).await?;
             let n = sqlx::query(&sql).bind(ent.id).bind(opts.batch.max(1)).execute(&mut *tx).await?.rows_affected();
             tx.commit().await?;
             if n == 0 {
@@ -231,7 +243,7 @@ pub async fn reset(
     }
     // The chart last, in one short transaction: the accounts, the ledger, a fresh default
     // chart, and the kept rules pointed at it.
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = crate::db::begin_write(db).await?;
     // A write that slipped in meanwhile (an entry made in another window) goes too, so no
     // line still points at the old chart.
     for s in steps(keep_rules) {
@@ -273,10 +285,12 @@ struct ChartRow {
 }
 
 async fn chart_of(conn: &mut Conn, ent: &Entity) -> Result<Vec<ChartRow>> {
-    Ok(sqlx::query_as("SELECT id, code, name, class, cash_flow_class, system_key FROM fin_ledger_accounts WHERE entity_id = ?")
-        .bind(ent.id)
-        .fetch_all(&mut *conn)
-        .await?)
+    Ok(sqlx::query_as(
+        "SELECT id, code, name, class, cash_flow_class, system_key FROM fin_ledger_accounts WHERE entity_id = ?",
+    )
+    .bind(ent.id)
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
 /// Points the kept rules at the new chart: a category by its system key, else its code and
@@ -303,7 +317,8 @@ async fn repoint_rules(conn: &mut Conn, ent: &Entity, old: &[ChartRow]) -> Resul
         };
         cond.account_id = None;
         let mut ok = readable && !cond.is_empty() && action.validate().is_ok();
-        let targets = action.ledger_account_id.iter_mut().chain(action.splits.iter_mut().map(|s| &mut s.ledger_account_id));
+        let targets =
+            action.ledger_account_id.iter_mut().chain(action.splits.iter_mut().map(|s| &mut s.ledger_account_id));
         for la in targets {
             match new_ids.get(la) {
                 Some(&id) => *la = id,
@@ -333,11 +348,13 @@ async fn repoint_rules(conn: &mut Conn, ent: &Entity, old: &[ChartRow]) -> Resul
 
 async fn match_or_create(conn: &mut Conn, ent: &Entity, row: &ChartRow) -> Result<i64> {
     let found: Option<i64> = match &row.system_key {
-        Some(k) => sqlx::query_scalar("SELECT id FROM fin_ledger_accounts WHERE entity_id = ? AND system_key = ?")
-            .bind(ent.id)
-            .bind(k)
-            .fetch_optional(&mut *conn)
-            .await?,
+        Some(k) => {
+            sqlx::query_scalar("SELECT id FROM fin_ledger_accounts WHERE entity_id = ? AND system_key = ?")
+                .bind(ent.id)
+                .bind(k)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
         None => sqlx::query_scalar(
             "SELECT id FROM fin_ledger_accounts WHERE entity_id = ? AND code = ? AND class = ? AND system_key IS NULL",
         )
@@ -416,7 +433,9 @@ pub fn start_with(db: &Db, ent: &Entity, confirm: &str, keep_rules: bool, opts: 
             return Err(resetting_refusal());
         }
         if a.bulk > 0 {
-            return Err(AppError::InvalidInput("a bulk action or category suggestions are running: wait for them to finish".into()));
+            return Err(AppError::InvalidInput(
+                "a bulk action or category suggestions are running: wait for them to finish".into(),
+            ));
         }
         if jobs::is_running(db, ent) {
             return Err(AppError::InvalidInput("an import is running: wait for it to finish".into()));

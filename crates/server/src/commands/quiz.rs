@@ -8,10 +8,12 @@ use serde_json::{json, Value};
 use super::{command, missing, reply, require_role, Access, Args, Author, Command, Target, PROJECT};
 
 /// The subject named by `subjectId`.
-const SUBJECT: Target = Target::arg("subjectId", |db, id| Box::pin(async move { Ok(Some(quiz::subject_project(db, id).await?)) }));
+const SUBJECT: Target =
+    Target::arg("subjectId", |db, id| Box::pin(async move { Ok(Some(quiz::subject_project(db, id).await?)) }));
 
 /// The topic named by `topicId`.
-const TOPIC: Target = Target::arg("topicId", |db, id| Box::pin(async move { Ok(Some(quiz::topic_project(db, id).await?)) }));
+const TOPIC: Target =
+    Target::arg("topicId", |db, id| Box::pin(async move { Ok(Some(quiz::topic_project(db, id).await?)) }));
 
 /// The topic a merge pours into, by `intoTopicId` (ops refuses a source in another project).
 const INTO_TOPIC: Target =
@@ -31,12 +33,14 @@ const QUESTION: Target =
     Target::arg("questionId", |db, id| Box::pin(async move { Ok(Some(quiz::question_project(db, id).await?)) }));
 
 /// The quiz named by `quizId`.
-const QUIZ: Target = Target::arg("quizId", |db, id| Box::pin(async move { Ok(Some(quiz::quiz_project(db, id).await?)) }));
+const QUIZ: Target =
+    Target::arg("quizId", |db, id| Box::pin(async move { Ok(Some(quiz::quiz_project(db, id).await?)) }));
 
 /// What a new quiz draws from: topics (`topicIds`, or the legacy single `topicId`), or else
 /// its whole subject (`subjectId`).
 fn quiz_scope(a: &Args<'_>) -> (Option<Vec<i64>>, Option<i64>) {
-    let topics = Some(a.i64_list("topicIds")).filter(|ids| !ids.is_empty()).or_else(|| a.opt_i64("topicId").map(|t| vec![t]));
+    let topics =
+        Some(a.i64_list("topicIds")).filter(|ids| !ids.is_empty()).or_else(|| a.opt_i64("topicId").map(|t| vec![t]));
     (topics, a.opt_i64("subjectId"))
 }
 
@@ -48,8 +52,14 @@ pub(super) const COMMANDS: &[Command] = &[
     command("create_quiz_subject").access(Access::Member(PROJECT)).run(|cx, a| {
         Box::pin(async move {
             reply(
-                quiz::create_subject(cx.db, a.id(PROJECT)?, &a.req_str("name")?, a.opt_str("color").as_deref(), a.opt_str("icon").as_deref())
-                    .await?,
+                quiz::create_subject(
+                    cx.db,
+                    a.id(PROJECT)?,
+                    &a.req_str("name")?,
+                    a.opt_str("color").as_deref(),
+                    a.opt_str("icon").as_deref(),
+                )
+                .await?,
             )
         })
     }),
@@ -101,12 +111,23 @@ pub(super) const COMMANDS: &[Command] = &[
         .run(|cx, a| Box::pin(async move { reply(quiz::get_all_topics(cx.db, a.id(PROJECT)?).await?) })),
     command("create_quiz_topic").access(Access::Member(SUBJECT)).run(|cx, a| {
         Box::pin(async move {
-            reply(quiz::create_topic(cx.db, a.id(SUBJECT)?, &a.req_str("name")?, a.opt_str("description").as_deref()).await?)
+            reply(
+                quiz::create_topic(cx.db, a.id(SUBJECT)?, &a.req_str("name")?, a.opt_str("description").as_deref())
+                    .await?,
+            )
         })
     }),
     command("update_quiz_topic").access(Access::Member(TOPIC)).run(|cx, a| {
         Box::pin(async move {
-            reply(quiz::update_topic(cx.db, a.id(TOPIC)?, a.opt_str("name").as_deref(), a.opt_str("description").as_deref()).await?)
+            reply(
+                quiz::update_topic(
+                    cx.db,
+                    a.id(TOPIC)?,
+                    a.opt_str("name").as_deref(),
+                    a.opt_str("description").as_deref(),
+                )
+                .await?,
+            )
         })
     }),
     command("delete_quiz_topic")
@@ -177,7 +198,12 @@ pub(super) const COMMANDS: &[Command] = &[
             Box::pin(async move {
                 let topic_id = a.opt_id(BATCH_TOPIC);
                 let subject_id: i64 = match topic_id {
-                    Some(t) => sqlx::query_scalar("SELECT subject_id FROM quiz_topics WHERE id = ?").bind(t).fetch_one(cx.db).await?,
+                    Some(t) => {
+                        sqlx::query_scalar("SELECT subject_id FROM quiz_topics WHERE id = ?")
+                            .bind(t)
+                            .fetch_one(cx.db)
+                            .await?
+                    }
                     None => a.id(BATCH_SUBJECT)?,
                 };
                 let empty = vec![];
@@ -298,8 +324,10 @@ mod tests {
 
     async fn chain(db: &ganban_core::Db, name: &str) -> Chain {
         let project = seed(db, "create_project", json!({ "input": { "name": name } })).await["id"].as_i64().unwrap();
-        let subject = seed(db, "create_quiz_subject", json!({ "projectId": project, "name": "S" })).await["id"].as_i64().unwrap();
-        let topic = seed(db, "create_quiz_topic", json!({ "subjectId": subject, "name": "T" })).await["id"].as_i64().unwrap();
+        let subject =
+            seed(db, "create_quiz_subject", json!({ "projectId": project, "name": "S" })).await["id"].as_i64().unwrap();
+        let topic =
+            seed(db, "create_quiz_topic", json!({ "subjectId": subject, "name": "T" })).await["id"].as_i64().unwrap();
         let question = seed(
             db,
             "create_quiz_question",
@@ -356,8 +384,11 @@ mod tests {
         let attempts = seed(&db, "get_quiz_attempts", json!({ "quizId": a.quiz })).await;
         assert_eq!(attempts[0]["user_id"], 7, "the attempt is hers, not user 8's");
 
-        http(&db, mia, "set_quiz_leaderboard_optin", json!({ "projectId": a.project, "userId": 8, "optIn": true })).await.unwrap();
-        let optin = |user: i64| seed(&db, "get_quiz_leaderboard_optin", json!({ "projectId": a.project, "userId": user }));
+        http(&db, mia, "set_quiz_leaderboard_optin", json!({ "projectId": a.project, "userId": 8, "optIn": true }))
+            .await
+            .unwrap();
+        let optin =
+            |user: i64| seed(&db, "get_quiz_leaderboard_optin", json!({ "projectId": a.project, "userId": user }));
         assert_eq!(optin(7).await, true, "she opted herself in");
         assert_eq!(optin(8).await, false, "user 8 was left alone");
         let read = json!({ "projectId": a.project, "userId": 8 });
@@ -366,7 +397,12 @@ mod tests {
         // In-process (the desktop) the app's profile id stands.
         seed(&db, "set_quiz_leaderboard_optin", json!({ "projectId": a.project, "userId": 8, "optIn": true })).await;
         assert_eq!(optin(8).await, true);
-        seed(&db, "record_quiz_attempt", json!({ "quizId": a.quiz, "userId": 8, "score": 1.0, "maxScore": 1.0, "answersJson": "{}" })).await;
+        seed(
+            &db,
+            "record_quiz_attempt",
+            json!({ "quizId": a.quiz, "userId": 8, "score": 1.0, "maxScore": 1.0, "answersJson": "{}" }),
+        )
+        .await;
         assert_eq!(seed(&db, "get_quiz_attempts", json!({ "quizId": a.quiz })).await[0]["user_id"], 8);
     }
 
@@ -384,7 +420,11 @@ mod tests {
             ] })
         };
         let r = http(&db, mia, "create_quiz_questions_batch", batch(a.topic)).await.unwrap();
-        assert_eq!((r["created"].as_i64(), r["skipped_duplicates"].as_i64()), (Some(1), Some(1)), "the duplicate is skipped");
+        assert_eq!(
+            (r["created"].as_i64(), r["skipped_duplicates"].as_i64()),
+            (Some(1), Some(1)),
+            "the duplicate is skipped"
+        );
         assert!(http(&db, mia, "create_quiz_questions_batch", batch(b.topic)).await.unwrap_err().is_not_found());
 
         // ✨ Automatic anchors a batch on the subject instead.

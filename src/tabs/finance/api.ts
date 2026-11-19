@@ -54,6 +54,9 @@ export interface FinAccount {
   draft_balance_minor: number;
   balance_functional_minor: number;
   draft_balance_functional_minor: number;
+  /** Made by an import for the other side of a move, with no statement of its own yet: its
+   * balance is only what the other side sent. */
+  unconfirmed?: boolean;
 }
 
 export interface Line {
@@ -88,6 +91,14 @@ export interface Entry {
   pair: PairRef | null;
   /** Tied to a recognition schedule: its lines and date are fixed and it can't be deleted. */
   scheduled: boolean;
+  /** The payee the bank line resolved to. */
+  payee_id?: number | null;
+  /** Posted as unsorted history: old, uncategorised, out of "To sort". */
+  unsorted?: boolean;
+  /** A draft's waiting suggestion (the local model's, for its payee group): shown pre-filled. */
+  suggested_ledger_account_id?: number | null;
+  /** The payee's own name; `payee` is the text as the bank wrote it. */
+  payee_name?: string | null;
 }
 
 export interface EntryFilter {
@@ -100,6 +111,15 @@ export interface EntryFilter {
   search?: string;
   /** One payee group of the inbox (`InboxGroup.key`). */
   groupKey?: string;
+  payeeId?: number;
+  /** `true`: only unsorted history; `false`: none of it. */
+  unsorted?: boolean;
+  /** `true`: only booked transfer and exchange legs; `false`: none of them. */
+  transfers?: boolean;
+  /** Only the lines one import brought. */
+  importBatchId?: number;
+  /** Only these entries (a selection), at most 5000. */
+  ids?: number[];
 }
 
 export interface TrialRow {
@@ -186,6 +206,8 @@ export interface ImportPreview {
   warnings: string[];
   /** The first 30 raw rows, for the mapping wizard. */
   sample: string[][];
+  /** The host's guess at the columns when no layout was recognised: the wizard starts from it. */
+  suggested_mapping?: ProfileMapping | null;
 }
 
 export type AccountMapTarget = number | { create: { kind: AccountKind; name: string; institution?: string; currency: string } };
@@ -214,8 +236,18 @@ export interface ImportResult {
   categorised_by_rules: number;
   /** Refunds given the category of the expense they return. */
   refunds: number;
-  /** Lines older than the chosen cut-off, posted straight away. */
+  /** Lines posted at once: filed by a rule, a payee, the fee rule or a pair, and old lines. */
   posted?: number;
+  /** Lines filed by their payee's default category. */
+  filed_by_payee?: number;
+  /** Old lines nothing filed: posted as unsorted history. */
+  history_unsorted?: number;
+  /** Old lines filed by the local model's suggestion. */
+  history_suggested?: number;
+  /** Lines left for the user. */
+  decisions?: number;
+  /** The transfer and exchange pairs booked without asking. */
+  transfer_pair_ids?: number[];
   /** Rows skipped while parsing, and lines of accounts left out of the map. */
   warnings: string[];
 }
@@ -290,14 +322,36 @@ export const createEntry = (input: { date: string; description: string; payee?: 
 export const updateEntry = (entryId: number, input: { date?: string; description?: string; payee?: string | null; notes?: string | null }) =>
   call<Entry>('fin_update_entry', { entryId, input });
 
+/** "Just this one" (`once`) or "change the payee's default" (`change`). */
+export type DefaultChoice = 'once' | 'change';
+/** What categorising taught the payee: the Undo toast's data (`fin_set_payee_default`'s answer too). */
+export interface DefaultChange {
+  payee_id: number;
+  name: string;
+  ledger_account_id: number | null;
+  previous_ledger_account_id: number | null;
+  /** A default that is a move to one of his own accounts. */
+  account_id?: number | null;
+  previous_account_id?: number | null;
+  filed_drafts: number[];
+  filed_history: number[];
+}
+/** A categorised entry, and the payee default it set (the first category, or a change). */
+export type Categorised = Entry & { payee_default: DefaultChange | null };
 /**
- * Categorise a bank entry. `parts` are plain (positive) amounts per category; the journal sign is
- * worked out here, against the bank line, so the screens never deal in debits and credits.
+ * Categorise a bank entry; a draft posts (categorised means done). `parts` are plain (positive)
+ * amounts per category; the journal sign is worked out here, against the bank line, so the
+ * screens never deal in debits and credits.
  */
-export const categorise = (entryId: number, bankMinor: number, parts: { ledgerAccountId: number; amountMinor: number }[]) => {
+export const categorise = (entryId: number, bankMinor: number, parts: { ledgerAccountId: number; amountMinor: number }[], payeeDefault: DefaultChoice = 'once') => {
   const signed = splitsToJournal(bankMinor, parts.map((p) => p.amountMinor));
-  return call<Entry>('fin_categorise', { entryId, splits: parts.map((p, i) => ({ ledgerAccountId: p.ledgerAccountId, amountMinor: signed[i] })) });
+  return call<Categorised>('fin_categorise', { entryId, splits: parts.map((p, i) => ({ ledgerAccountId: p.ledgerAccountId, amountMinor: signed[i] })), payeeDefault });
 };
+/** Where a move between his own accounts goes: one he has, or a new one (unconfirmed until its statement comes). */
+export type TransferTarget = { accountId: number } | { create: { name: string; kind?: AccountKind; institution?: string } };
+/** Files a bank line as a move to one of his own accounts: a booked transfer, posted. */
+export const categoriseTransfer = (entryId: number, transferTo: TransferTarget, payeeDefault: DefaultChoice = 'once') =>
+  call<Categorised>('fin_categorise', { entryId, transferTo, payeeDefault });
 export const postEntries = (entryIds: number[]) => call<{ posted: number }>('fin_post_entries', { entryIds });
 export const deleteEntry = (entryId: number) => call<Record<string, never>>('fin_delete_entry', { entryId });
 export const reverseEntry = (entryId: number, date: string) => call<Entry>('fin_reverse_entry', { entryId, date });
@@ -309,11 +363,20 @@ export const rate = (currency: string, date: string) => call<{ rate: number; dat
 export const listProfiles = () => call<Profile[]>('fin_list_profiles');
 export const previewImport = (fileName: string, contentBase64: string, profileKey?: string) =>
   call<ImportPreview>('fin_preview_import', { fileName, contentBase64, profileKey });
-/** Starts the import as a background job on the host; follow it with `importStatus`. */
+/** Starts the import as a background job on the host; follow it with `importStatus`. `postOlderThanDays` is the
+ * history cut-off: 0 for none, absent for the user's saved setting. */
 export const runImport = (fileName: string, contentBase64: string, profileKey: string, accountMap: Record<string, AccountMapTarget>, postOlderThanDays?: number) =>
   call<ImportJob>('fin_import', { fileName, contentBase64, profileKey, accountMap, postOlderThanDays });
 /** The job with this id, else the user's latest (null when there's none). */
 export const importStatus = (jobId?: number) => call<ImportJob | null>('fin_import_status', jobId == null ? {} : { jobId });
+/** An import a host restart cut short (`fin_interrupted_imports`): its lines are in, not yet paired or ruled. */
+export interface InterruptedImport {
+  batch_id: number;
+  file_name: string;
+  imported_at: string;
+  lines: number;
+}
+export const interruptedImports = () => call<InterruptedImport[]>('fin_interrupted_imports');
 export const saveProfile = (input: { key: string; name: string; mapping: ProfileMapping }) => call<Profile>('fin_save_profile', { input });
 export const deleteProfile = (key: string) => call<Profile>('fin_delete_profile', { key });
 
@@ -325,6 +388,7 @@ export const rescorePairs = () => call<{ confirmed: number; review: number }>('f
 export const pairEntries = (entryA: number, entryB: number) => call<Pair>('fin_pair_entries', { entryA, entryB });
 
 export const listRules = () => call<Rule[]>('fin_list_rules');
+export const updateRule = (ruleId: number, input: RuleInput) => call<Rule>('fin_update_rule', { ruleId, input });
 /** A rule as it's written (and as `fin_suggest_rule` drafts it), camelCase. */
 export interface RuleInput {
   position?: number;
@@ -359,6 +423,8 @@ export interface CategoriseMatching {
   rule: Rule | null;
   /** The rule for the same lines, offered as "remember as a rule" when not created. */
   rule_input: RuleInput | null;
+  /** Payees this taught their first category (the Undo toast). */
+  payee_defaults?: DefaultChange[];
 }
 /** Gives every matching draft that's still uncategorised (not a transfer leg) this category. */
 export const categoriseMatching = (filter: EntryFilter, ledgerAccountId: number, createRule = false) =>
@@ -599,3 +665,93 @@ export const resetPreview = () => call<ResetCounts>('fin_reset_preview');
 /** Starts deleting all of the caller's finance data; follow it with `resetStatus`. */
 export const startReset = (confirm: string, keepRules: boolean) => call<ResetJob>('fin_reset', { confirm, keepRules });
 export const resetStatus = (jobId?: number) => call<ResetJob | null>('fin_reset_status', jobId == null ? {} : { jobId });
+
+// ── Payees: one shop under every spelling, with a default category ───────────
+
+export interface PayeeAlias {
+  key: string;
+  /** A spelling as the bank wrote it. */
+  sample: string;
+  origin_payee_id: number | null;
+}
+export interface Payee {
+  id: number;
+  name: string;
+  default_ledger_account_id: number | null;
+  /** A default that is a move to one of his own accounts. */
+  default_account_id?: number | null;
+  ask_every_time: boolean;
+  aliases: PayeeAlias[];
+  lines: number;
+  /** In the functional currency, signed (spending negative). */
+  total_minor: number;
+  last_date: string | null;
+  /** Lines in unsorted history, and their total. */
+  unsorted: number;
+  unsorted_total_minor: number;
+}
+export const listPayees = (filter: { search?: string; unsorted?: boolean } = {}, limit = 100, offset = 0) =>
+  call<{ payees: Payee[]; total: number }>('fin_list_payees', { filter, limit, offset });
+export const getPayee = (payeeId: number) => call<Payee>('fin_get_payee', { payeeId });
+export const updatePayee = (payeeId: number, input: { name?: string; askEveryTime?: boolean }) => call<Payee>('fin_update_payee', { payeeId, input });
+/** A payee's default: a category (`ledgerAccountId`), a move to one of his accounts (`accountId`), or none. */
+export const setPayeeDefault = (payeeId: number, to: { ledgerAccountId: number } | { accountId: number } | null, file = true) =>
+  call<DefaultChange>('fin_set_payee_default', { payeeId, ...(to ?? { ledgerAccountId: null }), file });
+/** Undo a default: it goes back, and the lines it filed return to "To sort" or unsorted history. */
+export const undoPayeeDefault = (c: DefaultChange) =>
+  call<Payee>('fin_undo_payee_default', {
+    payeeId: c.payee_id,
+    previousLedgerAccountId: c.previous_ledger_account_id,
+    previousAccountId: c.previous_account_id ?? null,
+    filedDrafts: c.filed_drafts,
+    filedHistory: c.filed_history,
+  });
+export const mergePayees = (targetId: number, payeeIds: number[]) => call<Payee>('fin_merge_payees', { targetId, payeeIds });
+/** Sends spellings back to the payee they came from (or a new one); a payee keeps one. */
+export const splitPayee = (payeeId: number, aliasKeys: string[]) => call<Payee[]>('fin_split_payee', { payeeId, aliasKeys });
+export interface PayeeRef {
+  id: number;
+  name: string;
+  lines: number;
+}
+export interface PayeeSuggestion {
+  a: PayeeRef;
+  b: PayeeRef;
+  reason: 'same name' | 'spelled alike' | 'another branch';
+}
+export const payeeSuggestions = (limit = 50) => call<PayeeSuggestion[]>('fin_payee_suggestions', { limit });
+export const dismissPayeeSuggestion = (payeeA: number, payeeB: number) => call<Record<string, never>>('fin_dismiss_payee_suggestion', { payeeA, payeeB });
+export interface InboxSummary {
+  /** Lines that need the user ("To sort"). */
+  decisions: number;
+  uncategorised: number;
+  /** Legs of a transfer the matcher wasn't sure of. */
+  review: number;
+  /** Uncategorised lines with a suggestion waiting. */
+  suggested: number;
+  unsorted_history: number;
+  transfers: number;
+  /** While the host builds payees from the books of before an update: entries done of the total.
+   * Imports wait until it's gone. */
+  preparing?: { done: number; total: number } | null;
+}
+export const inboxSummary = () => call<InboxSummary>('fin_inbox_summary');
+export interface TransferGroup {
+  key: string;
+  label: string;
+  account_id: number;
+  count: number;
+  total_minor: number;
+  first_date: string;
+  last_date: string;
+}
+export const transferGroups = (filter: EntryFilter) => call<TransferGroup[]>('fin_transfer_groups', { filter });
+export interface TidyOutcome {
+  /** Lines filed by their payee's default. */
+  filed: number;
+  /** Old lines moved to unsorted history. */
+  history: number;
+  /** Lines left to sort. */
+  left: number;
+}
+export const tidyInbox = (historyDays: number | undefined, dryRun: boolean) => call<TidyOutcome>('fin_tidy_inbox', { historyDays, dryRun });

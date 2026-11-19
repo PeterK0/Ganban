@@ -128,11 +128,7 @@ pub fn link_page(token: &str, link: &LinkRow, files: &[LiveFile], gone: usize, r
         Some(e) => format!("available until {}", e.format("%-d %b %Y, %H:%M UTC")),
         None => "no expiry".to_string(),
     };
-    let summary = format!(
-        "{count} file{} · {} · {expiry}",
-        if count == 1 { "" } else { "s" },
-        fmt_bytes(total)
-    );
+    let summary = format!("{count} file{} · {} · {expiry}", if count == 1 { "" } else { "s" }, fmt_bytes(total));
     let zip = if count == 0 {
         String::new()
     } else if ready {

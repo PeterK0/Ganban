@@ -129,10 +129,11 @@ pub async fn project_used(db: &Db, project_id: i64) -> Result<i64> {
     .bind(project_id)
     .fetch_one(db)
     .await?;
-    let project_files: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM project_files WHERE project_id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
+    let project_files: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM project_files WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_one(db)
+            .await?;
     Ok(attachments + project_files)
 }
 
@@ -321,11 +322,13 @@ pub async fn assign_file_to_task(db: &Db, root: &Path, project_file_id: i64, tas
     }
     set_storage_size(db, att.id, f.size_bytes).await?;
     // The file keeps its place in or out of the AI overview.
-    sqlx::query("UPDATE file_attachments SET ai_included = (SELECT ai_included FROM project_files WHERE id = ?) WHERE id = ?")
-        .bind(project_file_id)
-        .bind(att.id)
-        .execute(db)
-        .await?;
+    sqlx::query(
+        "UPDATE file_attachments SET ai_included = (SELECT ai_included FROM project_files WHERE id = ?) WHERE id = ?",
+    )
+    .bind(project_file_id)
+    .bind(att.id)
+    .execute(db)
+    .await?;
     let att = set_rel_path(db, att.id, f.rel_path.as_deref()).await?;
     sqlx::query("DELETE FROM project_files WHERE id = ?").bind(project_file_id).execute(db).await?;
     Ok(att)
@@ -385,7 +388,11 @@ pub async fn unshare_file(db: &Db, root: &Path, attachment_id: i64) -> Result<Fi
 
 /// Resolve a shared attachment for download: (file_name, blob path) if it is
 /// shared and the blob is present.
-pub async fn shared_for_download(db: &Db, root: &Path, attachment_id: i64) -> Result<(String, Option<String>, PathBuf)> {
+pub async fn shared_for_download(
+    db: &Db,
+    root: &Path,
+    attachment_id: i64,
+) -> Result<(String, Option<String>, PathBuf)> {
     let att = get_attachment(db, attachment_id).await?;
     if !att.is_shared {
         return Err(AppError::NotFound("attachment is not shared".into()));
@@ -470,9 +477,7 @@ pub async fn store_shared_from_path(
     if project_used(db, project_id).await? > project_quota(db, project_id).await? {
         remove_blob(root, att.id);
         let _ = sqlx::query("DELETE FROM file_attachments WHERE id = ?").bind(att.id).execute(db).await;
-        return Err(AppError::InvalidInput(
-            "storage quota exceeded — another upload filled the allocation".into(),
-        ));
+        return Err(AppError::InvalidInput("storage quota exceeded — another upload filled the allocation".into()));
     }
     Ok(updated)
 }
@@ -480,10 +485,7 @@ pub async fn store_shared_from_path(
 /// Read a shared attachment's mime + bytes (for rendering it locally on desktop).
 pub async fn read_attachment(db: &Db, root: &Path, attachment_id: i64) -> Result<(String, Vec<u8>)> {
     let att = get_attachment(db, attachment_id).await?;
-    let mime = att
-        .file_type
-        .filter(|t| t.contains('/'))
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = att.file_type.filter(|t| t.contains('/')).unwrap_or_else(|| "application/octet-stream".to_string());
     let bytes = std::fs::read(blob_path(root, attachment_id)).map_err(|_| AppError::NotFound("file".into()))?;
     Ok((mime, bytes))
 }
@@ -702,10 +704,7 @@ pub async fn restore_attachment(db: &Db, root: &Path, id: i64, bytes: &[u8]) -> 
 /// host copy go.
 pub async fn delete_attachment(db: &Db, root: &Path, attachment_id: i64) -> Result<()> {
     let _ = std::fs::remove_file(blob_path(root, attachment_id));
-    sqlx::query("DELETE FROM file_attachments WHERE id = ?")
-        .bind(attachment_id)
-        .execute(db)
-        .await?;
+    sqlx::query("DELETE FROM file_attachments WHERE id = ?").bind(attachment_id).execute(db).await?;
     Ok(())
 }
 
@@ -728,10 +727,12 @@ pub async fn clear_missing_files(db: &Db, root: &Path, project_id: i64) -> Resul
 
 /// Project files, most-recent first.
 pub async fn list_project_files(db: &Db, project_id: i64) -> Result<Vec<ProjectFile>> {
-    Ok(sqlx::query_as::<_, ProjectFile>("SELECT * FROM project_files WHERE project_id = ? ORDER BY created_at DESC, id DESC")
-        .bind(project_id)
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as::<_, ProjectFile>(
+        "SELECT * FROM project_files WHERE project_id = ? ORDER BY created_at DESC, id DESC",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await?)
 }
 
 // ── Folders (file-browser metadata) ─────────────────────────────────────────
@@ -781,7 +782,11 @@ fn dir_of(rel_path: Option<&str>) -> &str {
 
 /// `dir/name`, or `name` at the root.
 fn join_dir(dir: &str, name: &str) -> String {
-    if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") }
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    }
 }
 
 /// `path` with its leading `from` folder swapped for `to`, if it lies under `from`.
@@ -946,7 +951,7 @@ pub async fn move_project_files(db: &Db, project_id: i64, ids: &[i64], dir: &str
         moves.push((id, to));
     }
     refuse_duplicates(&moves)?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     for (id, to) in &moves {
         let rel = if dir.is_empty() { None } else { Some(to.clone()) };
         sqlx::query("UPDATE project_files SET rel_path = ? WHERE id = ?").bind(&rel).bind(id).execute(&mut *tx).await?;
@@ -980,10 +985,14 @@ pub async fn move_attachments(db: &Db, task_id: i64, ids: &[i64], dir: &str) -> 
         moves.push((id, to));
     }
     refuse_duplicates(&moves)?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     for (id, to) in &moves {
         let rel = if dir.is_empty() { None } else { Some(to.clone()) };
-        sqlx::query("UPDATE file_attachments SET rel_path = ? WHERE id = ?").bind(&rel).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE file_attachments SET rel_path = ? WHERE id = ?")
+            .bind(&rel)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     if !dir.is_empty() {
         sqlx::query("INSERT OR IGNORE INTO task_folders (task_id, rel_path) VALUES (?, ?)")
@@ -1057,9 +1066,13 @@ pub async fn rename_folder(db: &Db, scope: FolderScope, from: &str, to: &str) ->
         FolderScope::Project(pid) => ("project_files", "project_folders", "project_id", pid),
         FolderScope::Task(tid) => ("file_attachments", "task_folders", "task_id", tid),
     };
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     for (id, np) in &under {
-        sqlx::query(&format!("UPDATE {file_table} SET rel_path = ? WHERE id = ?")).bind(np).bind(id).execute(&mut *tx).await?;
+        sqlx::query(&format!("UPDATE {file_table} SET rel_path = ? WHERE id = ?"))
+            .bind(np)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     for (old, new) in &sub_folders {
         sqlx::query(&format!("DELETE FROM {folder_table} WHERE {owner_col} = ? AND rel_path = ?"))
@@ -1206,7 +1219,12 @@ pub fn ai_flag(size: i64, included: bool, force: bool, max: i64) -> Result<i64> 
 
 /// Put a task attachment in or out of the AI overview. A host-stored copy counts by its
 /// stored size, a local one by its recorded size. `updated_at` moves so replicas pull it.
-pub async fn set_attachment_ai_included(db: &Db, attachment_id: i64, included: bool, force: bool) -> Result<FileAttachment> {
+pub async fn set_attachment_ai_included(
+    db: &Db,
+    attachment_id: i64,
+    included: bool,
+    force: bool,
+) -> Result<FileAttachment> {
     let att = get_attachment(db, attachment_id).await?;
     let size = if att.is_shared { att.storage_size } else { att.file_size.unwrap_or(0) };
     let flag = ai_flag(size, included, force, ai_max_file_bytes())?;
@@ -1225,6 +1243,29 @@ pub async fn set_project_file_ai_included(db: &Db, file_id: i64, included: bool,
     let flag = ai_flag(f.size_bytes, included, force, ai_max_file_bytes())?;
     sqlx::query("UPDATE project_files SET ai_included = ? WHERE id = ?").bind(flag).bind(file_id).execute(db).await?;
     get_project_file(db, file_id).await
+}
+
+/// Take every file of a project out of the AI overview: its project files and its tasks'
+/// attachments. For the files that were in before new files started out (the migration
+/// kept them in). Returns how many it took out.
+pub async fn exclude_project_files_from_ai(db: &Db, project_id: i64) -> Result<u64> {
+    let mut tx = crate::db::begin_write(db).await?;
+    let files = sqlx::query("UPDATE project_files SET ai_included = 0 WHERE project_id = ? AND ai_included != 0")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    let atts = sqlx::query(
+        "UPDATE file_attachments SET ai_included = 0, updated_at = ? \
+         WHERE ai_included != 0 AND task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
+    )
+    .bind(Utc::now())
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(files + atts)
 }
 
 /// Who uploaded a file, by kind ("attachment" | "project"). A missing row is "not found".
@@ -1284,7 +1325,8 @@ pub async fn store_event_file_from_path(
     src: &Path,
     size: i64,
 ) -> Result<EventAttachment> {
-    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM events WHERE id = ?").bind(event_id).fetch_optional(db).await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM events WHERE id = ?").bind(event_id).fetch_optional(db).await?;
     if exists.is_none() {
         return Err(AppError::NotFound(format!("event {event_id}")));
     }
@@ -1328,7 +1370,8 @@ pub async fn delete_event_file(db: &Db, root: &Path, id: i64) -> Result<()> {
 
 /// Delete every file of an event (rows + blobs), when the event itself goes.
 pub async fn delete_event_files(db: &Db, root: &Path, event_id: i64) -> Result<()> {
-    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM event_attachments WHERE event_id = ?").bind(event_id).fetch_all(db).await?;
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM event_attachments WHERE event_id = ?").bind(event_id).fetch_all(db).await?;
     for id in ids {
         delete_event_file(db, root, id).await?;
     }
@@ -1363,7 +1406,10 @@ mod locate_tests {
         let root = tmp("shared");
         std::fs::write(blob_path(&root, 8), b"x").unwrap();
         let theirs = Path::new("/Users/someone-else-xyz/Documents/report.pdf");
-        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 8, true, Some(theirs)), Location::Found(blob_path(&root, 8)));
+        assert_eq!(
+            locate_on_this_machine(Some(&root), BlobKind::Attachment, 8, true, Some(theirs)),
+            Location::Found(blob_path(&root, 8))
+        );
         assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 8, true, Some(theirs)), Location::Nowhere);
         // Its folder exists here but the file does not: still the host copy, not a folder.
         let near = root.join("gone.pdf");
@@ -1378,14 +1424,23 @@ mod locate_tests {
         let mine = root.join("mine.pdf");
         std::fs::write(&mine, b"x").unwrap();
         // Shared by this machine's own desktop: its original folder is the useful one.
-        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 9, true, Some(&mine)), Location::Found(mine.clone()));
+        assert_eq!(
+            locate_on_this_machine(Some(&root), BlobKind::Attachment, 9, true, Some(&mine)),
+            Location::Found(mine.clone())
+        );
         // Local-only: its path, on host or client alike.
-        assert_eq!(locate_on_this_machine(None, BlobKind::Attachment, 10, false, Some(&mine)), Location::Found(mine.clone()));
+        assert_eq!(
+            locate_on_this_machine(None, BlobKind::Attachment, 10, false, Some(&mine)),
+            Location::Found(mine.clone())
+        );
         // Local-only and missing here: never falls into the blob store (no host copy);
         // the nearest folder of its saved path is the help.
         std::fs::write(blob_path(&root, 11), b"stale").unwrap();
         let gone = root.join("gone.pdf");
-        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Attachment, 11, false, Some(&gone)), Location::SavedPathMissing(gone.clone()));
+        assert_eq!(
+            locate_on_this_machine(Some(&root), BlobKind::Attachment, 11, false, Some(&gone)),
+            Location::SavedPathMissing(gone.clone())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1393,7 +1448,10 @@ mod locate_tests {
     fn project_files_live_under_pf() {
         let root = tmp("pf");
         std::fs::write(project_blob_path(&root, 3), b"x").unwrap();
-        assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Project, 3, true, None), Location::Found(project_blob_path(&root, 3)));
+        assert_eq!(
+            locate_on_this_machine(Some(&root), BlobKind::Project, 3, true, None),
+            Location::Found(project_blob_path(&root, 3))
+        );
         // A missing blob is not found.
         assert_eq!(locate_on_this_machine(Some(&root), BlobKind::Project, 4, true, None), Location::Nowhere);
         let _ = std::fs::remove_dir_all(&root);

@@ -320,12 +320,14 @@ pub fn validate_question(question_type: &str, difficulty: &str, points: i64, dat
     if data_json.len() > MAX_DATA_BYTES {
         return Err(AppError::InvalidInput("question data too large (64 KB cap)".into()));
     }
-    let data: serde_json::Value =
-        serde_json::from_str(data_json).map_err(|e| AppError::InvalidInput(format!("question data is not valid JSON: {e}")))?;
+    let data: serde_json::Value = serde_json::from_str(data_json)
+        .map_err(|e| AppError::InvalidInput(format!("question data is not valid JSON: {e}")))?;
     // Per-type structural minimums — enough to keep the runner honest.
     match question_type {
         "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "IMAGE_IDENTIFICATION" => {
-            let opts = data["options"].as_array().ok_or_else(|| AppError::InvalidInput("choice questions need an options array".into()))?;
+            let opts = data["options"]
+                .as_array()
+                .ok_or_else(|| AppError::InvalidInput("choice questions need an options array".into()))?;
             if opts.len() < 2 {
                 return Err(AppError::InvalidInput("choice questions need at least 2 options".into()));
             }
@@ -411,10 +413,8 @@ pub async fn quiz_project(db: &Db, quiz_id: i64) -> Result<i64> {
     if let Some(t) = topic_id {
         return topic_project(db, t).await;
     }
-    let first: Option<i64> = ids_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<Vec<i64>>(s).ok())
-        .and_then(|v| v.first().copied());
+    let first: Option<i64> =
+        ids_json.as_deref().and_then(|s| serde_json::from_str::<Vec<i64>>(s).ok()).and_then(|v| v.first().copied());
     match first {
         Some(t) => topic_project(db, t).await,
         None => Err(AppError::NotFound("quiz has no scope".into())),
@@ -438,10 +438,7 @@ pub async fn get_subject_quizzes(db: &Db, subject_id: i64) -> Result<Vec<Quiz>> 
 
 /// Subject-scoped exams.
 pub async fn get_exams(db: &Db, subject_id: i64) -> Result<Vec<Quiz>> {
-    Ok(sqlx::query_as("SELECT * FROM quizzes WHERE subject_id = ? ORDER BY id")
-        .bind(subject_id)
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as("SELECT * FROM quizzes WHERE subject_id = ? ORDER BY id").bind(subject_id).fetch_all(db).await?)
 }
 
 /// Every question under a subject (the exam runner's pool).
@@ -507,11 +504,7 @@ pub async fn merge_topics(db: &Db, from: i64, into: i64) -> Result<u64> {
         .bind(from)
         .execute(db)
         .await?;
-    sqlx::query("UPDATE quizzes SET topic_id = ? WHERE topic_id = ?")
-        .bind(into)
-        .bind(from)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE quizzes SET topic_id = ? WHERE topic_id = ?").bind(into).bind(from).execute(db).await?;
     delete_topic(db, from).await?;
     Ok(r.rows_affected())
 }
@@ -541,7 +534,13 @@ pub async fn get_subjects(db: &Db, project_id: i64) -> Result<Vec<QuizSubject>> 
         .await?)
 }
 
-pub async fn create_subject(db: &Db, project_id: i64, name: &str, color: Option<&str>, icon: Option<&str>) -> Result<QuizSubject> {
+pub async fn create_subject(
+    db: &Db,
+    project_id: i64,
+    name: &str,
+    color: Option<&str>,
+    icon: Option<&str>,
+) -> Result<QuizSubject> {
     let name = clean_name(name, "subject")?;
     let r = sqlx::query("INSERT INTO quiz_subjects (project_id, name, color, icon) VALUES (?, ?, ?, ?)")
         .bind(project_id)
@@ -553,7 +552,13 @@ pub async fn create_subject(db: &Db, project_id: i64, name: &str, color: Option<
     Ok(sqlx::query_as("SELECT * FROM quiz_subjects WHERE id = ?").bind(r.last_insert_rowid()).fetch_one(db).await?)
 }
 
-pub async fn update_subject(db: &Db, id: i64, name: Option<&str>, color: Option<&str>, icon: Option<&str>) -> Result<QuizSubject> {
+pub async fn update_subject(
+    db: &Db,
+    id: i64,
+    name: Option<&str>,
+    color: Option<&str>,
+    icon: Option<&str>,
+) -> Result<QuizSubject> {
     let cur: QuizSubject = sqlx::query_as("SELECT * FROM quiz_subjects WHERE id = ?")
         .bind(id)
         .fetch_optional(db)
@@ -735,10 +740,7 @@ pub async fn delete_question(db: &Db, id: i64) -> Result<()> {
 // ── quizzes ─────────────────────────────────────────────────────────────────
 
 pub async fn get_quizzes(db: &Db, topic_id: i64) -> Result<Vec<Quiz>> {
-    Ok(sqlx::query_as("SELECT * FROM quizzes WHERE topic_id = ? ORDER BY id")
-        .bind(topic_id)
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as("SELECT * FROM quizzes WHERE topic_id = ? ORDER BY id").bind(topic_id).fetch_all(db).await?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -943,16 +945,22 @@ mod tests {
     #[tokio::test]
     async fn attempt_fk_survives_the_rebuild_and_repairs_damage() {
         let db = test_db().await;
-        let p = crate::ops::create_project(&db, crate::models::CreateProjectInput { name: "R".into(), description: None })
-            .await
-            .unwrap();
+        let p =
+            crate::ops::create_project(&db, crate::models::CreateProjectInput { name: "R".into(), description: None })
+                .await
+                .unwrap();
         let s = create_subject(&db, p.id, "S", None, None).await.unwrap();
         let t = create_topic(&db, s.id, "T", None).await.unwrap();
-        let z = create_quiz(&db, "quiz", Some(&[t.id]), None, "Q", None, 5, None, true, true, "END_OF_QUIZ", 60).await.unwrap();
+        let z = create_quiz(&db, "quiz", Some(&[t.id]), None, "Q", None, 5, None, true, true, "END_OF_QUIZ", 60)
+            .await
+            .unwrap();
 
         // Inflict the exact damage the buggy migration caused.
         sqlx::query("ALTER TABLE quizzes RENAME TO quizzes_old").execute(&db).await.unwrap();
-        let dmg: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='quiz_attempts'").fetch_one(&db).await.unwrap();
+        let dmg: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='quiz_attempts'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert!(dmg.contains("quizzes_old"), "rename rewrote the FK: {dmg}");
         sqlx::query("ALTER TABLE quizzes_old RENAME TO quizzes").execute(&db).await.unwrap();
         // Renaming back ALSO rewrites it back — so recreate the damage the way
@@ -988,9 +996,12 @@ mod tests {
     #[tokio::test]
     async fn full_domain_round_trip() {
         let db = test_db().await;
-        let p = crate::ops::create_project(&db, crate::models::CreateProjectInput { name: "Uni".into(), description: None })
-            .await
-            .unwrap();
+        let p = crate::ops::create_project(
+            &db,
+            crate::models::CreateProjectInput { name: "Uni".into(), description: None },
+        )
+        .await
+        .unwrap();
 
         let s = create_subject(&db, p.id, " Shipping Economics ", Some("#A78BFA"), Some("🚢")).await.unwrap();
         assert_eq!(s.name, "Shipping Economics", "names are trimmed");
@@ -998,8 +1009,22 @@ mod tests {
         assert_eq!(topic_project(&db, t.id).await.unwrap(), p.id, "ownership walks to the project");
 
         // Validation rejects, never coerces.
-        assert!(create_question(&db, t.id, "SINGLE_CHOICE", "Pick one", None, "MEDIUM", 1, None, r#"{"options":[]}"#).await.is_err());
-        assert!(create_question(&db, t.id, "SINGLE_CHOICE", "Pick one", None, "SPICY", 1, None, r#"{"options":[{"optionText":"a","isCorrect":true},{"optionText":"b","isCorrect":false}]}"#).await.is_err());
+        assert!(create_question(&db, t.id, "SINGLE_CHOICE", "Pick one", None, "MEDIUM", 1, None, r#"{"options":[]}"#)
+            .await
+            .is_err());
+        assert!(create_question(
+            &db,
+            t.id,
+            "SINGLE_CHOICE",
+            "Pick one",
+            None,
+            "SPICY",
+            1,
+            None,
+            r#"{"options":[{"optionText":"a","isCorrect":true},{"optionText":"b","isCorrect":false}]}"#
+        )
+        .await
+        .is_err());
         let q = create_question(
             &db, t.id, "SINGLE_CHOICE", "What drives spot rates?", Some("Supply and demand."), "EASY", 2, Some("lecture 2"),
             r#"{"options":[{"optionText":"Vessel supply vs cargo demand","isCorrect":true},{"optionText":"The phase of the moon","isCorrect":false}]}"#,
@@ -1008,14 +1033,35 @@ mod tests {
         .unwrap();
         assert_eq!(get_questions(&db, t.id).await.unwrap().len(), 1);
 
-        let z = create_quiz(&db, "quiz", Some(&[t.id]), None, "Weekly check", None, 10, None, true, true, "END_OF_QUIZ", 60).await.unwrap();
+        let z = create_quiz(
+            &db,
+            "quiz",
+            Some(&[t.id]),
+            None,
+            "Weekly check",
+            None,
+            10,
+            None,
+            true,
+            true,
+            "END_OF_QUIZ",
+            60,
+        )
+        .await
+        .unwrap();
         // Exams scope to a subject (or topics); double-scoping is rejected.
-        let ex = create_quiz(&db, "exam", None, Some(s.id), "Mock exam", None, 20, None, true, true, "END_OF_QUIZ", 50).await.unwrap();
+        let ex = create_quiz(&db, "exam", None, Some(s.id), "Mock exam", None, 20, None, true, true, "END_OF_QUIZ", 50)
+            .await
+            .unwrap();
         assert_eq!(ex.kind, "exam");
         assert_eq!(quiz_project(&db, ex.id).await.unwrap(), p.id);
         assert_eq!(quiz_project(&db, z.id).await.unwrap(), p.id, "multi-topic scope walks to the project");
-        assert!(create_quiz(&db, "quiz", Some(&[t.id]), Some(s.id), "Both", None, 5, None, true, true, "NEVER", 60).await.is_err());
-        assert!(create_quiz(&db, "party", Some(&[t.id]), None, "Bad kind", None, 5, None, true, true, "NEVER", 60).await.is_err());
+        assert!(create_quiz(&db, "quiz", Some(&[t.id]), Some(s.id), "Both", None, 5, None, true, true, "NEVER", 60)
+            .await
+            .is_err());
+        assert!(create_quiz(&db, "party", Some(&[t.id]), None, "Bad kind", None, 5, None, true, true, "NEVER", 60)
+            .await
+            .is_err());
         assert_eq!(get_exams(&db, s.id).await.unwrap().len(), 1);
         assert_eq!(get_subject_quizzes(&db, s.id).await.unwrap().len(), 2, "one list finds every scope shape");
         assert_eq!(get_subject_questions(&db, s.id).await.unwrap().len(), 1);
@@ -1033,25 +1079,38 @@ mod tests {
         assert!(merge_topics(&db, t.id, t.id).await.is_err(), "self-merge rejected");
 
         // Duplicate fingerprints: case + whitespace drift collapse to one.
-        assert_eq!(
-            question_fingerprint("What  drives\nspot rates?"),
-            question_fingerprint("what drives spot rates?")
-        );
+        assert_eq!(question_fingerprint("What  drives\nspot rates?"), question_fingerprint("what drives spot rates?"));
         let prints = subject_fingerprints(&db, s.id).await.unwrap();
         assert!(prints.contains(&question_fingerprint("What drives spot rates?")));
-        let a = record_attempt(&db, z.id, Some(1), 2.0, 2.0, Some(42), &format!(r#"{{"{}":{{"is_correct":true,"points_earned":2}}}}"#, q.id))
-            .await
-            .unwrap();
+        let a = record_attempt(
+            &db,
+            z.id,
+            Some(1),
+            2.0,
+            2.0,
+            Some(42),
+            &format!(r#"{{"{}":{{"is_correct":true,"points_earned":2}}}}"#, q.id),
+        )
+        .await
+        .unwrap();
         assert_eq!(a.percentage, 100.0);
         assert_eq!(get_attempts(&db, z.id).await.unwrap().len(), 1);
 
         // Leaderboard: opt-in gates appearance (and the row joins a real user).
-        let u = crate::ops::create_user(&db, crate::models::CreateUserInput { username: "peter".into(), full_name: "Peter".into(), email: None })
-            .await
-            .unwrap();
+        let u = crate::ops::create_user(
+            &db,
+            crate::models::CreateUserInput { username: "peter".into(), full_name: "Peter".into(), email: None },
+        )
+        .await
+        .unwrap();
         // Re-point the attempt at the real user (the literal 1 above may not
         // exist in a fresh test db).
-        sqlx::query("UPDATE quiz_attempts SET user_id = ? WHERE id = ?").bind(u.id).bind(a.id).execute(&db).await.unwrap();
+        sqlx::query("UPDATE quiz_attempts SET user_id = ? WHERE id = ?")
+            .bind(u.id)
+            .bind(a.id)
+            .execute(&db)
+            .await
+            .unwrap();
         assert!(leaderboard(&db, s.id).await.unwrap().is_empty(), "no opt-in, no rows");
         set_leaderboard_optin(&db, p.id, u.id, true).await.unwrap();
         let lb = leaderboard(&db, s.id).await.unwrap();

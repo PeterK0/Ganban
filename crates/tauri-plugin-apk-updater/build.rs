@@ -4,7 +4,5 @@
 const COMMANDS: &[&str] = &["apk_version", "apk_download", "apk_install"];
 
 fn main() {
-    tauri_plugin::Builder::new(COMMANDS)
-        .android_path("android")
-        .build();
+    tauri_plugin::Builder::new(COMMANDS).android_path("android").build();
 }

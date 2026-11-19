@@ -13,21 +13,22 @@
 pub(crate) mod schema;
 
 mod accounts;
+pub mod budgets;
 mod chart;
 pub mod close;
 pub mod currency;
 mod entries;
+pub mod forecast;
 pub mod import;
 pub mod inbox;
 pub mod pairing;
+pub mod payees;
 pub mod rates;
-pub mod rules;
-mod reports;
-pub mod budgets;
-pub mod forecast;
 pub mod recurring;
 pub mod reminder;
+mod reports;
 pub mod reset;
+pub mod rules;
 pub mod schedules;
 pub mod statements;
 #[cfg(test)]
@@ -113,10 +114,10 @@ pub async fn entity_for_user(db: &Db, user_id: i64) -> Result<Entity> {
         return Ok(e);
     }
     let project_id = crate::ops::ensure_personal_project(db, user_id).await?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let created = sqlx::query(
-        "INSERT OR IGNORE INTO fin_entities (user_id, project_id, name, functional_currency, created_at) \
-         VALUES (?, ?, 'Personal', 'EUR', ?)",
+        "INSERT OR IGNORE INTO fin_entities (user_id, project_id, name, functional_currency, created_at, payees_learned) \
+         VALUES (?, ?, 'Personal', 'EUR', ?, 1)",
     )
     .bind(user_id)
     .bind(project_id)
@@ -129,11 +130,14 @@ pub async fn entity_for_user(db: &Db, user_id: i64) -> Result<Entity> {
         sqlx::query_as("SELECT * FROM fin_entities WHERE user_id = ?").bind(user_id).fetch_one(&mut *tx).await?;
     if created {
         chart::create_default(&mut tx, &entity).await?;
-        audit(&mut tx, &entity, "create", "entity", Some(entity.id), None, Some(&serde_json::to_value(&entity)?)).await?;
-        // First use: have the rates routine fetch the full ECB history at its next check.
-        sqlx::query("UPDATE routines SET last_run_at = NULL WHERE kind = 'ecb_rates' AND NOT EXISTS (SELECT 1 FROM fin_rates)")
-            .execute(&mut *tx)
+        audit(&mut tx, &entity, "create", "entity", Some(entity.id), None, Some(&serde_json::to_value(&entity)?))
             .await?;
+        // First use: have the rates routine fetch the full ECB history at its next check.
+        sqlx::query(
+            "UPDATE routines SET last_run_at = NULL WHERE kind = 'ecb_rates' AND NOT EXISTS (SELECT 1 FROM fin_rates)",
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(entity)
@@ -148,7 +152,7 @@ pub async fn find_entity(db: &Db, user_id: i64) -> Result<Option<Entity>> {
 /// Rename the entity or change its functional currency. The currency can change only while
 /// nothing is posted; drafts are retranslated into the new one.
 pub async fn update_entity(db: &Db, ent: &Entity, patch: EntityPatch) -> Result<Entity> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let mut next = ent.clone();
     if let Some(name) = patch.name {
         let name = name.trim();
@@ -161,10 +165,11 @@ pub async fn update_entity(db: &Db, ent: &Entity, patch: EntityPatch) -> Result<
     if let Some(cur) = patch.functional_currency {
         let cur = currency::normalise(&cur)?;
         if cur != ent.functional_currency {
-            let posted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fin_entries WHERE entity_id = ? AND status != 'draft'")
-                .bind(ent.id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let posted: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM fin_entries WHERE entity_id = ? AND status != 'draft'")
+                    .bind(ent.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             if posted > 0 {
                 return Err(AppError::InvalidInput(
                     "the functional currency can change only while nothing is posted".into(),
@@ -183,8 +188,16 @@ pub async fn update_entity(db: &Db, ent: &Entity, patch: EntityPatch) -> Result<
     if retranslate {
         entries::retranslate_drafts(&mut tx, &next).await?;
     }
-    audit(&mut tx, ent, "update", "entity", Some(ent.id), Some(&serde_json::to_value(ent)?), Some(&serde_json::to_value(&next)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "entity",
+        Some(ent.id),
+        Some(&serde_json::to_value(ent)?),
+        Some(&serde_json::to_value(&next)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(next)
 }

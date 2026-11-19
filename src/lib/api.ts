@@ -126,7 +126,8 @@ export function invokeLocal<T>(command: string, args?: Record<string, any>): Pro
     // A refusal with a code arrives as `{ error, code }`: rethrow it as the
     // DaemonError the HTTP path throws, so callers match `code` the same way.
     const parts = localErrorParts(e);
-    throw parts?.code ? new DaemonError(parts.message, 400, parts.code) : e;
+    if (!parts?.code) throw e;
+    throw new DaemonError(parts.message, parts.current !== undefined ? 409 : 400, parts.code, parts.current);
   });
 }
 
@@ -394,11 +395,15 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
   return await invokeWithLogging("create_task", { input });
 }
 
+/** Save a task. With `expectedUpdatedAt` (the `updated_at` the edit is based on)
+ * the host refuses the save with a TASK_CHANGED conflict when the task changed
+ * since; lib/taskConflict.ts's `saveFormChecked` handles that. */
 export async function updateTask(
   taskId: number,
-  input: UpdateTaskInput
+  input: UpdateTaskInput,
+  expectedUpdatedAt?: string
 ): Promise<Task> {
-  return await invokeWithLogging("update_task", { taskId, input });
+  return await invokeWithLogging("update_task", expectedUpdatedAt ? { taskId, input, expectedUpdatedAt } : { taskId, input });
 }
 
 export async function updateTaskStatus(
@@ -958,6 +963,12 @@ export async function setFileAiIncluded<T extends FileAttachment | ProjectFile =
   force = false,
 ): Promise<T> {
   return hostInvoke<T>("set_file_ai_included", { kind, id, included, force });
+}
+
+/** Take every file of a project (its own and its tasks') out of the AI overview, for files
+ * that were in before new ones started out. Project admins. */
+export async function excludeProjectFilesFromAi(projectId: number): Promise<void> {
+  return hostInvoke("exclude_project_files_from_ai", { projectId });
 }
 
 // ---- Files: names, folders and where the bytes live (lane files-ui) ----

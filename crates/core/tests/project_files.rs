@@ -19,9 +19,18 @@ async fn project_files_round_trip_and_quota() {
     let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
 
     // Store a file.
-    let f = storage::store_project_file(&db, &root, pid, "spec.md", Some("text/markdown"), Some("docs/spec.md"), Some(1), b"hello world")
-        .await
-        .unwrap();
+    let f = storage::store_project_file(
+        &db,
+        &root,
+        pid,
+        "spec.md",
+        Some("text/markdown"),
+        Some("docs/spec.md"),
+        Some(1),
+        b"hello world",
+    )
+    .await
+    .unwrap();
     assert_eq!(f.file_name, "spec.md");
     assert_eq!(f.size_bytes, 11);
     assert_eq!(f.rel_path.as_deref(), Some("docs/spec.md"));
@@ -93,7 +102,8 @@ async fn project_attachments_aggregate_with_task_title() {
 
     // A shared attachment with bytes surfaces in the project view, tagged with
     // its task title, and counts toward usage.
-    let att = storage::create_shared_attachment(&db, task.id, "survey.pdf", Some("application/pdf"), Some(1)).await.unwrap();
+    let att =
+        storage::create_shared_attachment(&db, task.id, "survey.pdf", Some("application/pdf"), Some(1)).await.unwrap();
     storage::set_storage_size(&db, att.id, 2048).await.unwrap();
 
     let list = storage::list_project_attachments(&db, pid).await.unwrap();
@@ -115,10 +125,23 @@ async fn audit_finds_missing_blobs_and_restore_or_clear_resolves_them() {
     // Two project files + one shared attachment, all healthy.
     let keep = storage::store_project_file(&db, &root, pid, "keep.md", None, None, None, b"fine").await.unwrap();
     let broken = storage::store_project_file(&db, &root, pid, "broken.pdf", None, None, None, b"bytes!").await.unwrap();
-    let task = ops::create_task(&db, CreateTaskInput {
-        project_id: pid, area_id: None, title: "T".into(), description: None,
-        status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-    }).await.unwrap();
+    let task = ops::create_task(
+        &db,
+        CreateTaskInput {
+            project_id: pid,
+            area_id: None,
+            title: "T".into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
+        },
+    )
+    .await
+    .unwrap();
     let att = storage::create_shared_attachment(&db, task.id, "att.txt", Some("text/plain"), None).await.unwrap();
     std::fs::write(storage::blob_path(&root, att.id), b"shared bytes").unwrap();
     storage::set_storage_size(&db, att.id, 12).await.unwrap();
@@ -136,17 +159,26 @@ async fn audit_finds_missing_blobs_and_restore_or_clear_resolves_them() {
     assert!(missing.iter().any(|m| m.id == att.id && m.kind == "attachment"));
 
     // Restore the project file: same id, new bytes, size/type updated.
-    let restored = storage::restore_project_file(&db, &root, broken.id, Some("application/pdf"), b"new bytes, longer").await.unwrap();
+    let restored = storage::restore_project_file(&db, &root, broken.id, Some("application/pdf"), b"new bytes, longer")
+        .await
+        .unwrap();
     assert_eq!(restored.id, broken.id, "the link (id) survives a restore");
     assert_eq!(restored.size_bytes, 17);
     assert_eq!(std::fs::read(storage::project_blob_path(&root, broken.id)).unwrap(), b"new bytes, longer");
-    assert_eq!(storage::audit_project_files(&db, &root, pid).await.unwrap().len(), 1, "only the attachment is still missing");
+    assert_eq!(
+        storage::audit_project_files(&db, &root, pid).await.unwrap().len(),
+        1,
+        "only the attachment is still missing"
+    );
 
     // Clear the rest: the dead attachment record is deleted outright.
     assert_eq!(storage::clear_missing_files(&db, &root, pid).await.unwrap(), 1);
     assert!(storage::audit_project_files(&db, &root, pid).await.unwrap().is_empty());
     let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_attachments WHERE id = ?")
-        .bind(att.id).fetch_one(&db).await.unwrap();
+        .bind(att.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(still_there, 0, "a record pointing at nothing is removed");
 
     // Clearing a missing PROJECT file deletes its row outright; the restored
@@ -161,11 +193,15 @@ async fn audit_finds_missing_blobs_and_restore_or_clear_resolves_them() {
     let big = storage::store_project_file(&db, &root, pid, "big.bin", None, None, None, &vec![0u8; 100]).await.unwrap();
     storage::set_project_quota(&db, pid, 117).await.unwrap(); // exactly current usage (100 + the 17-byte restored file)
     std::fs::remove_file(storage::project_blob_path(&root, big.id)).unwrap();
-    assert!(storage::restore_project_file(&db, &root, big.id, None, &vec![0u8; 100]).await.is_ok(),
-        "restoring at the same size fits — the stale size is netted out");
+    assert!(
+        storage::restore_project_file(&db, &root, big.id, None, &vec![0u8; 100]).await.is_ok(),
+        "restoring at the same size fits — the stale size is netted out"
+    );
     std::fs::remove_file(storage::project_blob_path(&root, big.id)).unwrap();
-    assert!(storage::restore_project_file(&db, &root, big.id, None, &vec![0u8; 101]).await.is_err(),
-        "but growing past the quota is refused");
+    assert!(
+        storage::restore_project_file(&db, &root, big.id, None, &vec![0u8; 101]).await.is_err(),
+        "but growing past the quota is refused"
+    );
 }
 
 #[tokio::test]
@@ -175,23 +211,55 @@ async fn local_files_batch_push_and_task_allocation_round_trip() {
     let root = dir.join("storage");
     std::fs::create_dir_all(&root).unwrap();
     let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
-    let task = ops::create_task(&db, CreateTaskInput {
-        project_id: pid, area_id: None, title: "T".into(), description: None,
-        status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-    }).await.unwrap();
+    let task = ops::create_task(
+        &db,
+        CreateTaskInput {
+            project_id: pid,
+            area_id: None,
+            title: "T".into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
+        },
+    )
+    .await
+    .unwrap();
 
     // Two legacy local attachments: one whose file exists, one long gone.
     let alive_path = dir.join("local_alive.txt");
     std::fs::write(&alive_path, b"local bytes").unwrap();
-    let alive = ops::create_file_attachment(&db, ganban_core::models::CreateFileAttachmentInput {
-        task_id: task.id, file_path: alive_path.to_string_lossy().into_owned(),
-        file_name: "local_alive.txt".into(), file_type: Some("text/plain".into()),
-        file_size: Some(11), notes: None, uploaded_by: None,
-    }).await.unwrap();
-    ops::create_file_attachment(&db, ganban_core::models::CreateFileAttachmentInput {
-        task_id: task.id, file_path: dir.join("vanished.txt").to_string_lossy().into_owned(),
-        file_name: "vanished.txt".into(), file_type: None, file_size: None, notes: None, uploaded_by: None,
-    }).await.unwrap();
+    let alive = ops::create_file_attachment(
+        &db,
+        ganban_core::models::CreateFileAttachmentInput {
+            task_id: task.id,
+            file_path: alive_path.to_string_lossy().into_owned(),
+            file_name: "local_alive.txt".into(),
+            file_type: Some("text/plain".into()),
+            file_size: Some(11),
+            notes: None,
+            uploaded_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    ops::create_file_attachment(
+        &db,
+        ganban_core::models::CreateFileAttachmentInput {
+            task_id: task.id,
+            file_path: dir.join("vanished.txt").to_string_lossy().into_owned(),
+            file_name: "vanished.txt".into(),
+            file_type: None,
+            file_size: None,
+            notes: None,
+            uploaded_by: None,
+        },
+    )
+    .await
+    .unwrap();
 
     // Batch push: the live one lands on the host, the vanished one is reported.
     let summary = storage::share_all_local(&db, &root, pid).await.unwrap();
@@ -203,7 +271,9 @@ async fn local_files_batch_push_and_task_allocation_round_trip() {
     assert!(alive_path.exists(), "the local original is untouched");
 
     // Allocation round trip: project file → task attachment → back.
-    let pf = storage::store_project_file(&db, &root, pid, "doc.md", Some("text/markdown"), None, Some(1), b"doc body").await.unwrap();
+    let pf = storage::store_project_file(&db, &root, pid, "doc.md", Some("text/markdown"), None, Some(1), b"doc body")
+        .await
+        .unwrap();
     let used_before = storage::project_used(&db, pid).await.unwrap();
 
     let att = storage::assign_file_to_task(&db, &root, pf.id, task.id).await.unwrap();
@@ -221,7 +291,9 @@ async fn local_files_batch_push_and_task_allocation_round_trip() {
     assert_eq!(storage::project_used(&db, pid).await.unwrap(), used_before);
 
     // A file in a folder keeps its folder path both ways (a task's folder structure).
-    let pf = storage::store_project_file(&db, &root, pid, "a.jpg", None, Some("Photos/2026/a.jpg"), Some(1), b"jpg").await.unwrap();
+    let pf = storage::store_project_file(&db, &root, pid, "a.jpg", None, Some("Photos/2026/a.jpg"), Some(1), b"jpg")
+        .await
+        .unwrap();
     let att = storage::assign_file_to_task(&db, &root, pf.id, task.id).await.unwrap();
     assert_eq!(att.rel_path.as_deref(), Some("Photos/2026/a.jpg"));
     let back_in_folder = storage::unassign_attachment(&db, &root, att.id).await.unwrap();
@@ -230,15 +302,38 @@ async fn local_files_batch_push_and_task_allocation_round_trip() {
 
     // Guards: cross-project tasks refused; local attachments can't unassign.
     let other = ops::create_project(&db, CreateProjectInput { name: "Q".into(), description: None }).await.unwrap();
-    let foreign_task = ops::create_task(&db, CreateTaskInput {
-        project_id: other.id, area_id: None, title: "X".into(), description: None,
-        status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-    }).await.unwrap();
+    let foreign_task = ops::create_task(
+        &db,
+        CreateTaskInput {
+            project_id: other.id,
+            area_id: None,
+            title: "X".into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
+        },
+    )
+    .await
+    .unwrap();
     assert!(storage::assign_file_to_task(&db, &root, back.id, foreign_task.id).await.is_err());
-    let local_again = ops::create_file_attachment(&db, ganban_core::models::CreateFileAttachmentInput {
-        task_id: task.id, file_path: "/nowhere".into(), file_name: "x".into(),
-        file_type: None, file_size: None, notes: None, uploaded_by: None,
-    }).await.unwrap();
+    let local_again = ops::create_file_attachment(
+        &db,
+        ganban_core::models::CreateFileAttachmentInput {
+            task_id: task.id,
+            file_path: "/nowhere".into(),
+            file_name: "x".into(),
+            file_type: None,
+            file_size: None,
+            notes: None,
+            uploaded_by: None,
+        },
+    )
+    .await
+    .unwrap();
     assert!(storage::unassign_attachment(&db, &root, local_again.id).await.is_err());
 }
 
@@ -309,10 +404,21 @@ async fn renames_and_moves_refuse_clashes() {
     let err = storage::rename_project_file(&db, b.id, "a.md").await.unwrap_err();
     assert!(err.to_string().contains("already exists"), "{err}");
     assert_eq!(storage::rename_project_file(&db, b.id, "b2.md").await.unwrap().rel_path.as_deref(), Some("docs/b2.md"));
-    assert_eq!(storage::rename_project_file(&db, c.id, "c.md").await.unwrap().rel_path, None, "a loose file stays loose");
+    assert_eq!(
+        storage::rename_project_file(&db, c.id, "c.md").await.unwrap().rel_path,
+        None,
+        "a loose file stays loose"
+    );
     storage::rename_project_file(&db, c.id, "a.md").await.unwrap();
     assert!(storage::move_project_files(&db, pid, &[c.id], "docs").await.is_err(), "docs/a.md is taken");
-    assert_eq!(storage::move_project_files(&db, pid, &[a.id, b.id], "").await.unwrap_err().to_string().contains("already exists"), true);
+    assert_eq!(
+        storage::move_project_files(&db, pid, &[a.id, b.id], "")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"),
+        true
+    );
     // A name that's a folder is taken too.
     storage::create_project_folder(&db, pid, "notes").await.unwrap();
     assert!(storage::rename_project_file(&db, c.id, "notes").await.is_err());
@@ -336,8 +442,12 @@ async fn names_clash_regardless_of_case() {
     let db = init_db_role(&dir.join("t.db"), Role::Server).await.unwrap();
     let root = dir.join("storage");
     let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
-    let r = storage::store_project_file(&db, &root, pid, "report.pdf", None, Some("Docs/report.pdf"), None, b"r").await.unwrap();
-    let s = storage::store_project_file(&db, &root, pid, "other.pdf", None, Some("Docs/other.pdf"), None, b"s").await.unwrap();
+    let r = storage::store_project_file(&db, &root, pid, "report.pdf", None, Some("Docs/report.pdf"), None, b"r")
+        .await
+        .unwrap();
+    let s = storage::store_project_file(&db, &root, pid, "other.pdf", None, Some("Docs/other.pdf"), None, b"s")
+        .await
+        .unwrap();
     let loose = storage::store_project_file(&db, &root, pid, "Report.PDF", None, None, None, b"l").await.unwrap();
     let scope = storage::FolderScope::Project(pid);
 
@@ -353,15 +463,32 @@ async fn names_clash_regardless_of_case() {
     assert!(storage::rename_folder(&db, scope, "Notes", "docs").await.is_err(), "a folder onto another, by case");
 
     // Changing one's own case is no clash.
-    assert_eq!(storage::rename_project_file(&db, r.id, "Report.pdf").await.unwrap().rel_path.as_deref(), Some("Docs/Report.pdf"));
+    assert_eq!(
+        storage::rename_project_file(&db, r.id, "Report.pdf").await.unwrap().rel_path.as_deref(),
+        Some("Docs/Report.pdf")
+    );
     assert_eq!(storage::rename_folder(&db, scope, "Docs", "docs").await.unwrap(), 2);
     assert!(storage::list_project_folders(&db, pid).await.unwrap().iter().all(|f| f != "Docs"));
 
     // Task files follow the same rule.
-    let tid = ops::create_task(&db, CreateTaskInput {
-        project_id: pid, area_id: None, title: "T".into(), description: None,
-        status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-    }).await.unwrap().id;
+    let tid = ops::create_task(
+        &db,
+        CreateTaskInput {
+            project_id: pid,
+            area_id: None,
+            title: "T".into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
+        },
+    )
+    .await
+    .unwrap()
+    .id;
     let a = storage::create_shared_attachment(&db, tid, "Plan.md", None, None).await.unwrap();
     let b = storage::create_shared_attachment(&db, tid, "notes.md", None, None).await.unwrap();
     assert!(storage::rename_attachment(&db, b.id, "plan.MD").await.is_err(), "task file rename, by case");
@@ -377,8 +504,10 @@ async fn folder_renames_carry_their_files() {
     let root = dir.join("storage");
     let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
     let x = storage::store_project_file(&db, &root, pid, "x.md", None, Some("specs/x.md"), None, b"x").await.unwrap();
-    let y = storage::store_project_file(&db, &root, pid, "y.md", None, Some("specs/2026/y.md"), None, b"y").await.unwrap();
-    let z = storage::store_project_file(&db, &root, pid, "z.md", None, Some("specsheet/z.md"), None, b"z").await.unwrap();
+    let y =
+        storage::store_project_file(&db, &root, pid, "y.md", None, Some("specs/2026/y.md"), None, b"y").await.unwrap();
+    let z =
+        storage::store_project_file(&db, &root, pid, "z.md", None, Some("specsheet/z.md"), None, b"z").await.unwrap();
     storage::create_project_folder(&db, pid, "specs/empty").await.unwrap();
     storage::create_project_folder(&db, pid, "taken").await.unwrap();
     let scope = storage::FolderScope::Project(pid);
@@ -415,10 +544,24 @@ async fn task_files_have_names_and_folders() {
         let db = db.clone();
         let title = title.to_string();
         async move {
-            ops::create_task(&db, CreateTaskInput {
-                project_id: pid, area_id: None, title, description: None,
-                status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-            }).await.unwrap().id
+            ops::create_task(
+                &db,
+                CreateTaskInput {
+                    project_id: pid,
+                    area_id: None,
+                    title,
+                    description: None,
+                    status: "To Do".into(),
+                    priority: "Low".into(),
+                    prefix: None,
+                    cost: None,
+                    currency: None,
+                    deadline: None,
+                },
+            )
+            .await
+            .unwrap()
+            .id
         }
     };
     let (t, other) = (task("T").await, task("U").await);
@@ -427,7 +570,11 @@ async fn task_files_have_names_and_folders() {
     let elsewhere = storage::create_shared_attachment(&db, other, "c.jpg", None, None).await.unwrap();
 
     assert!(storage::rename_attachment(&db, b.id, "a.jpg").await.is_err(), "clash on the task");
-    assert_eq!(storage::rename_attachment(&db, b.id, "c.jpg").await.unwrap().file_name, "c.jpg", "another task's name is free");
+    assert_eq!(
+        storage::rename_attachment(&db, b.id, "c.jpg").await.unwrap().file_name,
+        "c.jpg",
+        "another task's name is free"
+    );
 
     storage::create_task_folder(&db, t, "Photos").await.unwrap();
     assert_eq!(storage::list_task_folders(&db, t).await.unwrap(), vec!["Photos".to_string()]);

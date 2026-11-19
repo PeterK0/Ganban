@@ -233,8 +233,23 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
         // groups; NULL until then, and again after its text changes.
         ("fin_entries", "group_key", "TEXT"),
         // Import option: post lines older than so many days straight away (off by default).
-        ("fin_settings", "import_post_older", "INTEGER NOT NULL DEFAULT 0"),
-        ("fin_settings", "import_post_older_days", "INTEGER NOT NULL DEFAULT 30"),
+        // Import option: lines older than so many days file themselves (on, at 90 days, by
+        // default; a row written before keeps its choice).
+        ("fin_settings", "import_post_older", "INTEGER NOT NULL DEFAULT 1"),
+        ("fin_settings", "import_post_older_days", "INTEGER NOT NULL DEFAULT 90"),
+        // Payees (`payees`): the entry's and the line's payee, and the alias key it came by
+        // (empty once looked at without finding one).
+        ("fin_entries", "payee_id", "INTEGER"),
+        ("fin_entries", "payee_key", "TEXT"),
+        // Posted as unsorted history: an old line no rule, default or suggestion filed.
+        ("fin_entries", "unsorted", "INTEGER NOT NULL DEFAULT 0"),
+        ("fin_source_lines", "payee_id", "INTEGER"),
+        // An account the import made for the other side of a move: no statement of its own has
+        // been imported yet, so its balance is only what the other side sent.
+        ("fin_accounts", "unconfirmed", "INTEGER NOT NULL DEFAULT 0"),
+        // Set once the books' categories and rules have been learned as payee defaults; new
+        // entities start with it set.
+        ("fin_entities", "payees_learned", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let has: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
             .bind(table)
@@ -264,13 +279,74 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
             ledger_account_id INTEGER REFERENCES fin_ledger_accounts(id) ON DELETE CASCADE, \
             created_at TEXT NOT NULL, \
             PRIMARY KEY (entity_id, group_key))",
+        "CREATE TABLE IF NOT EXISTS fin_payees (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            entity_id INTEGER NOT NULL REFERENCES fin_entities(id) ON DELETE CASCADE, \
+            name TEXT NOT NULL, \
+            default_ledger_account_id INTEGER REFERENCES fin_ledger_accounts(id) ON DELETE SET NULL, \
+            ask_every_time INTEGER NOT NULL DEFAULT 0, \
+            merged_into INTEGER REFERENCES fin_payees(id) ON DELETE SET NULL, \
+            created_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_fin_payees_entity ON fin_payees(entity_id)",
+        "CREATE TABLE IF NOT EXISTS fin_payee_aliases (\
+            entity_id INTEGER NOT NULL REFERENCES fin_entities(id) ON DELETE CASCADE, \
+            key TEXT NOT NULL, \
+            payee_id INTEGER NOT NULL REFERENCES fin_payees(id) ON DELETE CASCADE, \
+            origin_payee_id INTEGER REFERENCES fin_payees(id) ON DELETE SET NULL, \
+            sample TEXT NOT NULL DEFAULT '', \
+            loose_key TEXT NOT NULL DEFAULT '', \
+            PRIMARY KEY (entity_id, key))",
+        "CREATE INDEX IF NOT EXISTS idx_fin_payee_aliases_payee ON fin_payee_aliases(payee_id)",
+        "CREATE TABLE IF NOT EXISTS fin_payee_dismissed (\
+            entity_id INTEGER NOT NULL REFERENCES fin_entities(id) ON DELETE CASCADE, \
+            payee_a INTEGER NOT NULL, \
+            payee_b INTEGER NOT NULL, \
+            created_at TEXT NOT NULL, \
+            PRIMARY KEY (entity_id, payee_a, payee_b))",
+        "CREATE INDEX IF NOT EXISTS idx_fin_entries_payee ON fin_entries(payee_id) WHERE payee_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_fin_entries_unsorted ON fin_entries(entity_id, payee_id) WHERE unsorted = 1",
     ] {
         sqlx::query(sql).execute(pool).await?;
     }
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_fin_source_lines_dedupe ON fin_source_lines(entity_id, account_id, dedupe_key)")
-        .execute(pool)
-        .await?;
+    // Payee names: the bank's capitals title-cased once, on the run that adds `renamed`; from
+    // then on a payee the user renamed keeps its name.
+    let has_renamed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('fin_payees') WHERE name = 'renamed'")
+            .fetch_one(pool)
+            .await?;
+    if has_renamed == 0 {
+        sqlx::query("ALTER TABLE fin_payees ADD COLUMN renamed INTEGER NOT NULL DEFAULT 0").execute(pool).await?;
+        let names: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM fin_payees").fetch_all(pool).await?;
+        for (id, name) in names {
+            let titled = super::payees::keys::title_case(&name);
+            if titled != name {
+                sqlx::query("UPDATE fin_payees SET name = ? WHERE id = ?").bind(titled).bind(id).execute(pool).await?;
+            }
+        }
+    }
+    // A payee's default can be a move to one of the user's accounts.
+    let has_move: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('fin_payees') WHERE name = 'default_account_id'")
+            .fetch_one(pool)
+            .await?;
+    if has_move == 0 {
+        sqlx::query("ALTER TABLE fin_payees ADD COLUMN default_account_id INTEGER").execute(pool).await?;
+    }
+    // The inbox groups a line by its payee when it has one: keys from the bank's text go.
+    sqlx::query(
+        "UPDATE fin_entries SET group_key = NULL WHERE status = 'draft' AND payee_id IS NOT NULL \
+         AND group_key IS NOT NULL AND group_key NOT LIKE '%:#%'",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_fin_source_lines_dedupe ON fin_source_lines(entity_id, account_id, dedupe_key)",
+    )
+    .execute(pool)
+    .await?;
     super::import::dedupe::backfill(pool).await?;
+    // Payees for the lines stored before them come from a background job once the host is up
+    // (`payees::backfill`), never here: a big book would hold up the first `/health`.
     // Pairs that waited for review under older pairing rules get another look.
     super::pairing::rescore_at_startup(pool).await;
     Ok(())

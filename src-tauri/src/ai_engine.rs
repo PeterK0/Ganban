@@ -82,10 +82,7 @@ fn pid_on_port(port: u16) -> Option<u32> {
     {
         // lsof -t prints just PIDs; restrict to listeners so we never grab a
         // mere client (e.g. our own daemon's outbound connection).
-        let out = Command::new("lsof")
-            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
-            .output()
-            .ok()?;
+        let out = Command::new("lsof").args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"]).output().ok()?;
         String::from_utf8_lossy(&out.stdout).lines().next().and_then(|l| l.trim().parse().ok())
     }
     #[cfg(windows)]
@@ -106,9 +103,7 @@ fn pid_on_port(port: u16) -> Option<u32> {
 /// A process's command line (for the pre-kill safety check). Empty if unknown.
 fn process_command(pid: u32) -> String {
     let out = if cfg!(windows) {
-        Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
+        Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]).output()
     } else {
         Command::new("ps").args(["-p", &pid.to_string(), "-o", "command="]).output()
     };
@@ -160,8 +155,11 @@ fn discover(bin: &str, candidates: &[String]) -> Option<String> {
             return Some(p);
         }
     }
-    let finder = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(out) = Command::new(finder).arg(exe(bin)).output() {
+    // On Linux and macOS, the user's PATH: `which` isn't always installed (Arch's base lacks it).
+    if !cfg!(windows) {
+        return crate::system_open::find_on_user_path(bin).map(|p| p.to_string_lossy().into_owned());
+    }
+    if let Ok(out) = Command::new("where").arg(exe(bin)).output() {
         if out.status.success() {
             // `where` can print several matches, one per line — take the first.
             let p = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
@@ -248,7 +246,11 @@ async fn ragrat_url_setting(db: &Db) -> Option<String> {
 
 /// Status of both engines (binary found? port up?) for the Settings panel.
 #[tauri::command]
-pub async fn ai_engine_status(app: AppHandle, pool: State<'_, Db>, state: State<'_, AiEngineState>) -> Result<AiEngineStatus, String> {
+pub async fn ai_engine_status(
+    app: AppHandle,
+    pool: State<'_, Db>,
+    state: State<'_, AiEngineState>,
+) -> Result<AiEngineStatus, String> {
     let db = pool.inner();
     let ragrat_url = ragrat_url_setting(db).await;
     let ragrat_running = configured_ragrat_port(&ragrat_url).map(port_open).unwrap_or(false);
@@ -258,11 +260,7 @@ pub async fn ai_engine_status(app: AppHandle, pool: State<'_, Db>, state: State<
     };
     let (ollama_managed, ragrat_managed, any_managed) = {
         let kids = state.children.lock().await;
-        (
-            kids.iter().any(|(l, _)| l == "ollama"),
-            kids.iter().any(|(l, _)| l == "ragrat"),
-            !kids.is_empty(),
-        )
+        (kids.iter().any(|(l, _)| l == "ollama"), kids.iter().any(|(l, _)| l == "ragrat"), !kids.is_empty())
     };
     Ok(AiEngineStatus {
         ollama: EngineState {
@@ -316,6 +314,8 @@ async fn spawn(
     envs: &[(&str, &str)],
 ) -> Result<(), String> {
     let mut cmd = Command::new(path);
+    // Not the AppImage's libraries and paths (system_open.rs).
+    crate::system_open::give_user_env(&mut cmd);
     cmd.args(args).stdin(Stdio::null());
     match engine_log(app, label).and_then(|p| std::fs::File::create(p).ok()) {
         Some(f) => {
@@ -339,7 +339,13 @@ async fn spawn(
 /// Wait for the engine's port, failing fast (with the log tail) if the child
 /// we just spawned exits first — otherwise a crashed engine and a slow one
 /// produce the same opaque timeout.
-async fn wait_for_engine(app: &AppHandle, state: &AiEngineState, label: &str, port: u16, secs: u64) -> Result<(), String> {
+async fn wait_for_engine(
+    app: &AppHandle,
+    state: &AiEngineState,
+    label: &str,
+    port: u16,
+    secs: u64,
+) -> Result<(), String> {
     let log = engine_log(app, label);
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
@@ -351,10 +357,8 @@ async fn wait_for_engine(app: &AppHandle, state: &AiEngineState, label: &str, po
             if let Some(i) = kids.iter().position(|(l, _)| l == label) {
                 if let Ok(Some(status)) = kids[i].1.try_wait() {
                     kids.remove(i);
-                    let detail = log
-                        .as_deref()
-                        .map(|p| format!(" Log: {}{}", p.display(), log_tail(p)))
-                        .unwrap_or_default();
+                    let detail =
+                        log.as_deref().map(|p| format!(" Log: {}{}", p.display(), log_tail(p))).unwrap_or_default();
                     return Err(format!("{label} exited during startup ({status}).{detail}"));
                 }
             }
@@ -370,7 +374,11 @@ async fn wait_for_engine(app: &AppHandle, state: &AiEngineState, label: &str, po
 /// Writes ollama_connection + ragrat_connection so the daemon can pick them up
 /// (the caller then reloads the daemon). Returns the resolved URLs.
 #[tauri::command]
-pub async fn ai_engine_start(app: AppHandle, pool: State<'_, Db>, state: State<'_, AiEngineState>) -> Result<Value, String> {
+pub async fn ai_engine_start(
+    app: AppHandle,
+    pool: State<'_, Db>,
+    state: State<'_, AiEngineState>,
+) -> Result<Value, String> {
     let out = start_engines(&app, pool.inner(), &state).await?;
     // Remember the intent: the host brings the engines back on every launch
     // until the user explicitly stops them.
@@ -381,7 +389,6 @@ pub async fn ai_engine_start(app: AppHandle, pool: State<'_, Db>, state: State<'
 /// The actual engine bring-up, shared by the Settings button and launch
 /// autostart.
 pub async fn start_engines(app: &AppHandle, db: &Db, state: &AiEngineState) -> Result<Value, String> {
-
     // --- Ollama (fixed port; start if down) ---
     // Epoch H: a configured REMOTE engine is the user's explicit choice —
     // never clobber it with the loopback default, and don't spawn a local
@@ -392,10 +399,8 @@ pub async fn start_engines(app: &AppHandle, db: &Db, state: &AiEngineState) -> R
         .flatten()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.get("base_url").and_then(|b| b.as_str()).map(String::from));
-    let is_remote = configured
-        .as_deref()
-        .map(|u| !u.contains("127.0.0.1") && !u.contains("localhost"))
-        .unwrap_or(false);
+    let is_remote =
+        configured.as_deref().map(|u| !u.contains("127.0.0.1") && !u.contains("localhost")).unwrap_or(false);
     let ollama_url = if is_remote {
         configured.unwrap()
     } else {
@@ -563,14 +568,18 @@ pub async fn ai_engine_reclaim_ragrat(pool: State<'_, Db>, state: State<'_, AiEn
     signal_pid(pid, false);
     for _ in 0..16 {
         if !port_open(port) {
-            return Ok(format!("Stopped the external ragrat (PID {pid}). Click Start engines to launch a managed one."));
+            return Ok(format!(
+                "Stopped the external ragrat (PID {pid}). Click Start engines to launch a managed one."
+            ));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     signal_pid(pid, true);
     for _ in 0..16 {
         if !port_open(port) {
-            return Ok(format!("Force-stopped the external ragrat (PID {pid}). Click Start engines to launch a managed one."));
+            return Ok(format!(
+                "Force-stopped the external ragrat (PID {pid}). Click Start engines to launch a managed one."
+            ));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -607,12 +616,7 @@ pub async fn ai_engine_stop(pool: State<'_, Db>, state: State<'_, AiEngineState>
 pub fn autostart(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let db = app.state::<Db>().inner().clone();
-        let on = ops::get_app_setting(&db, "ai_engines_autostart")
-            .await
-            .ok()
-            .flatten()
-            .as_deref()
-            == Some("1");
+        let on = ops::get_app_setting(&db, "ai_engines_autostart").await.ok().flatten().as_deref() == Some("1");
         if !on {
             return;
         }
@@ -625,10 +629,7 @@ pub fn autostart(app: AppHandle) {
                 // in parallel with us; give it a few beats to bind.
                 for _ in 0..20 {
                     if let Some(port) = crate::daemon_control::current_port(&app).await {
-                        let _ = reqwest::Client::new()
-                            .post(format!("http://127.0.0.1:{port}/ai/reload"))
-                            .send()
-                            .await;
+                        let _ = reqwest::Client::new().post(format!("http://127.0.0.1:{port}/ai/reload")).send().await;
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;

@@ -1,7 +1,7 @@
 {
   "name": "ganban",
   "private": true,
-  "version": "1.0.11",
+  "version": "1.0.13",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -26,12 +26,14 @@
     "test:update": "node scripts/test-update.mjs",
     "test:apkupdate": "node scripts/test-apk-update.mjs",
     "test:updatesource": "node scripts/test-update-source.mjs",
+    "test:patchnotes": "node scripts/test-patch-notes.mjs",
     "test:doclinks": "node scripts/check-doc-links.mjs",
     "test:recur": "node scripts/test-recur.mjs",
     "test:atlasfiles": "node scripts/test-atlas-files.mjs",
     "test:filelocation": "node scripts/test-file-location.mjs",
     "test:hosterror": "node scripts/test-host-error.mjs",
     "test:taskform": "node scripts/test-taskform.mjs",
+    "test:taskconflict": "node scripts/test-task-conflict.mjs",
     "test:timerday": "node scripts/test-timer-day.mjs",
     "test:agentwork": "node scripts/test-agent-work.mjs",
     "test:finmoney": "node scripts/test-finance-money.mjs",
@@ -44,7 +46,15 @@
     "test:fininbox": "node scripts/test-finance-inbox.mjs",
     "test:finpairs": "node scripts/test-finance-review-pairs.mjs",
     "test:finreset": "node scripts/test-finance-reset.mjs",
-    "test:appimage": "node scripts/test-appimage-graphics.mjs"
+    "test:finsorting": "node scripts/test-finance-sorting.mjs",
+    "test:appimage": "node scripts/test-appimage-graphics.mjs",
+    "test:statusfilter": "node scripts/test-statusfilter.mjs",
+    "test:workspaces": "node scripts/test-workspaces.mjs",
+    "test:invite": "node scripts/test-invite.mjs",
+    "test:insertcaret": "node scripts/test-insert-at-caret.mjs",
+    "test:railswitches": "node scripts/test-rail-switches.mjs",
+    "test:all": "node scripts/test-all.mjs",
+    "qa:smoke": "node scripts/qa-smoke.mjs"
   },
   "dependencies": {
     "@fontsource/figtree": "^5.3.0",
@@ -87,6 +97,7 @@
     "autoprefixer": "^10.4.18",
     "d3-geo": "^3.1.1",
     "postcss": "^8.4.35",
+    "puppeteer-core": "^25.17.0",
     "tailwindcss": "^3.4.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

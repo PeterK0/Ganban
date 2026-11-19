@@ -99,7 +99,12 @@ pub async fn start(db: &Db, ent: &Entity) -> Result<SuggestJob, AppError> {
         for batch in groups.chunks(BATCH) {
             let items: Vec<SuggestItem> = batch
                 .iter()
-                .map(|g| SuggestItem { description: g.description.clone(), payee: g.payee.clone(), amount_minor: g.amount_minor, currency: g.currency.clone() })
+                .map(|g| SuggestItem {
+                    description: g.description.clone(),
+                    payee: g.payee.clone(),
+                    amount_minor: g.amount_minor,
+                    currency: g.currency.clone(),
+                })
                 .collect();
             let picked = ask_batch(&client, &params, &items, &expense, &income).await?;
             let found = picked.iter().filter(|p| p.is_some()).count();

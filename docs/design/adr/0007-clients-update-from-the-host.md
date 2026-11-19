@@ -33,3 +33,8 @@ on the build they have.
 
 A device now chooses where its app updates from (ADR 0011), and the host's builds use version codes that sort between
 releases instead of `500000 + count`. A host-built app asks GitHub only when its device chooses GitHub Releases.
+
+## Amendment (2026-11-11)
+
+The desktop app no longer downloads in the background: a newer version is an offer with its patch notes, and it
+downloads only when the user chooses "Download and install" (ADR 0012).

@@ -9,6 +9,75 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-11-19
+
+### Fixed
+
+- **A task edited in two places no longer loses an edit silently.** When the two edits touch different fields, both
+  are kept. When they touch the same field, the editor asks: Keep mine or Take the other. An edit cut off by a reload
+  or a closed window comes back with that question the next time you open the task. The expanded description
+  ("Open dialogue") saves the same way, and clearing a description there now clears it.
+- **Saving no longer fails with "database is locked" when a background job writes at the same moment.** Imports, mail
+  checks and the host's monitor write on their own clocks, and a save that read first and wrote later could be refused
+  outright. Every write now waits its turn.
+- **Linux: Open folder, Show in folder, opening a file and opening a link use your own default apps** (Dolphin on
+  KDE). From the AppImage on Plasma 6 they used to open nothing, because the AppImage carried an old opener of its own.
+- **Linux on KDE: choosing a file or a folder shows KDE's own dialog.**
+- **Linux with NVIDIA's driver:** Ganban turns off a WebKit renderer that is known to leave the window blank there.
+- **A pasted image lands where the cursor is.** It used to go to the end of the description, and the editor switched
+  to the preview. The editor now stays open, with the cursor after the image.
+- **The Filter & sort panel in Project › Tasks is never cut off.** With a narrow task list its right edge was hidden
+  behind the task. Its status chips are all the same size now, so they line up.
+- **The top bar no longer runs its texts together in a narrow window.** The counts give way first, then the host's
+  stats, then the clock.
+- **The file detail shows the date a file was added, without the time.**
+- **A Finance import cut short by a server restart is no longer left "running".** The Import screen says which import
+  stopped, and the next import finishes its lines.
+- **"Update the server" runs the update script it has just pulled.** A fix to the updater itself used to take effect
+  only on the update after.
+- **Settings › Plug-ins: a switch you flip while the section is still loading no longer flips back.**
+- **Settings › Updates says whether this device will get the desktop build the host just made.** A device that updates
+  from GitHub Releases is told it won't, and offered the switch to This server. First-install downloads explains that
+  the host's desktop build is an update for installed apps, not an installer.
+
+### Changed
+
+- **Finance: the inbox is now "To sort", and holds only what needs you.** Pick a category and the line is done; there
+  is no Post step. Lines your payees and rules can file, and transfers Ganban matched, never wait there. Suggestions
+  come pre-filled: one tap each, or "Accept all".
+- **Finance: lines older than 90 days file themselves.** On an import they take what your payees, rules and
+  suggestions know. The rest go to "Unsorted history", which you can work through by payee, biggest first, when you
+  like. An inbox that is already large offers one "Tidy up".
+- **Finance: a currency exchange counts as a move to your balance in that currency, not as spending.** The account it
+  goes to is marked as not yet confirmed until you import that account's own statement.
+- **Finance: your books are converted in the background after this update.** Payees are built from the lines you have,
+  and lines that already had a category are filed. Importing waits until it's done, and the screens show how far it is.
+- **Updates wait for you.** The desktop app only checks for a new version. It shows "Ganban 1.0.12 is available" with
+  its patch notes and three choices: Download and install, Later, or Skip this version. Nothing downloads until you say
+  so. The update to this version still arrives the old way, because the app you have now fetches it.
+- **Ganban no longer carries built-in bank formats.** You map a bank's export once with the column wizard, and Ganban
+  remembers the layout for the next import. Accounts and lines imported with an earlier version stay as they are.
+
+### Added
+
+- **Finance: one shop is one payee, whatever the bank writes.** "Corner Bakery", "CORNER BAKERY*ORDER 102" and "Corner
+  Bakery Ltd" are one payee. Rename, merge and split payees, and take the merges Ganban suggests.
+- **Finance: a payee remembers its category.** The first category you give a payee files its lines from then on, with
+  Undo. Filing a later line differently asks: just this one, or change the default. A payee can be set to ask every
+  time.
+- **Finance: Payees & rules.** Every payee with its category, spellings and totals. Rules can be seen, made, edited
+  and deleted.
+- **Finance: a line can be a move to one of your own accounts,** including one whose statement you haven't imported,
+  and its payee remembers that. Moves show under Transfers, with "Not a transfer" to take one back.
+- **Finance import: a saved bank layout is recognised the next time,** and the column wizard starts from its own guess.
+- **Patch notes.** See what's in an update before you take it, on the desktop, the phone and in the browser. After an
+  update, a quiet "What's new" shows the new entries once, and Settings › Updates › Patch notes lists every version.
+- **"Update the server" says what's coming** before it asks: how many commits, and the new patch notes.
+- **Finance import reads files saved in Central European and Cyrillic code pages,** as well as Western and Greek.
+- **Files: "Take every file out of the AI overview".** New files stay out of the AI overview unless you add them, but
+  files uploaded before that default were still in. A project's admins can now take them all out in one step (Files ›
+  Filter).
+
 ## [1.0.11] - 2026-11-06
 
 ### Fixed
@@ -50,7 +119,7 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 ### Fixed
 
-- **Finance: obvious transfers pair automatically.** Repeated pocket moves of the same amount (common with Revolut)
+- **Finance: obvious transfers pair automatically.** Repeated pocket moves of the same amount (common with app banks)
   no longer pile up for review. Both sides of a move carry the same timestamp, and identical moves between the same
   two accounts are interchangeable. Transfers already waiting are re-checked and cleared on start.
 - Finance: the inbox's date filters start empty ("Any date") instead of showing today to today.
@@ -75,8 +144,8 @@ Apps that update from their host carry a build number as the patch version (`1.0
 
 - **Finance:** a personal ledger for your money. It's optional: turn it on in Settings → Plug-ins → Sections, and
   it appears in the sidebar and in the phone's More screen. Only you see it, the host's owner included.
-  - Import statements from CSV or Excel. Revolut and Piraeus exports are recognised as they are, and any other bank
-    goes through a column-mapping wizard that remembers the layout. Re-importing an overlapping export adds nothing.
+  - Import statements from CSV or Excel. A bank's export goes through a column-mapping wizard that remembers the
+    layout. Re-importing an overlapping export adds nothing.
   - Transfers between your own accounts and currency exchanges are paired automatically. Refunds count against
     the category of what you bought. Split a transaction across categories. Rules learn from your corrections.
   - Budgets per category, a forecast of the month's end balance with a likely range, recurring and planned items.

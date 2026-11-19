@@ -1,58 +1,68 @@
-// Transactions: the drafts inbox and the posted list. Sort a bank line into a category inline, split
-// it across several, and post the sorted ones in bulk. After a correction the host may draft a rule
-// ("file these under Groceries from now on"), offered once here. An entry in a closed month is
-// locked: it offers a reversal instead. A posted entry can be spread over months. With a local model
-// on the host, "Suggest" asks it for a category; a suggestion is only shown until the user takes it.
-// A big inbox is worked on the host: "Post all N matching" and "Categorise all N matching as…" act on
-// every draft the filters match, and "By payee" groups the drafts so one pick sorts a whole payee.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// Transactions: "To sort" holds only the lines that need the user; picking a category files a line
+// (categorised means done: there is no Post step). A payee learns its category the first time,
+// with Undo, and filing a later line differently asks once. All, Transfers and Unsorted history
+// are filters over the rest, "By payee" sorts a first import fast, a payee's page renames, merges
+// and splits, and Payees & rules lists both. docs/design/FINANCE.md § Payees.
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { confirmDialog } from '../../lib/confirm';
 import * as fin from './api';
 import { checkSplits, evenSplit, formatDate, todayIso, journalToSplits, mergeSuggestions, parseMoney, pickSuggestable, toInput, type SplitDraft, type SuggestRow } from './money.pure';
 import { correctionDate, formatMonth, isLocked, monthOf } from './reports.pure';
-import { AccountPicker, Empty, MUTED, Money, errText, isUncategorised, splitEntry, useFinance } from './shared';
+import { AccountPicker, Empty, MUTED, Money, errText, isUncategorised, splitEntry, useFinance, type TransactionsOpen } from './shared';
 import SpreadDialog from './Spread';
 import { useRailShell } from '../../components/RailViews';
 import InboxGroups, { useLoadMore } from './InboxGroups';
-import { bulkErrorText, categorisedText, categoriseAllConfirm, count, isFiltered, postAllConfirm, postedText, selectLabel } from './inbox.pure';
+import { count } from './inbox.pure';
+import { bulkScope, narrows, nextStep, usualAmount, viewFilter, type SortView } from './sorting.pure';
+import { HistoryPayees, MergeSuggestions, TidyBanner, useFiling } from './sortParts';
+import PayeePage from './PayeePage';
+import PayeesRules from './PayeesRules';
 
 /** Only income and expense lines are categories; an opening balance or a transfer isn't re-sorted here. */
 const isCategory = (l: fin.LedgerAccount | undefined) => !!l && (l.class === 'income' || l.class === 'expense');
 
 const PAGE = 100;
-type StatusView = 'draft' | 'posted' | 'all';
+type View = SortView | 'payees';
 
-export default function Transactions({ initialAccountId }: { initialAccountId?: number }) {
-  const { accounts, ledgerById, accountByLedger, reload: reloadAll, inboxCount, lockedThrough, locale } = useFinance();
-  const [view, setView] = useState<StatusView>(initialAccountId ? 'all' : inboxCount > 0 ? 'draft' : 'posted');
-  const [accountId, setAccountId] = useState<number | undefined>(initialAccountId);
+export default function Transactions({ open: init }: { open?: TransactionsOpen }) {
+  const { accounts, ledgerById, accountByLedger, reload: reloadAll, inboxCount, summary, lockedThrough, locale } = useFinance();
+  const [view, setView] = useState<View>(init?.view ?? (init?.accountId != null || init?.importBatchId != null ? 'all' : inboxCount > 0 ? 'tosort' : 'all'));
+  const [payeeId, setPayeeId] = useState<number | null>(null);
+  const [accountId, setAccountId] = useState<number | undefined>(init?.accountId);
+  const [importBatchId, setImportBatchId] = useState<number | undefined>(init?.importBatchId);
+  const [filedOnly, setFiledOnly] = useState(!!init?.filedOnly);
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [uncategorised, setUncategorised] = useState(false);
-  // The inbox by payee (host-grouped), and one payee group's lines opened from it.
+  // "To sort" by payee (host-grouped), and one payee group's lines opened from it.
   const [byPayee, setByPayee] = useState(false);
   const [group, setGroup] = useState<{ key: string; label: string } | null>(null);
-  // Unsorted drafts matching the filters, over every page: the "Categorise all N matching" count.
-  const [unsortedTotal, setUnsortedTotal] = useState(0);
   const [entries, setEntries] = useState<fin.Entry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [open, setOpen] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [suggestion, setSuggestion] = useState<{ entry: fin.Entry; rule: fin.RuleInput } | null>(null);
   // Category suggestions from the host's local model, by entry: a category id, or null for "nothing fits".
   const [canSuggest, setCanSuggest] = useState(false);
   const [suggested, setSuggested] = useState<Record<number, number | null>>({});
   const [asking, setAsking] = useState<Set<number>>(new Set());
   const [spreading, setSpreading] = useState<fin.Entry | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
-  // On a phone the dates and "unsorted only" fold away behind one button.
+  const [folds, setFolds] = useState<fin.TransferGroup[]>([]);
+  // On a phone the account, search and dates fold away behind one button.
   const touch = useRailShell() === 'touch';
   const [moreFilters, setMoreFilters] = useState(false);
   const seq = useRef(0);
+  const shownRef = useRef(0);
+  const loadRef = useRef<() => void>(() => {});
+  // Bumped when lines or defaults change, so an open payee page reads itself again.
+  const [rev, setRev] = useState(0);
+  const filing = useFiling(() => {
+    loadRef.current();
+    setRev((r) => r + 1);
+  });
 
   useEffect(() => {
     fin.suggestAvailable().then((r) => setCanSuggest(r.available)).catch(() => setCanSuggest(false));
@@ -63,36 +73,38 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
     return () => window.clearTimeout(t);
   }, [search]);
 
+  const sortView: SortView = view === 'payees' ? 'all' : view;
   const filter = useMemo<fin.EntryFilter>(
     () => ({
-      status: view === 'all' ? undefined : view,
+      // A payee's page lists every line of the payee, whatever the view.
+      ...(payeeId != null ? {} : viewFilter(sortView)),
+      ...(filedOnly ? { status: 'posted' as const, transfers: false, unsorted: false } : {}),
       accountId,
       search: debounced || undefined,
       from: from || undefined,
       to: to || undefined,
-      uncategorised: uncategorised || undefined,
       groupKey: group?.key,
+      payeeId: payeeId ?? undefined,
+      importBatchId,
     }),
-    [view, accountId, debounced, from, to, uncategorised, group],
+    [sortView, payeeId, filedOnly, accountId, debounced, from, to, group, importBatchId],
   );
+  /** Unsorted history is listed by payee until one is opened. */
+  const showHistoryPayees = view === 'history' && payeeId == null && !narrows(filter);
+  const showGroups = view === 'tosort' && byPayee && !group && payeeId == null;
+  const listing = view !== 'payees' && !showGroups && !showHistoryPayees;
 
   const load = useCallback(
     async (append = false) => {
+      if (!listing) return;
       const my = ++seq.current;
       setLoading(true);
       try {
-        const countUnsorted = !append && filter.status === 'draft' && !filter.uncategorised;
-        const [r, u] = await Promise.all([
-          fin.listEntries(filter, PAGE, append ? entries.length : 0),
-          countUnsorted ? fin.listEntries({ ...filter, uncategorised: true }, 1, 0).then((x) => x.total) : Promise.resolve(null),
-        ]);
+        const r = await fin.listEntries(filter, PAGE, append ? shownRef.current : 0);
         if (my !== seq.current) return;
         setEntries((prev) => (append ? [...prev, ...r.entries] : r.entries));
         setTotal(r.total);
-        if (!append) {
-          setSelected(new Set());
-          setUnsortedTotal(u ?? (filter.uncategorised ? r.total : 0));
-        }
+        if (!append) setSelected(new Set());
       } catch (e) {
         if (my === seq.current) setMsg(errText(e));
       } finally {
@@ -100,78 +112,84 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filter],
+    [filter, listing],
   );
+  loadRef.current = () => void load();
+  shownRef.current = entries.length;
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  // The Transfers filter folds the moves by kind: "Exchanged to GBP · 1,240 moves".
+  useEffect(() => {
+    if (view !== 'transfers' || payeeId != null) return setFolds([]);
+    let stale = false;
+    fin
+      .transferGroups({ accountId, from: from || undefined, to: to || undefined, importBatchId })
+      .then((g) => !stale && setFolds(g))
+      .catch(() => !stale && setFolds([]));
+    return () => {
+      stale = true;
+    };
+  }, [view, payeeId, accountId, from, to, importBatchId]);
+
   const replace = (e: fin.Entry) => setEntries((list) => list.map((x) => (x.id === e.id ? e : x)));
-
-  const categorise = async (entry: fin.Entry, parts: { ledgerAccountId: number; amountMinor: number }[]) => {
-    const { bank, net } = splitEntry(entry, accountByLedger, ledgerById);
-    if (!bank) return;
-    try {
-      const updated = await fin.categorise(entry.id, net, parts);
-      replace(updated);
-      setMsg(null);
-      const rule = await fin.suggestRule(entry.id).catch(() => null);
-      setSuggestion(rule ? { entry: updated, rule } : null);
-    } catch (e) {
-      setMsg(errText(e));
-    }
+  /** A line that left this view (filed, or now a transfer): drop it from the list. */
+  const drop = (id: number) => {
+    setEntries((l) => l.filter((x) => x.id !== id));
+    setTotal((t) => Math.max(0, t - 1));
+    setSelected((s) => {
+      const n = new Set(s);
+      n.delete(id);
+      return n;
+    });
   };
 
-  const post = async (ids: number[]) => {
-    if (!ids.length) return;
-    try {
-      const r = await fin.postEntries(ids);
-      setMsg(`Posted ${r.posted} ${r.posted === 1 ? 'transaction' : 'transactions'}.`);
-      await Promise.all([load(), reloadAll()]);
-    } catch (e) {
-      setMsg(errText(e));
-    }
+  const categorise = async (entry: fin.Entry, parts: { ledgerAccountId: number; amountMinor: number }[] | fin.TransferTarget) => {
+    const r = await filing.file(entry, parts);
+    if (r === null) return;
+    if (typeof r === 'string') return setMsg(r);
+    setMsg(null);
+    forget(entry.id);
+    if (payeeId != null) setRev((x) => x + 1);
+    // Filed: it leaves "To sort" (and unsorted history); elsewhere it stays, re-sorted.
+    if (view === 'tosort' && payeeId == null) drop(entry.id);
+    else if (view === 'history' && payeeId == null && !r.unsorted) drop(entry.id);
+    else replace(r);
   };
 
-  /** Everything the filters match, not just the page: confirmed with the count, done on the host. */
-  const postAll = async () => {
-    if (!(await confirmDialog(postAllConfirm(total, isFiltered(filter), locale)))) return;
-    setBulkBusy(true);
-    try {
-      const r = await fin.postMatching(filter);
-      setMsg(postedText(r.posted, r.closed + r.review, locale));
-      await Promise.all([load(), reloadAll()]);
-    } catch (e) {
-      setMsg(bulkErrorText(errText(e)));
-      window.setTimeout(() => void Promise.all([load(), reloadAll()]), 8000);
-    } finally {
-      setBulkBusy(false);
-    }
-  };
-
-  const categoriseAll = async (ledgerAccountId: number) => {
+  /** File many at once: the ticked lines, or everything an active filter matches. */
+  const scope = bulkScope(selected.size, narrows(filter), total, locale);
+  const fileMany = async (ledgerAccountId: number) => {
     const name = ledgerById.get(ledgerAccountId)?.name ?? 'that category';
-    if (!(await confirmDialog(categoriseAllConfirm(unsortedTotal, name, locale)))) return;
+    const n = scope.on === 'selection' ? selected.size : total;
+    if (!scope.on) return;
+    if (!(await confirmDialog(`File the unsorted ones of these ${count(n, locale)} ${n === 1 ? 'line' : 'lines'} under ${name}? Lines that already have a category, and transfers, are left as they are. Each stays editable until its month is closed.`))) return;
     setBulkBusy(true);
+    const target: fin.EntryFilter = scope.on === 'selection' ? { ...viewFilter(sortView), ids: [...selected].slice(0, 5000) } : filter;
+    const r = await filing.fileGroup(view === 'history' ? { ...target, unsorted: true } : target, ledgerAccountId);
+    if (typeof r === 'string') setMsg(r);
+    setBulkBusy(false);
+  };
+
+  const notTransfer = async (entry: fin.Entry, accept: boolean) => {
+    if (!entry.pair) return;
     try {
-      const r = await fin.categoriseMatching(filter, ledgerAccountId);
-      setMsg(categorisedText(r.categorised, r.skipped, name, locale));
-      await Promise.all([load(), reloadAll()]);
+      await fin.resolvePair(entry.pair.id, accept);
+      // Accepted, both legs are done; refused, both wait in To sort.
+      if (view === 'transfers' || view === 'tosort') void load();
+      void reloadAll();
     } catch (e) {
-      setMsg(bulkErrorText(errText(e)));
-      window.setTimeout(() => void Promise.all([load(), reloadAll()]), 8000);
-    } finally {
-      setBulkBusy(false);
+      setMsg(errText(e));
     }
   };
 
   const remove = async (entry: fin.Entry) => {
-    if (!(await confirmDialog('Delete this transaction? The imported line is kept and marked dismissed, so a re-import won\u2019t bring it back.'))) return;
+    if (!(await confirmDialog('Delete this transaction? The imported line is kept and marked dismissed, so a re-import won’t bring it back.'))) return;
     try {
       await fin.deleteEntry(entry.id);
-      setEntries((l) => l.filter((x) => x.id !== entry.id));
-      setTotal((t) => t - 1);
+      drop(entry.id);
       void reloadAll();
     } catch (e) {
       setMsg(errText(e));
@@ -203,36 +221,50 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
     }
   };
 
-  const forget = (id: number) =>
+  function forget(id: number) {
     setSuggested((s) => {
+      if (!(id in s)) return s;
       const n = { ...s };
       delete n[id];
       return n;
     });
+  }
 
-  /** The user takes a suggestion: categorise the line as if they had picked it. */
-  const takeSuggestion = async (entry: fin.Entry) => {
-    const id = suggested[entry.id];
-    if (id == null) return;
-    const { net } = splitEntry(entry, accountByLedger, ledgerById);
-    await categorise(entry, [{ ledgerAccountId: id, amountMinor: Math.abs(net) }]);
-    forget(entry.id);
-  };
+  /** A line's suggestion: one asked for here, else its payee group's waiting one. */
+  const suggestionFor = (e: fin.Entry): number | null | undefined => (e.id in suggested ? suggested[e.id] : e.suggested_ledger_account_id ?? undefined);
 
-  const takeAllSuggestions = async () => {
-    const take = entries.filter((e) => suggested[e.id] != null);
-    for (const e of take) {
-      const { bank, net } = splitEntry(e, accountByLedger, ledgerById);
-      if (!bank) continue;
-      try {
-        replace(await fin.categorise(e.id, net, [{ ledgerAccountId: suggested[e.id]!, amountMinor: Math.abs(net) }]));
+  /** "Accept all N suggestions": every payee group's waiting suggestion on the host, and those asked for here. */
+  const acceptAll = async () => {
+    setBulkBusy(true);
+    setMsg(null);
+    let filed = 0;
+    try {
+      for (const e of entries.filter((x) => x.id in suggested && suggested[x.id] != null)) {
+        const { bank, net } = splitEntry(e, accountByLedger, ledgerById);
+        if (!bank) continue;
+        await fin.categorise(e.id, net, [{ ledgerAccountId: suggested[e.id]!, amountMinor: Math.abs(net) }]);
         forget(e.id);
-      } catch (err) {
-        setMsg(errText(err));
-        return;
+        filed++;
       }
+      // Collect every group first: filing one drops it from the pages, so paging while filing skips some.
+      const todo: fin.InboxGroup[] = [];
+      for (let offset = 0, guard = 0; guard < 40; guard++) {
+        const page = await fin.inboxGroups({ status: 'draft' }, 500, offset);
+        todo.push(...page.groups.filter((g) => g.suggested_ledger_account_id != null && g.uncategorised > 0));
+        offset += page.groups.length;
+        if (!page.groups.length || offset >= page.total_groups) break;
+      }
+      for (const g of todo) {
+        const r = await fin.categoriseMatching({ groupKey: g.key }, g.suggested_ledger_account_id!);
+        filed += r.categorised;
+      }
+      setMsg(`Filed ${count(filed, locale)} ${filed === 1 ? 'line' : 'lines'} as suggested.`);
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBulkBusy(false);
+      await Promise.all([load(), reloadAll()]);
     }
-    setMsg(`Sorted ${take.length} ${take.length === 1 ? 'line' : 'lines'} as suggested.`);
   };
 
   const reverse = async (entry: fin.Entry) => {
@@ -247,26 +279,46 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
     }
   };
 
-  const acceptRule = async () => {
-    if (!suggestion) return;
-    try {
-      await fin.createRule({ ...suggestion.rule, learned: true });
-      const r = await fin.applyRules();
-      setSuggestion(null);
-      setMsg(r.categorised ? `Rule saved. It sorted ${r.categorised} more in the inbox.` : 'Rule saved.');
-      if (r.categorised) void load();
-    } catch (e) {
-      setMsg(errText(e));
-    }
+  const openPayee = (id: number) => {
+    // A payee's page shows all its lines: the list's own filters would hide some.
+    setAccountId(undefined);
+    setSearch('');
+    setDebounced('');
+    setFrom('');
+    setTo('');
+    setImportBatchId(undefined);
+    setFiledOnly(false);
+    setPayeeId(id);
+    setGroup(null);
+    setOpen(null);
+  };
+  /** A payee group from By payee opens its payee's page, the same page as everywhere else. */
+  const openGroup = async (g: fin.InboxGroup) => {
+    const first = await fin.listEntries({ status: 'draft', groupKey: g.key }, 1).catch(() => null);
+    const id = first?.entries[0]?.payee_id;
+    if (id != null) openPayee(id);
+    else setGroup({ key: g.key, label: g.label });
   };
 
-  const drafts = entries.filter((e) => e.status === 'draft');
-  const toAsk = canSuggest ? pickSuggestable(entries.map(suggestRow), suggested, fin.MAX_SUGGEST) : [];
-  const ready = entries.filter((e) => suggested[e.id] != null).length;
-  const allSelected = drafts.length > 0 && drafts.every((d) => selected.has(d.id));
-  const showGroups = view === 'draft' && byPayee && !group;
+  const pickView = (v: View) => {
+    // A toast belongs to the view it came from.
+    filing.toast(null);
+    setView(v);
+    setGroup(null);
+    setPayeeId(null);
+    setFiledOnly(false);
+  };
+
+  const toAsk = canSuggest && view === 'tosort' ? pickSuggestable(entries.filter((e) => suggestionFor(e) === undefined).map(suggestRow), suggested, fin.MAX_SUGGEST) : [];
+  const waiting = (summary?.suggested ?? 0) + Object.values(suggested).filter((v) => v != null).length;
+  const selectable = entries.filter((e) => e.status === 'draft' || e.unsorted);
+  const allSelected = selectable.length > 0 && selectable.every((d) => selected.has(d.id));
   const more = !loading && entries.length < total;
-  const sentinel = useLoadMore(more && !showGroups, () => void load(true));
+  const sentinel = useLoadMore(more && listing, () => void load(true));
+  const usual = useMemo(() => {
+    if (payeeId == null) return null;
+    return usualAmount(entries.map((e) => splitEntry(e, accountByLedger).bank?.functional_minor).filter((n): n is number => n != null));
+  }, [payeeId, entries, accountByLedger]);
   const toggle = (id: number) =>
     setSelected((s) => {
       const n = new Set(s);
@@ -274,195 +326,250 @@ export default function Transactions({ initialAccountId }: { initialAccountId?: 
       else n.add(id);
       return n;
     });
+  const history = summary?.unsorted_history ?? 0;
+  const filtersOn = !!(accountId != null || from || to || debounced);
+
+  const VIEWS: [View, string][] = [
+    ['tosort', `To sort${inboxCount ? ` · ${count(inboxCount, locale)}` : ''}`],
+    ['all', 'All'],
+    ['transfers', 'Transfers'],
+    ['history', `Unsorted history${history ? ` · ${count(history, locale)}` : ''}`],
+  ];
 
   return (
-    <div className="space-y-4">
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="g-seg" role="tablist" aria-label="Which transactions">
-          {(
-            [
-              ['draft', `Inbox${inboxCount ? ` · ${inboxCount}` : ''}`],
-              ['posted', 'Posted'],
-              ['all', 'All'],
-            ] as [StatusView, string][]
-          ).map(([v, label]) => (
-            <button
-              key={v}
-              role="tab"
-              aria-selected={view === v}
-              className="g-chip"
-              onClick={() => {
-                setView(v);
-                setGroup(null);
-              }}
-            >
+    <div className="space-y-3">
+      {/* Views: one row, scrolling sideways on a phone; Payees & rules beside them. */}
+      <div className="flex items-center gap-2">
+        <div className={`g-seg ${touch ? 'flex-1 min-w-0 flex-wrap' : ''}`} role="tablist" aria-label="Which transactions">
+          {VIEWS.map(([v, label]) => (
+            <button key={v} role="tab" aria-selected={view === v && payeeId == null} className="g-chip whitespace-nowrap" onClick={() => pickView(v)}>
               {label}
             </button>
           ))}
         </div>
-        {view === 'draft' && (
-          <div className="g-seg" role="tablist" aria-label="How the inbox is shown">
-            <button role="tab" aria-selected={!byPayee} className="g-chip" onClick={() => setByPayee(false)}>
-              Lines
-            </button>
-            <button
-              role="tab"
-              aria-selected={byPayee}
-              className="g-chip"
-              onClick={() => {
-                setByPayee(true);
-                setGroup(null);
-              }}
-            >
-              By payee
-            </button>
-          </div>
-        )}
-        <select className="g-field g-field-sm !w-auto max-w-[220px]" value={accountId ?? ''} onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : undefined)} aria-label="Account">
-          <option value="">All accounts</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-              {a.archived ? ' (archived)' : ''}
-            </option>
-          ))}
-        </select>
-        <input className="g-field g-field-sm !w-auto flex-1 min-w-[160px]" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search description or payee" aria-label="Search" />
-        {touch && (
-          <button className="g-btn g-btn-ghost g-btn-sm" aria-expanded={moreFilters} onClick={() => setMoreFilters((v) => !v)}>
-            {moreFilters ? 'Fewer filters' : `More filters${from || to || uncategorised ? ' · on' : ''}`}
+        {touch ? (
+          <button className="g-btn g-btn-ghost g-btn-sm flex-none min-h-[44px]" aria-expanded={moreFilters} onClick={() => setMoreFilters((v) => !v)}>
+            {filtersOn ? 'Filters · on' : 'Filters'}
           </button>
-        )}
-        {(!touch || moreFilters) && (
-        <>
-        <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
-          From <DateFilter label="From" value={from} onChange={setFrom} />
-        </span>
-        <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
-          to <DateFilter label="To" value={to} onChange={setTo} />
-        </span>
-        <label className={`flex items-center gap-2 text-sm ${MUTED} ${touch ? 'min-h-[44px]' : 'min-h-[32px]'}`}>
-          <input type="checkbox" checked={uncategorised} onChange={(e) => setUncategorised(e.target.checked)} /> Unsorted only
-        </label>
-        </>
+        ) : (
+          <button className="g-btn g-btn-ghost g-btn-sm ml-auto" aria-pressed={view === 'payees'} onClick={() => pickView(view === 'payees' ? 'tosort' : 'payees')}>
+            Payees &amp; rules
+          </button>
         )}
       </div>
 
-      {group && (
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className={MUTED}>Payee:</span>
-          <span className="g-tag">{group.label || '(no description)'}</span>
-          <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setGroup(null)}>
-            {byPayee ? 'Back to payees' : 'Show all lines'}
-          </button>
-        </div>
-      )}
-
-      {showGroups && <InboxGroups filter={filter} canSuggest={canSuggest} onShowLines={(g) => setGroup({ key: g.key, label: g.label })} />}
-
-      {/* Bulk actions */}
-      {!showGroups && drafts.length > 0 && (
-        <div className="g-inset flex flex-wrap items-center gap-3 px-3 py-2">
-          <label className="flex items-center gap-2 text-sm text-subtext-1">
-            <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(drafts.map((d) => d.id)))} aria-label="Select every draft shown" />
-            {selectLabel(selected.size, drafts.length, view === 'draft' ? total : drafts.length, locale)}
-          </label>
-          <span className="ml-auto flex flex-wrap items-center gap-2">
-            {canSuggest && (toAsk.length > 0 || asking.size > 0) && (
+      {view !== 'payees' && (!touch || moreFilters) && (
+        <div className="flex flex-wrap items-end gap-3">
+          {view === 'tosort' && payeeId == null && (
+            <div className="g-seg" role="tablist" aria-label="How To sort is shown">
+              <button role="tab" aria-selected={!byPayee} className="g-chip" onClick={() => setByPayee(false)}>
+                Lines
+              </button>
               <button
-                className="g-btn g-btn-ghost g-btn-sm"
-                disabled={asking.size > 0}
-                title="Ask the host's local model for a category for each unsorted line shown. Nothing is applied until you take it."
-                onClick={() => void suggest(toAsk)}
+                role="tab"
+                aria-selected={byPayee}
+                className="g-chip"
+                onClick={() => {
+                  setByPayee(true);
+                  setGroup(null);
+                }}
               >
-                {asking.size > 0 ? 'Suggesting…' : `Suggest categories · ${toAsk.length}`}
+                By payee
               </button>
-            )}
-            {ready > 0 && (
-              <button className="g-btn g-btn-gilt g-btn-sm" onClick={() => void takeAllSuggestions()}>
-                Use {ready} {ready === 1 ? 'suggestion' : 'suggestions'}
-              </button>
-            )}
-            <button className="g-btn g-btn-pri g-btn-sm" disabled={!selected.size} onClick={() => void post([...selected])}>
-              Post {selected.size || ''}
-            </button>
+            </div>
+          )}
+          <select className="g-field g-field-sm !w-auto max-w-[220px]" value={accountId ?? ''} onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : undefined)} aria-label="Account">
+            <option value="">All accounts</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+                {a.archived ? ' (archived)' : ''}
+              </option>
+            ))}
+          </select>
+          <input className="g-field g-field-sm !w-auto flex-1 min-w-[160px]" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search description or payee" aria-label="Search" />
+          <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
+            From <DateFilter label="From" value={from} onChange={setFrom} />
           </span>
-          {view === 'draft' && (
-            <span className="w-full flex flex-wrap items-center gap-2 border-t border-gilt-b pt-2">
-              <span className={`text-sm ${MUTED}`}>Everything matching, not just the {count(drafts.length, locale)} shown:</span>
-              {unsortedTotal > 0 && (
-                <AccountPicker
-                  label="Categorise all matching"
-                  value={null}
-                  placeholder={bulkBusy ? 'Working…' : `Categorise all ${count(unsortedTotal, locale)} unsorted as…`}
-                  onChange={(id) => void categoriseAll(id)}
-                  className="flex-1 min-w-[220px] max-w-[320px]"
-                />
-              )}
-              <button className="g-btn g-btn-ghost g-btn-sm ml-auto" disabled={bulkBusy} onClick={() => void postAll()}>
-                Post all {count(total, locale)} matching
-              </button>
-            </span>
+          <span className={`flex items-center gap-1.5 text-sm ${MUTED}`}>
+            to <DateFilter label="To" value={to} onChange={setTo} />
+          </span>
+          {touch && (
+            <button className="g-btn g-btn-ghost g-btn-sm min-h-[44px]" onClick={() => pickView('payees')}>
+              Payees &amp; rules
+            </button>
           )}
         </div>
       )}
 
-      {suggestion && (
-        <div className="g-card p-4 flex flex-wrap items-center gap-3" role="status">
-          <span className="flex-1 min-w-[200px] text-sm text-text">
-            Same fix twice. File transactions like <b>{suggestion.entry.payee || suggestion.entry.description}</b> this way from now on?
-          </span>
-          <button className="g-btn g-btn-gilt g-btn-sm" onClick={() => void acceptRule()}>
-            Make it a rule
-          </button>
-          <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setSuggestion(null)}>
-            Not now
+      {importBatchId != null && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="g-tag">{filedOnly ? 'Filed by this import' : 'From this import'}</span>
+          <button
+            className="g-lnk"
+            onClick={() => {
+              setImportBatchId(undefined);
+              setFiledOnly(false);
+            }}
+          >
+            Show all
           </button>
         </div>
       )}
 
-      {msg && <p className="text-sm text-subtext-1">{msg}</p>}
-
-      {showGroups ? null : !loading && entries.length === 0 ? (
-        <Empty title={view === 'draft' ? 'The inbox is empty' : 'No transactions'}>{view === 'draft' ? 'Imported lines land here to be sorted and posted.' : 'Nothing matches these filters.'}</Empty>
+      {view === 'payees' ? (
+        <PayeesRules onOpenPayee={(id) => {
+          setView('all');
+          openPayee(id);
+        }} />
       ) : (
-        <div className="g-plain" role="list">
-          {entries.map((e) => (
-            <EntryRow
-              key={e.id}
-              entry={e}
-              selected={selected.has(e.id)}
-              onSelect={() => toggle(e.id)}
-              open={open === e.id}
-              onOpen={() => setOpen(open === e.id ? null : e.id)}
-              onCategorise={(parts) => categorise(e, parts)}
-              onPost={() => void post([e.id])}
-              onDelete={() => void remove(e)}
-              onReverse={() => void reverse(e)}
-              onSpread={() => setSpreading(e)}
-              ledgerById={ledgerById}
-              accountByLedger={accountByLedger}
-              suggestion={suggested[e.id]}
-              asking={asking.has(e.id)}
-              onSuggest={canSuggest && pickSuggestable([suggestRow(e)], {}, 1).length > 0 ? () => void suggest([e.id]) : undefined}
-              onUseSuggestion={() => void takeSuggestion(e)}
-              onDismissSuggestion={() => forget(e.id)}
+        <>
+          {payeeId != null && (
+            <PayeePage
+              key={payeeId}
+              payeeId={payeeId}
+              usualMinor={usual}
+              lineAccounts={[...new Set(entries.map((e) => splitEntry(e, accountByLedger).account?.id).filter((x): x is number => x != null))]}
+              rev={rev}
+              onBack={() => setPayeeId(null)}
+              onChanged={() => void load()}
+              onOpenPayee={openPayee}
+              toast={filing.toast}
             />
-          ))}
-        </div>
+          )}
+
+          {view === 'tosort' && payeeId == null && inboxCount > 0 && (
+            <p className="text-sm text-text">
+              Give each line a category. A payee remembers the first one you give it, so its lines file themselves from then on.
+            </p>
+          )}
+          {view === 'tosort' && payeeId == null && <TidyBanner decisions={inboxCount} onDone={() => void load()} />}
+          {view === 'tosort' && payeeId == null && inboxCount === 0 && nextStep(history, 0) === 'history' && (
+            <div className="g-card p-4 flex flex-wrap items-center gap-3">
+              <span className="flex-1 min-w-[220px] text-sm text-text">
+                Nothing to sort. Next, if you like: give your biggest payees in Unsorted history a category, and next week's import files them by itself.
+              </span>
+              <button className="g-btn g-btn-gilt g-btn-sm" onClick={() => pickView('history')}>
+                Your biggest payees
+              </button>
+            </div>
+          )}
+          {(view === 'tosort' || view === 'history') && payeeId == null && <MergeSuggestions onMerged={() => void load()} toast={filing.toast} />}
+
+          {group && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className={MUTED}>Payee:</span>
+              <span className="g-tag">{group.label || '(no description)'}</span>
+              <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setGroup(null)}>
+                Back to payees
+              </button>
+            </div>
+          )}
+
+          {view === 'tosort' && payeeId == null && (waiting > 0 || toAsk.length > 0 || asking.size > 0) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {waiting > 0 && (
+                <button className="g-btn g-btn-gilt g-btn-sm" disabled={bulkBusy} onClick={() => void acceptAll()}>
+                  {bulkBusy ? 'Filing…' : `Accept all ${count(waiting, locale)} ${waiting === 1 ? 'suggestion' : 'suggestions'}`}
+                </button>
+              )}
+              {canSuggest && (toAsk.length > 0 || asking.size > 0) && (
+                <button
+                  className="g-btn g-btn-ghost g-btn-sm"
+                  disabled={asking.size > 0}
+                  title="Ask the host's local model for a category for each line shown. Nothing is filed until you accept it."
+                  onClick={() => void suggest(toAsk)}
+                >
+                  {asking.size > 0 ? 'Suggesting…' : `Suggest categories · ${toAsk.length}`}
+                </button>
+              )}
+            </div>
+          )}
+
+          {showGroups && <InboxGroups filter={filter} canSuggest={canSuggest} onShowLines={(g) => void openGroup(g)} fileGroup={filing.fileGroup} />}
+          {showHistoryPayees && <HistoryPayees onOpenPayee={openPayee} toast={filing.toast} />}
+
+          {view === 'transfers' && payeeId == null && folds.length > 0 && (
+            <div className="g-inset px-3 py-2 space-y-1">
+              <div className={`text-sm ${MUTED}`}>Money moved between your own accounts. It isn't spending or income; tap "Not a transfer" on any line that's wrong.</div>
+              {folds.slice(0, 6).map((g) => (
+                <div key={`${g.account_id}-${g.key}`} className="flex items-center gap-3 text-sm">
+                  <span className="flex-1 min-w-0 truncate text-text">
+                    {g.label} <span className={MUTED}>· {accounts.find((a) => a.id === g.account_id)?.name ?? ''}</span>
+                  </span>
+                  <span className={MUTED}>
+                    {count(g.count, locale)} {g.count === 1 ? 'move' : 'moves'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Bulk: the ticked lines, or everything an active filter matches. */}
+          {listing && view !== 'transfers' && !filedOnly && (selected.size > 0 || (scope.on && payeeId == null)) && (
+            <div className="g-inset flex flex-wrap items-center gap-3 px-3 py-2">
+              <span className="text-sm text-subtext-1">{scope.label}</span>
+              <AccountPicker label="File them under" value={null} placeholder={bulkBusy ? 'Filing…' : 'File them under…'} onChange={(id) => void fileMany(id)} className="flex-1 min-w-[200px] max-w-[300px]" />
+              {selected.size > 0 && (
+                <button className="g-btn g-btn-ghost g-btn-sm ml-auto" onClick={() => setSelected(new Set())}>
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {msg && <p className="text-sm text-subtext-1">{msg}</p>}
+
+          {!listing ? null : !loading && entries.length === 0 ? (
+            <Empty title={view === 'tosort' && payeeId == null ? 'Nothing to sort' : 'No transactions'}>
+              {view === 'tosort' && payeeId == null ? 'Lines your payees and rules can’t file wait here after an import.' : 'Nothing matches these filters.'}
+            </Empty>
+          ) : (
+            <div className="g-plain" role="list">
+              {selectable.length > 1 && view !== 'transfers' && (
+                <label className={`flex items-center gap-2 px-3 py-1.5 border-b border-gilt-b text-xs ${MUTED}`}>
+                  <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(selectable.map((d) => d.id)))} aria-label="Tick every line shown" />
+                  {selected.size ? `${count(selected.size, locale)} ticked` : `Tick the ${count(selectable.length, locale)} shown`}
+                </label>
+              )}
+              {entries.map((e) => (
+                <EntryRow
+                  key={e.id}
+                  entry={e}
+                  mode={view === 'transfers' ? 'transfers' : view === 'tosort' ? 'tosort' : 'all'}
+                  selected={selected.has(e.id)}
+                  onSelect={view !== 'transfers' && (e.status === 'draft' || e.unsorted) ? () => toggle(e.id) : undefined}
+                  open={open === e.id}
+                  onOpen={() => setOpen(open === e.id ? null : e.id)}
+                  onOpenPayee={e.payee_id != null && e.payee_id !== payeeId ? () => openPayee(e.payee_id!) : undefined}
+                  onCategorise={(parts) => categorise(e, parts)}
+                  onMove={(t) => void categorise(e, t)}
+                  onPair={(accept) => void notTransfer(e, accept)}
+                  onDelete={() => void remove(e)}
+                  onReverse={() => void reverse(e)}
+                  onSpread={() => setSpreading(e)}
+                  suggestion={suggestionFor(e)}
+                  asking={asking.has(e.id)}
+                  onSuggest={canSuggest && pickSuggestable([suggestRow(e)], {}, 1).length > 0 ? () => void suggest([e.id]) : undefined}
+                  onDismissSuggestion={() => setSuggested((s) => ({ ...s, [e.id]: null }))}
+                />
+              ))}
+            </div>
+          )}
+          {spreading && <SpreadDialog entry={spreading} onClose={() => setSpreading(null)} onDone={() => void reloadAll()} />}
+          {listing && (
+            <div ref={sentinel} className={`flex items-center gap-3 text-sm ${MUTED}`}>
+              {loading ? 'Loading…' : `${count(entries.length, locale)} of ${count(total, locale)}`}
+              {more && (
+                <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void load(true)}>
+                  Show more
+                </button>
+              )}
+            </div>
+          )}
+        </>
       )}
-      {spreading && <SpreadDialog entry={spreading} onClose={() => setSpreading(null)} onDone={() => void reloadAll()} />}
-      {!showGroups && (
-      <div ref={sentinel} className={`flex items-center gap-3 text-sm ${MUTED}`}>
-        {loading ? 'Loading…' : `${count(entries.length, locale)} of ${count(total, locale)}`}
-        {more && (
-          <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void load(true)}>
-            Show more
-          </button>
-        )}
-      </div>
-      )}
+      {filing.ui}
     </div>
   );
 }
@@ -516,114 +623,151 @@ function DateFilter({ label, value, onChange }: { label: string; value: string; 
   );
 }
 
+
+/**
+ * One line. In "To sort" the category picker files it (a suggestion shows greyed, one tap to
+ * accept), and a transfer the matcher wasn't sure of asks "It's a transfer" or "Not a transfer".
+ * In Transfers each line offers "Not a transfer". The payee's name opens its page.
+ */
 function EntryRow({
   entry,
+  mode,
   selected,
   onSelect,
   open,
   onOpen,
+  onOpenPayee,
   onCategorise,
-  onPost,
+  onMove,
+  onPair,
   onDelete,
   onReverse,
   onSpread,
-  ledgerById,
-  accountByLedger,
   suggestion,
   asking,
   onSuggest,
-  onUseSuggestion,
   onDismissSuggestion,
 }: {
   entry: fin.Entry;
+  mode: 'tosort' | 'all' | 'transfers';
   selected: boolean;
-  onSelect: () => void;
+  onSelect?: () => void;
   open: boolean;
   onOpen: () => void;
+  onOpenPayee?: () => void;
   onCategorise: (parts: { ledgerAccountId: number; amountMinor: number }[]) => Promise<void>;
-  onPost: () => void;
+  /** File it as a move to one of his own accounts. */
+  onMove: (t: fin.TransferTarget) => void;
+  /** Accept (true) or refuse (false) the transfer this line is part of. */
+  onPair: (accept: boolean) => void;
   onDelete: () => void;
   onReverse: () => void;
   onSpread: () => void;
-  ledgerById: Map<number, fin.LedgerAccount>;
-  accountByLedger: Map<number, fin.FinAccount>;
-  /** The local model's category for this line (null: nothing fits; undefined: not asked). */
+  /** A suggested category (null: nothing fits or dismissed; undefined: none asked). */
   suggestion: number | null | undefined;
   asking: boolean;
-  /** Set when this line can be suggested for. */
   onSuggest?: () => void;
-  onUseSuggestion: () => void;
   onDismissSuggestion: () => void;
 }) {
-  const { locale, entity, lockedThrough } = useFinance();
+  const { locale, entity, lockedThrough, ledgerById, accountByLedger } = useFinance();
+  const touch = useRailShell() === 'touch';
   const locked = isLocked(entry.date, lockedThrough);
   const { bank, account, others, fee, net } = splitEntry(entry, accountByLedger, ledgerById);
-  const draft = entry.status === 'draft';
   const single = others.length === 1 ? others[0] : null;
   const unsorted = others.some((l) => isUncategorised(ledgerById.get(l.ledger_account_id)));
   const journalSize = entry.lines.reduce((s, l) => s + Math.max(0, l.functional_minor), 0);
+  const toConfirm = entry.pair?.status === 'review';
+  const booked = !!entry.pair && !toConfirm;
+  const suggestedName = suggestion != null ? ledgerById.get(suggestion)?.name : undefined;
+  const pick = (id: number) => void onCategorise([{ ledgerAccountId: id, amountMinor: Math.abs(net) }]);
+  const btn = `g-btn g-btn-sm ${touch ? 'min-h-[44px]' : ''}`;
+  const name = entry.payee_name || entry.payee || entry.description;
+  // What the bank wrote, when it says more than the payee's name.
+  const raw = entry.payee && entry.payee !== name ? entry.payee : entry.description;
+
+  let control: ReactNode = null;
+  if (toConfirm && entry.status === 'draft') {
+    control = (
+      <span className="flex items-center gap-1.5 flex-1 min-w-0">
+        <button className={`${btn} g-btn-gilt`} onClick={() => onPair(true)} title="Money moved between two of your accounts">
+          It’s a transfer
+        </button>
+        <button className={`${btn} g-btn-ghost`} onClick={() => onPair(false)}>
+          Not a transfer
+        </button>
+      </span>
+    );
+  } else if (booked) {
+    control =
+      mode === 'transfers' ? (
+        <button className={`${btn} g-btn-ghost`} onClick={() => onPair(false)} title="Puts both sides back in To sort">
+          Not a transfer
+        </button>
+      ) : (
+        <span className={`text-sm truncate ${MUTED}`}>{entry.pair!.kind === 'fx' ? 'Exchange between your accounts' : 'Between your accounts'}</span>
+      );
+  } else if (bank && single && (locked || entry.scheduled || !isCategory(ledgerById.get(single.ledger_account_id)))) {
+    control = <span className={`text-sm truncate ${MUTED}`}>{ledgerById.get(single.ledger_account_id)?.name ?? '—'}</span>;
+  } else if (bank && single) {
+    control = (
+      <span className="flex items-center gap-1.5 flex-1 min-w-0">
+        <AccountPicker
+          label="Category"
+          value={unsorted ? null : single.ledger_account_id}
+          placeholder={unsorted && suggestedName ? suggestedName : unsorted ? 'Pick a category…' : 'Category…'}
+          onChange={pick}
+          moves={unsorted ? { exclude: account ? [account.id] : [], direction: bank.amount_minor > 0 ? 'in' : 'out', onMove } : undefined}
+          className={`flex-1 min-w-0 ${unsorted && suggestedName ? 'italic' : ''}`}
+        />
+        {unsorted && suggestion != null && suggestedName && (
+          <button className={`${btn} g-btn-gilt flex-none`} onClick={() => pick(suggestion)} title={`File under ${suggestedName}`} aria-label={`Accept ${suggestedName}`}>
+            ✓
+          </button>
+        )}
+      </span>
+    );
+  } else if (bank) {
+    control = (
+      <button className="g-field g-field-sm text-left flex-1 min-w-0 truncate" onClick={onOpen}>
+        Split · {others.length}
+      </button>
+    );
+  }
 
   return (
     <div role="listitem" className={`border-b border-gilt-b ${open ? 'bg-base' : ''}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 min-h-[52px] px-3 py-1.5">
-        <span className="w-5 flex justify-center">
-          {draft && <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Select ${entry.description}`} />}
-        </span>
-        <button className="flex-1 min-w-[160px] text-left" onClick={onOpen} aria-expanded={open}>
-          <span className="block text-text truncate">{entry.payee || entry.description}</span>
-          <span className={`block text-xs ${MUTED} truncate`}>
+        {onSelect && (
+          <span className="w-5 flex justify-center">
+            <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Tick ${entry.payee_name || entry.payee || entry.description}`} />
+          </span>
+        )}
+        <span className="flex-1 min-w-[150px]">
+          {onOpenPayee ? (
+            <button className="block max-w-full text-left text-text truncate hover:underline" onClick={onOpenPayee} title="Open this payee">
+              {name}
+            </button>
+          ) : (
+            <span className="block text-text truncate">{name}</span>
+          )}
+          <button className={`block max-w-full text-left text-xs ${MUTED} truncate`} onClick={onOpen} aria-expanded={open} title="More about this line">
             {formatDate(entry.date, locale)}
             {account ? ` · ${account.name}` : ' · Journal entry'}
-            {entry.payee && entry.description !== entry.payee ? ` · ${entry.description}` : ''}
-          </span>
-        </button>
-        <span className="flex items-center gap-2 order-last sm:order-none w-full sm:w-[220px] pl-8 sm:pl-0">
-          {bank && single && (locked || entry.scheduled || !isCategory(ledgerById.get(single.ledger_account_id))) ? (
-            <span className={`text-sm truncate ${MUTED}`}>{ledgerById.get(single.ledger_account_id)?.name ?? '—'}</span>
-          ) : bank && (single ? (
-            <AccountPicker
-              label="Category"
-              value={single.ledger_account_id}
-              onChange={(id) => void onCategorise([{ ledgerAccountId: id, amountMinor: Math.abs(net) }])}
-              className="flex-1 min-w-0"
-            />
-          ) : (
-            <button className="g-field g-field-sm text-left flex-1 min-w-0 truncate" onClick={onOpen}>
-              Split · {others.length}
-            </button>
-          ))}
+            {raw && raw !== name ? ` · ${raw}` : ''}
+          </button>
         </span>
+        <span className={`flex items-center gap-2 order-last sm:order-none w-full sm:w-[260px] ${onSelect ? 'pl-8' : ''} sm:pl-0`}>{control}</span>
         <span className="flex items-center gap-2 ml-auto">
-          {entry.pair && <span className={`g-tag ${entry.pair.status === 'review' ? 'g-tag-warn' : ''}`} title="Matched with a transfer between your accounts">{entry.pair.kind === 'fx' ? 'Exchange' : 'Transfer'}</span>}
-          {onSuggest && suggestion === undefined && (
+          {onSuggest && suggestion === undefined && unsorted && !toConfirm && (
             <button className="g-btn g-btn-ghost g-btn-sm" disabled={asking} onClick={onSuggest} title="Ask the host's local model for a category">
               {asking ? 'Suggesting…' : 'Suggest'}
             </button>
           )}
-          {draft && unsorted && <span className="g-tag g-tag-pri">Unsorted</span>}
           {entry.status === 'reversed' && <span className="g-tag">Reversed</span>}
           {locked && <span className="g-tag" title="This month is closed">Closed</span>}
-          {bank ? <Money minor={bank.amount_minor} currency={bank.currency} colour className="w-[110px] text-right" /> : <Money minor={journalSize} currency={entity.functional_currency} className="w-[110px] text-right" />}
+          {bank ? <Money minor={bank.amount_minor} currency={bank.currency} colour className="w-[100px] text-right" /> : <Money minor={journalSize} currency={entity.functional_currency} className="w-[100px] text-right" />}
         </span>
       </div>
-      {suggestion !== undefined && (
-        <div className="flex flex-wrap items-center gap-2 pl-11 pr-3 pb-2 text-sm" role="status">
-          {suggestion === null ? (
-            <span className={`flex-1 ${MUTED}`}>No category fits, says the local model.</span>
-          ) : (
-            <>
-              <span className={MUTED}>Suggested:</span>
-              <span className="g-tag">{ledgerById.get(suggestion)?.name ?? '—'}</span>
-              <button className="g-btn g-btn-gilt g-btn-sm" onClick={onUseSuggestion}>
-                Use it
-              </button>
-            </>
-          )}
-          <button className="g-btn g-btn-ghost g-btn-sm" onClick={onDismissSuggestion}>
-            Dismiss
-          </button>
-        </div>
-      )}
       {open && (
         <div className="pl-8 pr-1 pb-4 space-y-3">
           {locked && (
@@ -634,12 +778,12 @@ function EntryRow({
           {!locked && entry.scheduled && (
             <p className={`text-sm ${MUTED}`}>Part of a spread over months, so its categories and date are fixed and it can't be deleted. Remove the spread first (Spread over months… on the original transaction).</p>
           )}
-          {!locked && !entry.scheduled && bank && others.every((l) => isCategory(ledgerById.get(l.ledger_account_id))) && <SplitsEditor entry={entry} bank={bank} net={net} fee={fee} others={others} onSave={onCategorise} />}
+          {!locked && !entry.scheduled && bank && !entry.pair && others.every((l) => isCategory(ledgerById.get(l.ledger_account_id))) && <SplitsEditor entry={entry} bank={bank} net={net} fee={fee} others={others} onSave={onCategorise} />}
           {entry.notes && <p className={`text-sm ${MUTED}`}>{entry.notes}</p>}
           <div className="flex flex-wrap gap-2">
-            {draft && !locked && (
-              <button className="g-btn g-btn-gilt g-btn-sm" onClick={onPost}>
-                Post
+            {suggestion != null && unsorted && (
+              <button className="g-btn g-btn-ghost g-btn-sm" onClick={onDismissSuggestion}>
+                Not {suggestedName}
               </button>
             )}
             {entry.status === 'posted' && !entry.reverses_id && others.some((l) => isCategory(ledgerById.get(l.ledger_account_id)) && !isUncategorised(ledgerById.get(l.ledger_account_id))) && (

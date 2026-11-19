@@ -33,10 +33,7 @@ pub const SYNC_TABLES: &[&str] = &[
 
 /// Column names of `table` (from the live schema).
 async fn column_names(db: &Db, table: &str) -> Result<Vec<String>> {
-    Ok(sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info(?)")
-        .bind(table)
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info(?)").bind(table).fetch_all(db).await?)
 }
 
 /// Tables a replica may PUSH (write). Excludes `users` (auth-sensitive:
@@ -69,12 +66,7 @@ fn is_ident(s: &str) -> bool {
 /// A `json_object('c','"c"', …)` expression over a table's identifier-safe columns.
 async fn json_object_expr(db: &Db, table: &str) -> Result<String> {
     let cols = column_names(db, table).await?;
-    Ok(cols
-        .iter()
-        .filter(|c| is_ident(c))
-        .map(|c| format!("'{c}', \"{c}\""))
-        .collect::<Vec<_>>()
-        .join(", "))
+    Ok(cols.iter().filter(|c| is_ident(c)).map(|c| format!("'{c}', \"{c}\"")).collect::<Vec<_>>().join(", "))
 }
 
 /// Bind a JSON value to a sqlite query as its natural type (column affinity
@@ -128,11 +120,12 @@ fn default_op() -> String {
 /// push-syncable entity (has a sync_uuid to remap by). FKs to `users` etc. are
 /// left as the client's value (a replica adopts the host's user ids).
 async fn fk_parent_table(db: &Db, table: &str, col: &str) -> Result<Option<String>> {
-    let parent: Option<String> = sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_list(?) WHERE \"from\" = ?")
-        .bind(table)
-        .bind(col)
-        .fetch_optional(db)
-        .await?;
+    let parent: Option<String> =
+        sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_list(?) WHERE \"from\" = ?")
+            .bind(table)
+            .bind(col)
+            .fetch_optional(db)
+            .await?;
     Ok(parent.filter(|p| PUSH_TABLES.contains(&p.as_str())))
 }
 
@@ -221,13 +214,14 @@ async fn apply(db: &Db, mut changes: Vec<IncomingChange>, mode: Mode) -> Result<
 
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let mut cache: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut col_cache: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    let mut col_cache: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     let mut id_remap = Map::new();
     let mut conflicts: Vec<Value> = Vec::new();
     let mut applied: Vec<String> = Vec::new();
     let mut rejected: Vec<Value> = Vec::new();
 
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     // Echo-guard: suppress the replica's capture triggers for the duration of the
     // ingest writes (in-tx, so a rollback restores it) — otherwise ingested host
     // rows would be recaptured as local changes and pushed straight back.
@@ -247,7 +241,9 @@ async fn apply(db: &Db, mut changes: Vec<IncomingChange>, mode: Mode) -> Result<
             }
             Err(e) => {
                 // A failed statement doesn't poison the SQLite tx; record + continue.
-                rejected.push(serde_json::json!({ "entity": ch.entity, "sync_uuid": ch.sync_uuid, "reason": e.to_string() }));
+                rejected.push(
+                    serde_json::json!({ "entity": ch.entity, "sync_uuid": ch.sync_uuid, "reason": e.to_string() }),
+                );
             }
         }
     }
@@ -301,12 +297,11 @@ async fn apply_change(
                     let pid = match cache.get(&key) {
                         Some(id) => Some(*id),
                         None => {
-                            let id: Option<i64> = sqlx::query_scalar(&format!(
-                                "SELECT id FROM \"{parent_table}\" WHERE sync_uuid = ?"
-                            ))
-                            .bind(puuid)
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                            let id: Option<i64> =
+                                sqlx::query_scalar(&format!("SELECT id FROM \"{parent_table}\" WHERE sync_uuid = ?"))
+                                    .bind(puuid)
+                                    .fetch_optional(&mut **tx)
+                                    .await?;
                             if let Some(i) = id {
                                 cache.insert(key, i);
                             }
@@ -354,7 +349,10 @@ async fn apply_change(
             // unguarded; Replica: suppressed under the ingest echo-guard), so the
             // host propagates this delete onward while a replica ingesting a
             // host-delete doesn't echo it straight back.
-            sqlx::query(&format!("DELETE FROM \"{table}\" WHERE sync_uuid = ?")).bind(&ch.sync_uuid).execute(&mut **tx).await?;
+            sqlx::query(&format!("DELETE FROM \"{table}\" WHERE sync_uuid = ?"))
+                .bind(&ch.sync_uuid)
+                .execute(&mut **tx)
+                .await?;
             if mode == Mode::Ingest {
                 // The capture trigger that would clear sync_state is suppressed
                 // during ingest, so drop any (possibly dirty) bookkeeping here.
@@ -684,10 +682,8 @@ pub async fn pull(db: &Db, since: &str) -> Result<Value> {
 /// `fk_refs` maps each push-FK column to the parent's sync_uuid. Shared by pull
 /// (host -> wire) and local_pending (replica -> wire) so both sides agree.
 async fn row_projection(db: &Db, table: &str, cols: &[String]) -> Result<(String, String)> {
-    let fks: Vec<(String, String)> = sqlx::query_as("SELECT \"from\", \"table\" FROM pragma_foreign_key_list(?)")
-        .bind(table)
-        .fetch_all(db)
-        .await?;
+    let fks: Vec<(String, String)> =
+        sqlx::query_as("SELECT \"from\", \"table\" FROM pragma_foreign_key_list(?)").bind(table).fetch_all(db).await?;
     let remap: std::collections::HashMap<&str, &str> = fks
         .iter()
         .filter(|(from, parent)| is_ident(from) && PUSH_TABLES.contains(&parent.as_str()))
@@ -785,7 +781,7 @@ pub struct AckItem {
 /// hasn't been edited since it was collected (else it stays dirty for the next
 /// sync). For confirmed deletes, drop the tombstone. Run in one transaction.
 pub async fn ack(db: &Db, items: Vec<AckItem>) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     for item in &items {
         let table = item.entity.as_str();
         if !PUSH_TABLES.contains(&table) {
@@ -825,7 +821,7 @@ pub async fn ack(db: &Db, items: Vec<AckItem>) -> Result<()> {
 
 /// Persist field-level conflicts (from either direction) for the review UI.
 pub async fn record_conflicts(db: &Db, conflicts: Vec<Value>) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     for c in &conflicts {
         let sync_uuid = c.get("sync_uuid").and_then(|v| v.as_str()).unwrap_or_default();
         if sync_uuid.is_empty() {
@@ -883,7 +879,7 @@ pub async fn get_conflicts(db: &Db) -> Result<Vec<Value>> {
 /// conflicted — so the next push carries the decision and wins the LWW gate
 /// (re-conflicting only if the host moved again since). One transaction.
 pub async fn resolve_conflict(db: &Db, sync_uuid: &str, resolved: Map<String, Value>) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let row: Option<(String, Option<String>)> =
         sqlx::query_as("SELECT entity, server_json FROM sync_conflicts WHERE sync_uuid = ?")
             .bind(sync_uuid)

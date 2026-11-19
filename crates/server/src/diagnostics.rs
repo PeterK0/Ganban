@@ -138,16 +138,22 @@ fn tail_file(path: &Path, n: usize) -> String {
 /// shown for sharing: it blanks high-entropy token-like words and the value
 /// after any secret-ish key.
 pub fn redact(input: &str) -> String {
-    input
-        .lines()
-        .map(redact_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+    input.lines().map(redact_line).collect::<Vec<_>>().join("\n")
 }
 
 const SECRET_KEYS: &[&str] = &[
-    "authorization", "bearer", "token", "secret", "password", "passwd",
-    "api_key", "apikey", "api-key", "x-api-key", "client_secret", "cookie",
+    "authorization",
+    "bearer",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "api-key",
+    "x-api-key",
+    "client_secret",
+    "cookie",
 ];
 
 fn redact_line(line: &str) -> String {
@@ -160,10 +166,7 @@ fn redact_line(line: &str) -> String {
         }
     }
     // Otherwise blank any individual high-entropy token-like word.
-    line.split(' ')
-        .map(|w| if looks_secret(w) { "\u{2039}redacted\u{203a}" } else { w })
-        .collect::<Vec<_>>()
-        .join(" ")
+    line.split(' ').map(|w| if looks_secret(w) { "\u{2039}redacted\u{203a}" } else { w }).collect::<Vec<_>>().join(" ")
 }
 
 /// Heuristic: a long, mixed alphanumeric run with no path/URL separators — i.e.

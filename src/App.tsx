@@ -20,7 +20,8 @@ import ProjectSettingsModal from "./components/ProjectSettingsModal";
 import JoinServerModal from "./components/JoinServerModal";
 import AreaManager from "./components/AreaManager";
 import TopBarClock from "./components/TopBarClock";
-import UpdateReadyNotice from "./components/UpdateReadyNotice";
+import UpdateNotice from "./components/UpdateNotice";
+import { WhatsNewNotice } from "./components/PatchNotes";
 import SearchBar from "./components/SearchBar";
 import NotificationSystem from "./components/NotificationSystem";
 import AgentPulse from "./components/AgentPulse";
@@ -550,6 +551,7 @@ function App() {
   // layout, and running it after every App render made scrolling choppy.
   const topBarRef = useRef<HTMLElement | null>(null);
   const topBarEndRef = useRef<HTMLSpanElement | null>(null);
+  const topBarRightRef = useRef<HTMLDivElement | null>(null);
   const [topBarWidth, setTopBarWidth] = useState(0);
   const [squeeze, setSqueeze] = useState(0);
   const squeezeSig = useRef('');
@@ -579,7 +581,20 @@ function App() {
     const right = bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight);
     const title = bar.querySelector<HTMLElement>('[data-topbar-title]');
     const titleCut = !!title && title.clientWidth + 1 < Math.min(title.scrollWidth, TITLE_MIN_PX);
-    if (end.getBoundingClientRect().left > right + 0.5 || titleCut) setSqueeze((v) => (v === s ? s + 1 : v));
+    // The right toolbar is justify-end and min-w-0: squeezed, its items spill out to the LEFT, over the vitals,
+    // while the end marker stays put. So it also counts as overflowing when an item starts left of the toolbar.
+    const tools = topBarRightRef.current;
+    let toolsSpill = false;
+    if (tools) {
+      const left = tools.getBoundingClientRect().left;
+      for (const c of Array.from(tools.children)) {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.left < left - 0.5) toolsSpill = true;
+      }
+    }
+    if (end.getBoundingClientRect().left > right + 0.5 || titleCut || toolsSpill) {
+      setSqueeze((v) => (v === s ? s + 1 : v));
+    }
   };
   useLayoutEffect(() => {
     if (squeezeSig.current !== barSig) {
@@ -1294,9 +1309,10 @@ function App() {
 
           {/* Right toolbar: search, active task, date/clock popup, notifications.
               min-w-0: the active task's title is what shrinks first. */}
-          <div className="flex items-center gap-3 justify-end min-w-0" data-tauri-drag-region>
-            {/* "Update ready: Restart" once a new desktop build has downloaded. */}
-            <UpdateReadyNotice />
+          <div ref={topBarRightRef} className="flex items-center gap-3 justify-end min-w-0" data-tauri-drag-region>
+            {/* The desktop update offer ("Ganban 1.0.12 is available"), and "What's new" once after an update. */}
+            <UpdateNotice />
+            <WhatsNewNotice />
             <SearchBar onSelectResult={(t) => searchDetail.open(t)} />
             <ActiveTaskWidget onOpenTask={(task) => searchDetail.open({ kind: 'task', task })} />
             {/* Compact clock: shows the live time (no date/tz — those live in

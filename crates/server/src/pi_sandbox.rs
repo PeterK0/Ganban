@@ -60,23 +60,48 @@ const SETTINGS_KEYS: &[&str] = &[
 
 /// Parent environment variables a run keeps (besides the provider's API key).
 const ENV_KEEP: &[&str] = &[
-    "PATH", "LANG", "LC_ALL", "LC_CTYPE",
-    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
-    "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "NODE_EXTRA_CA_CERTS",
 ];
 
 /// macOS read allowlist: system libraries, certificates (`/private/etc`), time
 /// zones, devices. No user folder, no `/Library/Application Support`, no temp.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAC_SYSTEM_DIRS: &[&str] = &[
-    "/System", "/usr/lib", "/usr/libexec", "/usr/share", "/usr/bin", "/bin",
-    "/private/etc/ssl", "/private/var/db/timezone", "/private/var/select", "/dev/fd",
+    "/System",
+    "/usr/lib",
+    "/usr/libexec",
+    "/usr/share",
+    "/usr/bin",
+    "/bin",
+    "/private/etc/ssl",
+    "/private/var/db/timezone",
+    "/private/var/select",
+    "/dev/fd",
 ];
 /// Single system files a run may read: name resolution, time zone, devices.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAC_SYSTEM_FILES: &[&str] = &[
-    "/private/etc/hosts", "/private/etc/resolv.conf", "/private/etc/localtime", "/private/etc/protocols",
-    "/private/etc/services", "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty",
+    "/private/etc/hosts",
+    "/private/etc/resolv.conf",
+    "/private/etc/localtime",
+    "/private/etc/protocols",
+    "/private/etc/services",
+    "/dev/null",
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
     "/dev/dtracehelper",
 ];
 /// Symlinks at the root that path resolution walks through.
@@ -86,11 +111,29 @@ const MAC_ROOT_LINKS: &[&str] = &["/etc", "/var", "/tmp"];
 /// Linux read allowlist, bound read-only (missing ones are skipped).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const LINUX_SYSTEM_DIRS: &[&str] = &[
-    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32",
-    "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/etc/gai.conf",
-    "/etc/ssl", "/etc/pki", "/etc/ca-certificates", "/etc/crypto-policies", "/etc/localtime",
-    "/etc/passwd", "/etc/group", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
-    "/etc/alternatives", "/run/systemd/resolve",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/lib32",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/host.conf",
+    "/etc/gai.conf",
+    "/etc/ssl",
+    "/etc/pki",
+    "/etc/ca-certificates",
+    "/etc/crypto-policies",
+    "/etc/localtime",
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/alternatives",
+    "/run/systemd/resolve",
 ];
 
 /// An outbound endpoint beyond TLS on 443. (bwrap has no port filter, so
@@ -121,9 +164,15 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    pub fn stage_dir(&self) -> PathBuf { self.run_dir.join(STAGE) }
-    pub fn agent_dir(&self) -> PathBuf { self.stage_dir().join("agent") }
-    pub fn tmp_dir(&self) -> PathBuf { self.stage_dir().join("tmp") }
+    pub fn stage_dir(&self) -> PathBuf {
+        self.run_dir.join(STAGE)
+    }
+    pub fn agent_dir(&self) -> PathBuf {
+        self.stage_dir().join("agent")
+    }
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.stage_dir().join("tmp")
+    }
 }
 
 /// Quote a path for a Seatbelt string literal.
@@ -162,10 +211,8 @@ pub(crate) fn seatbelt_profile(plan: &Plan) -> String {
         }
     }
 
-    let mut net = vec![
-        "(remote tcp \"*:443\")".to_string(),
-        "(literal \"/private/var/run/mDNSResponder\")".to_string(),
-    ];
+    let mut net =
+        vec!["(remote tcp \"*:443\")".to_string(), "(literal \"/private/var/run/mDNSResponder\")".to_string()];
     for e in &plan.endpoints {
         net.push(match e {
             Endpoint::Loopback(p) => format!("(remote tcp \"localhost:{p}\")"),
@@ -211,12 +258,8 @@ pub(crate) fn seatbelt_profile(plan: &Plan) -> String {
 /// so the network is shared; the cut is on reads.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn bwrap_args(plan: &Plan) -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "--die-with-parent".into(),
-        "--new-session".into(),
-        "--unshare-all".into(),
-        "--share-net".into(),
-    ];
+    let mut v: Vec<String> =
+        vec!["--die-with-parent".into(), "--new-session".into(), "--unshare-all".into(), "--share-net".into()];
     for d in LINUX_SYSTEM_DIRS {
         v.extend(["--ro-bind-try".into(), (*d).into(), (*d).into()]);
     }
@@ -265,10 +308,7 @@ pub(crate) fn discover_runtime(pi_binary: &Path, path_env: Option<&OsStr>) -> Ru
 /// and the certificate folders (never `var`, where Homebrew services keep
 /// data). Anything else gets `<prefix>/bin` and `<prefix>/lib`.
 fn add_prefix(rt: &mut Runtime, bin: &Path) {
-    let brew = bin
-        .ancestors()
-        .find(|a| a.file_name() == Some(OsStr::new("Cellar")))
-        .and_then(Path::parent);
+    let brew = bin.ancestors().find(|a| a.file_name() == Some(OsStr::new("Cellar"))).and_then(Path::parent);
     if let Some(brew) = brew {
         for sub in ["Cellar", "opt", "lib", "etc/openssl@3", "etc/ca-certificates"] {
             rt.dirs.push(brew.join(sub));
@@ -320,14 +360,21 @@ fn endpoint_of(url: &str) -> Option<Endpoint> {
         return None;
     }
     let host = u.host_str()?.trim_matches(|c| c == '[' || c == ']');
-    Some(if matches!(host, "localhost" | "127.0.0.1" | "::1") { Endpoint::Loopback(port) } else { Endpoint::AnyHost(port) })
+    Some(if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        Endpoint::Loopback(port)
+    } else {
+        Endpoint::AnyHost(port)
+    })
 }
 
 fn read_json(path: &Path) -> Map<String, Value> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| match v { Value::Object(m) => Some(m), _ => None })
+        .and_then(|v| match v {
+            Value::Object(m) => Some(m),
+            _ => None,
+        })
         .unwrap_or_default()
 }
 
@@ -368,8 +415,11 @@ pub(crate) fn stage_config(real_agent: &Path, agent_dir: &Path, model: Option<&s
     let provider = provider_of(model, &settings);
     let keep = |k: &String| provider.as_deref().map_or(true, |p| k == p);
 
-    let mut s: Map<String, Value> =
-        settings.iter().filter(|(k, _)| SETTINGS_KEYS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut s: Map<String, Value> = settings
+        .iter()
+        .filter(|(k, _)| SETTINGS_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     s.insert("enableInstallTelemetry".into(), Value::Bool(false));
     write_json(&agent_dir.join("settings.json"), &Value::Object(s), false)?;
 
@@ -590,8 +640,10 @@ mod tests {
         let p = seatbelt_profile(&plan());
         assert!(p.contains("(deny file-read* file-write*)"), "{p}");
         assert!(!p.contains("(allow file-read* (subpath \"/Users"), "no user folder may be readable: {p}");
-        assert!(!p.contains("(subpath \"/private/tmp\")") && !p.contains("(subpath \"/private/var/folders\")"),
-            "shared temp must not be readable: {p}");
+        assert!(
+            !p.contains("(subpath \"/private/tmp\")") && !p.contains("(subpath \"/private/var/folders\")"),
+            "shared temp must not be readable: {p}"
+        );
         assert!(p.contains("(allow file-read* file-write* (subpath \"/private/var/folders/xy/T/ganban-pi-task-x\"))"));
         assert!(p.contains("(subpath \"/opt/homebrew/lib/node_modules\")"));
         assert!(p.contains("(literal \"/opt/homebrew/bin/pi\")"));
@@ -682,16 +734,31 @@ mod tests {
         let real = root.join("real");
         let agent = root.join("run/.ganban-pi/agent");
         std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join("settings.json"), json!({
-            "defaultProvider": "anthropic", "defaultModel": "m", "packages": ["git:x"], "theme": "t"
-        }).to_string()).unwrap();
-        std::fs::write(real.join("auth.json"), json!({
-            "anthropic": {"type": "api_key", "key": "sk-ant-aaaaaaaaaaaaaaaa"},
-            "openai": {"type": "api_key", "key": "sk-oai-bbbbbbbbbbbbbbbb"}
-        }).to_string()).unwrap();
-        std::fs::write(real.join("models.json"), json!({"providers": {
-            "anthropic": {}, "ollama": {"baseUrl": "http://localhost:11434/v1"}
-        }}).to_string()).unwrap();
+        std::fs::write(
+            real.join("settings.json"),
+            json!({
+                "defaultProvider": "anthropic", "defaultModel": "m", "packages": ["git:x"], "theme": "t"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            real.join("auth.json"),
+            json!({
+                "anthropic": {"type": "api_key", "key": "sk-ant-aaaaaaaaaaaaaaaa"},
+                "openai": {"type": "api_key", "key": "sk-oai-bbbbbbbbbbbbbbbb"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            real.join("models.json"),
+            json!({"providers": {
+                "anthropic": {}, "ollama": {"baseUrl": "http://localhost:11434/v1"}
+            }})
+            .to_string(),
+        )
+        .unwrap();
 
         let st = stage_config(&real, &agent, Some("anthropic/claude-x")).unwrap();
         assert_eq!(st.provider.as_deref(), Some("anthropic"));
@@ -719,14 +786,24 @@ mod tests {
         let real = root.join("real");
         let agent = root.join("agent");
         std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join("auth.json"), json!({
-            "anthropic": {"type": "oauth", "refresh": "r1-0000000000000000", "access": "a1", "expires": 1},
-            "zai": {"type": "api_key", "key": "k"}
-        }).to_string()).unwrap();
+        std::fs::write(
+            real.join("auth.json"),
+            json!({
+                "anthropic": {"type": "oauth", "refresh": "r1-0000000000000000", "access": "a1", "expires": 1},
+                "zai": {"type": "api_key", "key": "k"}
+            })
+            .to_string(),
+        )
+        .unwrap();
         let st = stage_config(&real, &agent, Some("anthropic/x")).unwrap();
-        std::fs::write(agent.join("auth.json"), json!({
-            "anthropic": {"type": "oauth", "refresh": "r2-0000000000000000", "access": "a2", "expires": 2}
-        }).to_string()).unwrap();
+        std::fs::write(
+            agent.join("auth.json"),
+            json!({
+                "anthropic": {"type": "oauth", "refresh": "r2-0000000000000000", "access": "a2", "expires": 2}
+            })
+            .to_string(),
+        )
+        .unwrap();
         write_back_auth(&real, &agent, &st).unwrap();
         let after = read_json(&real.join("auth.json"));
         assert_eq!(after["anthropic"]["refresh"], json!("r2-0000000000000000"));
@@ -741,11 +818,16 @@ mod tests {
 
         // The staged file is the run's to write: a planted entry, an older
         // token, or an API key change never reach the owner's file.
-        std::fs::write(agent.join("auth.json"), json!({
-            "anthropic": {"type": "oauth", "refresh": "r0-0000000000000000", "access": "a0", "expires": 0},
-            "github-copilot": {"type": "oauth", "refresh": "planted-000000000000", "access": "x", "expires": 9},
-            "zai": {"type": "api_key", "key": "evil"}
-        }).to_string()).unwrap();
+        std::fs::write(
+            agent.join("auth.json"),
+            json!({
+                "anthropic": {"type": "oauth", "refresh": "r0-0000000000000000", "access": "a0", "expires": 0},
+                "github-copilot": {"type": "oauth", "refresh": "planted-000000000000", "access": "x", "expires": 9},
+                "zai": {"type": "api_key", "key": "evil"}
+            })
+            .to_string(),
+        )
+        .unwrap();
         write_back_auth(&real, &agent, &st).unwrap();
         let after = read_json(&real.join("auth.json"));
         assert_eq!(after["anthropic"]["refresh"], json!("r2-0000000000000000"));
@@ -754,9 +836,14 @@ mod tests {
 
         // An owner's file that isn't JSON is left alone, not overwritten.
         std::fs::write(real.join("auth.json"), "{ broken").unwrap();
-        std::fs::write(agent.join("auth.json"), json!({
-            "anthropic": {"type": "oauth", "refresh": "r3-0000000000000000", "access": "a3", "expires": 3}
-        }).to_string()).unwrap();
+        std::fs::write(
+            agent.join("auth.json"),
+            json!({
+                "anthropic": {"type": "oauth", "refresh": "r3-0000000000000000", "access": "a3", "expires": 3}
+            })
+            .to_string(),
+        )
+        .unwrap();
         assert!(write_back_auth(&real, &agent, &st).is_err());
         assert_eq!(std::fs::read_to_string(real.join("auth.json")).unwrap(), "{ broken");
         let _ = std::fs::remove_dir_all(&root);
@@ -793,11 +880,15 @@ mod tests {
     fn proxies_and_ca_files_widen_the_plan() {
         let mut rt = Runtime::default();
         let mut eps = Vec::new();
-        env_needs(&[
-            ("HTTPS_PROXY".into(), "http://127.0.0.1:3128".into()),
-            ("NODE_EXTRA_CA_CERTS".into(), "/etc/corp.pem".into()),
-            ("NO_PROXY".into(), "http://example.com:81".into()),
-        ], &mut rt, &mut eps);
+        env_needs(
+            &[
+                ("HTTPS_PROXY".into(), "http://127.0.0.1:3128".into()),
+                ("NODE_EXTRA_CA_CERTS".into(), "/etc/corp.pem".into()),
+                ("NO_PROXY".into(), "http://example.com:81".into()),
+            ],
+            &mut rt,
+            &mut eps,
+        );
         assert_eq!(eps, vec![Endpoint::Loopback(3128)]);
         assert_eq!(rt.files, vec![PathBuf::from("/etc/corp.pem")]);
     }
@@ -821,7 +912,11 @@ mod live {
     fn sandboxed_sh(plan: &Plan, script: &str) -> std::process::Output {
         let profile = seatbelt_profile(plan);
         Command::new("/usr/bin/sandbox-exec")
-            .arg("-p").arg(&profile).arg("/bin/sh").arg("-c").arg(script)
+            .arg("-p")
+            .arg(&profile)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(script)
             .env_clear()
             .envs(sandbox_env(plan, None, [("PATH".to_string(), "/usr/bin:/bin".to_string())]))
             .current_dir(&plan.run_dir)
@@ -833,7 +928,8 @@ mod live {
     #[ignore = "runs sandbox-exec against this machine's real home folder"]
     fn private_paths_are_unreadable_from_a_run() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
-        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap()
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
             .join(format!("ganban-pisb-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let run = base.join("run");
@@ -878,7 +974,10 @@ mod live {
         for (name, cmd) in &probes {
             let out = sandboxed_sh(&plan, &format!("{cmd} >/dev/null"));
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            report.push(format!("{name}: {}", if out.status.success() { "READABLE".to_string() } else { format!("denied ({err})") }));
+            report.push(format!(
+                "{name}: {}",
+                if out.status.success() { "READABLE".to_string() } else { format!("denied ({err})") }
+            ));
         }
         println!("{}", report.join("\n"));
         let _ = std::fs::remove_dir_all(&base);

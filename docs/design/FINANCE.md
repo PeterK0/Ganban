@@ -41,14 +41,17 @@ All tables are prefixed `fin_`. They're host-only and never synced to offline re
 |---|---|---|
 | `fin_entities` | id, user_id UNIQUE, project_id (the user's personal container), name, functional_currency, created_at | Created on first use, with the default chart. v1 has one per user; the model allows more. |
 | `fin_ledger_accounts` | id, entity_id, code, name, class (`asset` `liability` `equity` `income` `expense`), parent_id, currency NULL (monetary accounts), cash_flow_class NULL (`operating` `investing` `financing`), system_key NULL, archived, position | `system_key` marks the accounts the app posts to: `opening_equity`, `transfers_clearing`, `fx_realised_gain`, `fx_realised_loss`, `fx_unrealised_gain`, `fx_unrealised_loss`, `bank_fees`, `uncategorised_expense`, `uncategorised_income`. |
-| `fin_accounts` | id, entity_id, ledger_account_id UNIQUE, kind (`current` `savings` `card` `cash` `loan`), name, institution, currency, iban_mask NULL, profile_key NULL, archived, created_at | A bank, vault, card, cash or loan account the user holds. Its ledger account is an asset (current, savings, cash) or a liability (card, loan) in its currency. |
+| `fin_accounts` | id, entity_id, ledger_account_id UNIQUE, kind (`current` `savings` `card` `cash` `loan`), name, institution, currency, iban_mask NULL, profile_key NULL, archived, unconfirmed, created_at | A bank, vault, card, cash or loan account the user holds. Its ledger account is an asset (current, savings, cash) or a liability (card, loan) in its currency. `institution` is the bank, so a pocket groups under it. `unconfirmed`: made by an import for the other side of a move, with no statement of its own imported yet (§ Payees, Savings moves). |
 | `fin_import_batches` | id, entity_id, file_name, profile_key, imported_at, rows_total, rows_new, rows_duplicate, status (`running` `done`) | One per import. `running` until its import finishes, so a rerun finishes an interrupted one. |
 | `fin_source_lines` | id, entity_id, account_id, batch_id, hash, dedupe_key, occurred_at NULL, booked_date, value_date NULL, description, payee NULL, amount_minor, currency, fee_minor, balance_minor NULL, bank_category NULL, kind_hint NULL (`card` `transfer` `exchange` `interest` `fee` `refund` `topup` `atm` `other`), raw_json, dismissed_at NULL, created_at; UNIQUE(entity_id, account_id, hash) | Verbatim imported rows. Manual entries have none. Deleting an entry marks its source line dismissed, so a re-import doesn't bring it back. |
-| `fin_entries` | id, entity_id, date, description, payee NULL, status (`draft` `posted` `reversed`), source_line_id NULL, reverses_id NULL, notes NULL, group_key NULL, created_at, updated_at | One source line makes at most one entry. Imports arrive as `draft` (the inbox). `group_key` is a draft's payee group (§ The inbox at scale). |
+| `fin_entries` | id, entity_id, date, description, payee NULL, status (`draft` `posted` `reversed`), source_line_id NULL, reverses_id NULL, notes NULL, group_key NULL, payee_id NULL, payee_key NULL, unsorted, created_at, updated_at | One source line makes at most one entry. An import posts what it can file and leaves the rest as `draft`: the inbox, which holds decisions only (§ Payees). `group_key` is a draft's payee group (§ The inbox at scale). `payee_id` and `payee_key` are its payee and the alias it came by (`''` once looked at without one). `unsorted`: posted as unsorted history. |
 | `fin_lines` | id, entry_id, ledger_account_id, amount_minor, currency, functional_minor, rate, memo NULL | At least two lines per entry, balanced on `functional_minor`. |
 | `fin_pairs` | id, entity_id, kind (`transfer` `fx`), entry_a, entry_b, adjust_entry_id NULL, status (`auto` `review` `confirmed` `rejected`), score, created_at | A transfer between own accounts. Both bank entries post their counter line to `transfers_clearing`, so a matched pair nets to 0. An FX pair adds an adjusting entry for the realised difference. |
 | `fin_rules` | id, entity_id, position, conditions_json, action_json, learned, hits, created_at | Conditions: description or payee pattern, amount range, account, bank category, kind hint. Action: one category, or splits by fixed amount or percentage. |
-| `fin_profiles` | id, entity_id NULL (NULL = built in), key, name, mapping_json | The wizard saves user profiles. Built-in ones ship in code (`revolut`, `piraeus`) and can be listed. |
+| `fin_payees` | id, entity_id, name, default_ledger_account_id NULL, ask_every_time, merged_into NULL, renamed, created_at | A payee (§ Payees). One merged into another keeps its row, so a split can bring it back. |
+| `fin_payee_aliases` | entity_id, key, payee_id, origin_payee_id NULL, sample, loose_key; PK(entity_id, key) | A payee's spellings by certain key. `origin_payee_id`: the payee it belonged to before a merge. `sample`: the first raw text seen. |
+| `fin_payee_dismissed` | entity_id, payee_a, payee_b, created_at; PK(entity_id, payee_a, payee_b) | Merge suggestions the user dismissed. |
+| `fin_profiles` | id, entity_id NULL (NULL = built in), key, name, mapping_json | The wizard saves user profiles. Built-in formats ship in code (a registry, empty in the public tree) and are listed with them. |
 | `fin_rates` | currency, date, rate (units of currency per 1 EUR, as ECB), source; PK(currency, date) | Global (not per user): ECB reference rates, fetched daily by the host and cached. |
 | `fin_periods` | entity_id, month (`YYYY-MM`), status (`open` `closed`), closed_at NULL; PK(entity_id, month) | A month closes in order; a date in or before the latest closed month is locked (§ Wave 2, Period close). |
 | `fin_audit` | id, entity_id, at, user_id, action, kind, row_id, before_json NULL, after_json NULL | Every mutation. |
@@ -89,11 +92,11 @@ are `YYYY-MM-DD`.
 | `fin_list_accounts` | `includeArchived?` | `FinAccount[]` with `balance_minor` (account currency, posted and draft separately) and `balance_functional_minor` |
 | `fin_create_account` | `input {kind, name, institution?, currency, ibanMask?, openingBalanceMinor?, openingDate?}` | `FinAccount`. Creates its ledger account and posts the opening balance against `opening_equity`. |
 | `fin_update_account` / `fin_archive_account` | `accountId, input` / `accountId` | `FinAccount` |
-| `fin_list_entries` | `filter {from?, to?, accountId?, ledgerAccountId?, status?, uncategorised?, search?, groupKey?}, limit?, offset?` | `{entries: Entry[], total}`; `Entry` includes its `lines`, `pair` and `scheduled` (tied to a recognition schedule, so its lines, date and deletion are refused) |
+| `fin_list_entries` | `filter {from?, to?, accountId?, ledgerAccountId?, status?, uncategorised?, search?, groupKey?, payeeId?, unsorted?, transfers?, importBatchId?, ids?}, limit?, offset?` | `{entries: Entry[], total}`; `Entry` includes its `lines`, `pair`, `scheduled` (tied to a recognition schedule, so its lines, date and deletion are refused), `payee_id`, `payee_name` (the payee's own name; `payee` is the bank's text), `unsorted` and, on a draft, `suggested_ledger_account_id` (its payee group's waiting suggestion). `transfers: true` lists the legs of booked pairs (the Transfers filter) and `false` everything else; `importBatchId` narrows to one import's lines; `ids` (≤ 5000) is a selection. |
 | `fin_create_entry` | `input {date, description, payee?, lines: [{ledgerAccountId, amountMinor, currency, functionalMinor?}]}` | `Entry` (a manual journal, posted, which must balance) |
 | `fin_update_entry` | `entryId, input` | `Entry`. Open periods only; a closed period answers `InvalidInput("closed period: reverse it instead")`. |
-| `fin_categorise` | `entryId, splits: [{ledgerAccountId, amountMinor}]` | `Entry`. Replaces the non-bank side of a bank entry. Splits carry the debit sign, the opposite of the bank line, so a −4200 card payment takes splits summing to +4200; the bank line's sign is accepted too. |
-| `fin_post_entries` | `entryIds` | `{posted}` (draft → posted) |
+| `fin_categorise` | `entryId, splits: [{ledgerAccountId, amountMinor}], payeeDefault?: once\|change` | `Entry` with `payee_default: DefaultChange \| null`. Replaces the non-bank side of a bank entry, and a draft posts (categorised means done). Splits carry the debit sign, the opposite of the bank line, so a −4200 card payment takes splits summing to +4200; the bank line's sign is accepted too. A single category teaches the payee (§ Payees, Default categories). |
+| `fin_post_entries` | `entryIds` | `{posted}` (draft → posted). Kept for the screens of before § Payees; nothing needs it now. |
 | `fin_delete_entry` | `entryId` | `{}`. Drafts or open-period entries only; its source line stays and is marked dismissed. |
 | `fin_reverse_entry` | `entryId, date` | `Entry` (the reversal) |
 | `fin_trial_balance` | `asOf` | `[{ledgerAccountId, debitMinor, creditMinor}]` in the functional currency, with the totals equal |
@@ -104,52 +107,59 @@ are `YYYY-MM-DD`.
 | Command | Args | Returns |
 |---|---|---|
 | `fin_list_profiles` | — | `Profile[] {key, name, builtIn, mapping}` |
-| `fin_preview_import` | `fileName, contentBase64, profileKey?` | `{format: "csv"\|"xlsx", profileKey?, confidence, header: string[], rows: ParsedRow[] (first 50), accounts: [{guess_key, name, institution?, currency, kind, iban_mask?, matched_account_id?}], sample: string[][] (the first 30 raw rows, for the wizard), warnings: string[]}` |
-| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}, postOlderThanDays?` (1–3650: post the lines dated before that many days ago, after pairing and rules) | `ImportJob`, running: the import goes on in the background (§ Import pipeline, Large imports). Refused while the user has one running. A wrong profile or another user's account is refused here; anything else ends the job `failed`. Lines of accounts left out of `accountMap` are skipped with a warning |
-| `fin_import_status` | `jobId?` | `ImportJob \| null`: that job (another user's is not found), else the user's latest. `ImportJob {job_id, state: running\|done\|failed, stage: reading\|rates\|accounts\|rows\|pairing\|rules\|done, done, total (rows, in the stage), file_name, started_at, finished_at?, result?: {batch_id, created, duplicates, paired, review, categorised_by_rules, refunds, posted, warnings}, error?}` |
+| `fin_preview_import` | `fileName, contentBase64, profileKey?` | `{format: "csv"\|"xlsx", profileKey?, confidence, header: string[], rows: ParsedRow[] (first 50), accounts: [{guess_key, name, institution?, currency, kind, iban_mask?, matched_account_id?}], sample: string[][] (the first 30 raw rows, for the wizard), warnings: string[], suggested_mapping: Mapping \| null}`. Without `profileKey`, a built-in format is detected, else a saved layout whose named columns are all in the file's header row (the one naming the most columns when several fit). When neither fits, `suggested_mapping` is the wizard's guess from the header names (date, description, amount or debit and credit, currency, balance, payee, fee). |
+| `fin_import` | `fileName, contentBase64, profileKey, accountMap: {[guessKey]: accountId \| {create: {kind, name, institution, currency}}}, postOlderThanDays?` (the history cut-off, § Payees, Filing: 1–3650 days, 0 for none; without it, the user's setting, on at 90 days by default) | `ImportJob`, running: the import goes on in the background (§ Import pipeline, Large imports). Refused while the user has one running. A wrong profile or another user's account is refused here; anything else ends the job `failed`. Lines of accounts left out of `accountMap` are skipped with a warning |
+| `fin_interrupted_imports` | | `[{batch_id, file_name, imported_at, lines}]`: the user's batches cut short (`running` or `failed`) with lines in, none while an import of theirs runs. |
+| `fin_import_status` | `jobId?` | `ImportJob \| null`: that job (another user's is not found), else the user's latest. `ImportJob {job_id, state: running\|done\|failed, stage: reading\|rates\|accounts\|rows\|pairing\|rules\|done, done, total (rows, in the stage), file_name, started_at, finished_at?, result?: {batch_id, created, duplicates, paired, review, categorised_by_rules, refunds, posted, filed_by_payee, history_unsorted, history_suggested, decisions, transfer_pair_ids, warnings}, error?}` |
 | `fin_save_profile` / `fin_delete_profile` | `input {key, name, mapping}` / `key` | `Profile` |
 | `fin_list_pairs` | `status?` | `Pair[]` with both entries and `like_key` (the kind, both bank accounts and each side's description pattern: what "all like this" groups by) |
-| `fin_resolve_pair` | `pairId, accept` | `Pair` |
+| `fin_resolve_pair` | `pairId, accept` | `Pair`. Accepting posts both legs. Rejecting a booked pair is "Not a transfer": both legs go back to uncategorised drafts, in the inbox, with their payees. |
 | `fin_resolve_pairs` | `pairIds (at most 1000), accept` | `{resolved, skipped}`: each pair as `fin_resolve_pair`, in its own transaction; one that's gone, another user's or has an entry categorised since is skipped. The review list's "Same money for all like this" and "Accept all at ≥ N%" (N defaults to the auto bar, 75) call it after confirming the count |
 | `fin_rescore_pairs` | — | `{confirmed, review}`: the pairs waiting for review, scored again with the current rules (§ Import pipeline, Pairing rules); the ones that now qualify are booked. The review list calls it when it opens, and the host runs it once at startup after the rules change. Running it again changes nothing |
 | `fin_pair_entries` | `entryA, entryB` | `Pair` (a manual match) |
-| `fin_list_rules` / `fin_create_rule` / `fin_update_rule` / `fin_delete_rule` | — / `input` / `ruleId, input` / `ruleId` | `Rule` |
+| `fin_list_rules` / `fin_create_rule` / `fin_update_rule` / `fin_delete_rule` | — / `input` / `ruleId, input` / `ruleId` | `Rule[]` / `Rule` / `Rule` / `{}`. The rules screen lists, edits and deletes with these. |
 | `fin_suggest_rule` | `entryId` | `Rule \| null`: a rule drafted from this entry's correction, offered after the second identical fix; its `conditions` and `action` come back in `fin_create_rule`'s input shape |
 | `fin_apply_rules` | `entryIds?` (all drafts by default) | `{categorised}` |
 
-Uploads go through the command table as base64. A file is capped at 1.5 MB, which fits `/invoke`'s body limit; a year of bank lines is a few hundred KB, and six years of a busy Revolut account about 500 KB.
+Uploads go through the command table as base64. A file is capped at 1.5 MB, which fits `/invoke`'s body limit; a year of bank lines is a few hundred KB, and six years of a busy current account about 500 KB.
 
 ## Import pipeline
 
-1. **Sniff the content, not the extension.** The zip magic means XLSX (Revolut's export may be XLSX named
-   `.csv`); otherwise CSV, with the delimiter and encoding detected.
-2. **Decode:** Excel serial dates become dates. Repair mojibake: text that is UTF-8 read as cp1252 (Revolut's
-   "WOÎ›T" for "WOΛT") is re-decoded when that yields valid UTF-8. Decimal commas and thousands separators follow
+1. **Sniff the content, not the extension.** The zip magic means XLSX (a bank's export may be XLSX named
+   `.csv`); otherwise CSV, with the delimiter and encoding detected (UTF-8 or UTF-16, else a legacy code page:
+   Western, Central European, Cyrillic or Greek).
+2. **Decode:** Excel serial dates become dates. Repair mojibake: text that is UTF-8 read as cp1252 (a bank's
+   "Î¦Î‘Î¡ÎŸÎ£" for "ΦΑΡΟΣ") is re-decoded when that yields valid UTF-8. Decimal commas and thousands separators follow
    the profile.
-3. **Profile:** each profile finds its header row (Piraeus has preamble rows: the bank, the title, the account
-   with its IBAN, the period) and maps the columns to a `ParsedRow`.
+3. **Profile:** each profile finds its header row (an export may start with preamble rows: the bank, the title,
+   the account with its IBAN, the period) and maps the columns to a `ParsedRow`.
    A `ParsedRow` carries `line, booked_date, booked_at?, value_date?, description, payee?, amount_minor` (signed,
    excluding the fee), `fee_minor` (≥ 0), `currency, balance_minor?, bank_category?, kind_hint?, account_guess,
    counterpart_guess?` (a pocket), `fx_currency?` and `raw`. A wizard mapping is
    `{headerRow?, bookedDate, valueDate?, description: [col], payee?, amount? | debit? + credit?, fee?, currency?,
    balance?, bankCategory?, dateFormat?, decimal: auto|dot|comma, invertSign, currencyDefault?, accountName?,
    accountKind?, institution?}`, where a `col` is a header name or a 0-based index.
-   - **Revolut:** `Type, Product, Started Date, Completed Date, Description, Amount, Fee, Currency, State,
-     Balance`.
-     - Only `COMPLETED` rows. The booked date is Completed and the value date is Started.
-     - `Product` Current or Savings picks the account.
-     - Pocket moves ("To/From EUR … <pocket name>") are transfers to or from a savings account of that name,
+   - **Built-in formats** (`import/profiles`): a registry of formats, each a key, a name, a detect and a parse
+     function, and the raw columns that keep the bank's timestamp and booking time (dedupe and FX pairing read
+     them on stored lines). The public tree ships none, so any bank goes through the wizard once; a build may add
+     formats at compile time. The key a format stores on accounts and batches never changes, and a key the running
+     build doesn't know is just not built in: its accounts list as usual and its file goes to the wizard. What a
+     built-in format may do beyond a mapping:
+     - Skip lines the bank hasn't completed, booking on the completion date with the start as the value date.
+     - Pick the account from a product column (current or savings).
+     - Read pocket moves ("To/From EUR … <pocket name>") as transfers to or from a savings account of that name,
        created on first sight. When the pocket's own side isn't in the file, the pipeline writes the counterpart
        entry itself.
-     - "Exchanged to XXX" rows are FX legs, paired with the other currency account's leg.
-     - `Fee` becomes a `bank_fees` line in the same entry. `Reward` interest is income.
-   - **Piraeus:** `Category, Transaction Details, Transaction Date (DD/MM/YYYY), Transaction Comments /
-     Reference Code, Amount, Currency, Progressive Ledger Balance, Currency`. The bank's Category is a rule hint.
-     Greek text is kept as it is.
+     - Mark "Exchanged to XXX" rows as FX legs, paired with the other currency account's leg, or, when that leg
+       isn't in the file, booked to the user's account in that currency (§ Payees, Savings moves).
+     - Split a fee into a `bank_fees` line in the same entry.
+     - Take the account and its IBAN from a preamble, and keep the bank's category as a rule hint. Kind hints come
+       from keywords (`profiles::kind_from_words`, which the wizard's category column uses too); a build may add
+       words in other languages.
 4. **Dedupe** (`import/dedupe.rs`): a line's group (`dedupe_key`) is a hash of (account, booked date, amount,
    currency, normalised description); the lines of one group look identical. Within a group, the file's lines
    match the stored ones by the strongest thing both sides have: the bank's timestamp to the second
-   (`occurred_at`, Revolut's Started Date), else the running balance (Piraeus), else nothing, when the file adds
+   (`occurred_at`), else the running balance (a file with dates only), else nothing, when the file adds
    only as many lines as it has beyond those stored. So the same file twice, overlapping exports, the same data as
    CSV and as XLSX, and a file with the balance masked all add nothing twice; two identical coffees on one day stay
    two; and a day two exports cut at different points is told apart by the timestamp or the balance. The `hash`
@@ -160,8 +170,12 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
      accounts. An FX pair matches "Exchanged to" legs by time and the bank's amounts. See Pairing rules below.
    - **Pocket counterparts:** a pocket's side, when the file lacks it, is written in, and taken over by the real
      line in a later import.
+   - **Payees:** each unpaired line resolves to its payee (§ Payees).
    - **Rules,** on unpaired entries only, so a rule can't grab a transfer leg.
+   - **Payee defaults:** what no rule filed takes its payee's default category.
    - **Refund matching:** a positive line whose payee matches an earlier expense goes to that expense's category.
+   - **Filing:** what has a category posts; old uncategorised lines become unsorted history; the rest is the inbox
+     (§ Payees, Filing).
 
    Uncertain matches go to `review`. A foreign-currency line needs an ECB rate for its date: the import works out
    the (currency, date) pairs the file needs and fetches the missing ones before it writes anything.
@@ -170,7 +184,7 @@ Uploads go through the command table as base64. A file is capped at 1.5 MB, whic
 apart), plus 0.15 when both legs are transfers, plus 0.3 when the bank names the other account (a pocket), plus 0.05
 when both descriptions have the same pattern (lower case, without a leading "to"/"from" or words with digits, so "To
 pocket Rent" and "From pocket Rent" agree), capped at 1.0. Two legs the bank stamped within a minute of each other
-(`occurred_at`, Revolut's Started Date) score 1.0 outright. A match at 0.75 or more is booked without asking unless a
+(`occurred_at`) score 1.0 outright. A match at 0.75 or more is booked without asking unless a
 rival (another match for one of its legs) scores within 0.1, with two exceptions: a match stamped at the same moment
 isn't held up by rivals without that, and a rival that only swaps a leg for an identical one (the same account,
 amount, currency and day) gives the same books, so it doesn't count. Such legs pair in time order, by the bank's
@@ -181,10 +195,133 @@ rows done of the total, and the result. One import per user at a time, kept in t
 short transactions, so the rest of the host keeps working: the accounts and the batch in one, the new lines in
 batches of 250, then the final pass (pairing, pocket counterparts, rules, refunds) in batches of 100, with a short
 pause after each so other writers get the lock. An interrupted import is safe to run again: dedupe skips the lines it
-stored, and the lines of every batch still `running` go through the rerun's final pass (a pocket's side is written
-only for the lines the rerun's file holds). The database runs in WAL mode
+stored, and the lines of every batch still `running` or `failed` go through the rerun's final pass (a pocket's side
+is written only for the lines the rerun's file holds). A host restart ends the job: at startup every batch still
+`running` is marked `failed`, and `fin_interrupted_imports` lists the user's cut-short batches that hold lines, so the
+Import screen asks for the file again. The database runs in WAL mode
 with a 15 s busy timeout (`crates/core/src/db.rs`), and per-request bookkeeping such as a device's last-seen stamp
 waits for the lock in the background rather than holding up or failing the request.
+
+## Payees
+
+Phase F1 ("sort less"): a payee is a row, an import files what it can and posts it, and the inbox holds only the
+lines that need the user. Code: `crates/core/src/finance/payees/` (the keys in `keys.rs` are pure functions with
+table tests), commands in `crates/server/src/commands/finance_payees.rs`.
+
+### Keys and resolution
+
+- **The certain key** merges spellings without asking: case and Latin accents (and Greek tonos) folded, punctuation
+  dropped (an apostrophe joins), a `*` tail holding a digit dropped (`WOLT*ORDER 128`), trailing words holding a
+  digit or starting with `#` dropped (`#4471`, `P1A2B3`), a glued run of three or more digits dropped, and in a word
+  that is mostly Latin, Greek or Cyrillic letters read as Latin (look-alikes as their twin, the rest by sound:
+  "WOΛT" is `wolt`). A word all in another script stays as it is.
+- **The loose key** only suggests: the certain key with every Greek and Cyrillic letter transliterated by sound and
+  filler words dropped (`order`, `payment`, `ltd`, `card`, …). Two payees are suggested as one when their loose keys
+  are equal, a small edit distance apart (1 from five letters, 2 from nine; never on shorter names), or the same
+  name of two words or more with another last word (a branch or a city). The certain key also drops a company's
+  legal-form ending when something is left ("Delta Kiosk Ltd" is `delta kiosk`; Ltd, LLC, Inc, PLC, GmbH, AG, SA,
+  SRL, BV, AB, Oy, s.r.o., Sp. z o.o., AE, IKE and the like). "Bolt" and "Bolt Food", or "Golden Bakery"
+  and "Golden Grill", are not suggested.
+- **Resolution.** A line's payee is read from the bank's payee, else its description. Its certain key finds the
+  alias, and the alias the payee; an unknown key makes a payee named after the text without its tails, title-cased when the bank wrote it all in
+  capitals ("CORNER BAKERY" is "Corner Bakery"; words of three letters or fewer and words with a digit or `&` stay).
+  Names from before were retitled once; a payee the user renamed (`renamed`) keeps its name. Exchange legs
+  and moves between the user's own accounts (booked pairs) have none. The raw text stays on the source line.
+
+### Default categories
+
+- A payee's **default category** files its lines on import. It is set the first time the user categorises one of
+  its lines with a single category (`fin_categorise`), unless the payee **asks every time**; setting it also files
+  the payee's other uncategorised drafts and its unsorted history, and the answer (`DefaultChange {payee_id, name,
+  ledger_account_id, previous_ledger_account_id, filed_drafts, filed_history}`) is what the Undo toast needs.
+- Filing a later line under another category changes nothing unless the call says `payeeDefault: "change"`: the
+  client asks "just this one, or change the default?".
+- A default is an income or expense category, not a system account (bank fees aside). The category picker leaves
+  out what `fin_list_ledger_accounts` marks with a `system_key` (FX gains and losses, Uncategorised, opening balance)
+  or a `currency` (monetary accounts), and keeps `bank_fees`.
+
+### Filing (categorised means done)
+
+An import's final pass, per line, after transfer and FX pairing and the pocket and exchange sides: the payee, then
+the **rules** (unpaired lines), then the payee's **default**, then refund matching. A line filed by any of them, by
+the bank-fee rule or by a confident pair is **posted** at once. Then:
+
+- **History:** a line dated before the cut-off (`postOlderThanDays`, 90 by default) that is still uncategorised
+  takes the local model's suggestion for its payee group when there is one, else posts to Uncategorised marked
+  `unsorted`: **unsorted history**, out of the inbox, listed by payee (`fin_list_payees` with `unsorted`), the
+  largest first.
+- **The inbox** is what's left: drafts with no category, and legs of a pair to review. Confident pairs post and are
+  listed under the Transfers filter (`transfers: true`); "Not a transfer" (`fin_resolve_pair` with `accept: false`)
+  puts both legs back in the inbox. The result's `transfer_pair_ids` back "45 transfers matched".
+- Posted entries stay editable until their month is closed. Categorising a draft posts it, so the client never
+  needs a Post step.
+
+### Savings moves and exchange legs
+
+- **An exchange leg** whose other side isn't in the file ("Exchanged to GBP" on the euro account) is a move to the
+  user's own balance in that currency, never spending and never an inbox line. A built-in format names the account
+  (the same product in the other currency, made on first sight like a pocket, kind current), and the import writes
+  its side at the ECB rate of the day, noted as an estimate, and books the two as an FX pair. (A row carrying the
+  bank's converted amount would win over the rate; the formats seen so far carry none.) When that account's statement comes in, its line (the same day ± 3, the amount
+  within 5%) replaces the estimate, and the difference books as realised FX.
+- **Unconfirmed accounts.** An account the import made for the other side of a move, with no lines of its own in the
+  file, is `unconfirmed`: its balance is only what the other side sent. The first statement imported into it
+  confirms it. Screens say "import this account's statement to see where the money went".
+- A built-in format may name **savings moves** by wording: money back from (or into) the bank's savings account in
+  the row's currency, one per bank and currency, when no pocket is named. The word lists are a line to extend.
+- **Folded lists.** `fin_transfer_groups` folds booked moves by account and description pattern: "Exchanged to GBP:
+  1,240 moves, €612".
+
+### Moves by the user's say-so
+
+`fin_categorise` takes `transferTo: {accountId} | {create: {name, kind?, institution?}}` instead of `splits`: the line
+is a move to one of the user's own accounts. Its other side is written on that account (an FX estimate in another
+currency) and the two pair as a booked transfer, posted, listed under Transfers; "Not a transfer" undoes it. A new
+account takes the line's currency and is unconfirmed until its own statement comes in, whose line takes over the
+written side. A payee's default can be such a move (`default_account_id`; `fin_set_payee_default` with
+`accountId`), learned the first time as a category is, and filing next week's lines by it.
+
+### Rename, merge, split, suggestions
+
+A merge moves a payee's aliases and lines to the target and marks the merged payee `merged_into`; each alias keeps
+`origin_payee_id`, so a split sends it, with its lines, back to that payee (or to a new one). Future imports follow
+the aliases. Suggestions skip pairs the user dismissed. A split keeps the payee's name; an alias that goes back to the
+payee it came from names it from its own spelling unless the user had renamed it (`renamed`). In the unsorted
+history list a payee's `last_date` is its last unsorted line's (`unsorted_last_date`).
+
+### Commands
+
+| Command | Args | Returns |
+|---|---|---|
+| `fin_list_payees` | `filter {search?, unsorted?}, limit? (100, ≤ 500), offset?` | `{payees: Payee[], total}`; `Payee {id, name, default_ledger_account_id, ask_every_time, aliases: [{key, sample, origin_payee_id}], lines, total_minor, last_date, unsorted, unsorted_total_minor}`, the most lines first (with `unsorted`, the largest unsorted total first) |
+| `fin_get_payee` | `payeeId` | `Payee` |
+| `fin_update_payee` | `payeeId, input {name?, askEveryTime?}` | `Payee` (rename) |
+| `fin_set_payee_default` | `payeeId, ledgerAccountId \| null, file? (true)` | `DefaultChange` |
+| `fin_undo_payee_default` | `payeeId, previousLedgerAccountId?, filedDrafts?, filedHistory?` | `Payee`: the default back, and the filed lines still under it back in the inbox or unsorted history |
+| `fin_merge_payees` | `targetId, payeeIds` | `Payee` |
+| `fin_split_payee` | `payeeId, aliasKeys` (a payee keeps one) | `Payee[]`: where the aliases went |
+| `fin_payee_suggestions` | `limit? (50)` | `[{a: {id, name, lines}, b, reason: same name\|spelled alike\|another branch}]`, the most lines first |
+| `fin_dismiss_payee_suggestion` | `payeeA, payeeB` | `{}` |
+| `fin_inbox_summary` | — | `{decisions, uncategorised, review, suggested, unsorted_history, transfers}` |
+| `fin_transfer_groups` | `filter` | `[{key, label, account_id, count, total_minor, first_date, last_date}]` |
+| `fin_tidy_inbox` | `historyDays?, dryRun?` | `{filed, history, left}`: an inbox from before payees filed by the defaults, and with `historyDays` its old uncategorised drafts posted as unsorted history. `dryRun` counts only. |
+
+### From the books of before
+
+The migration only adds the tables, columns and indexes; startup never waits on a book's size. Once the host is up, a
+background job (`payees::backfill`, spawned beside the interrupted-import check) works through every entity whose
+`payees_learned` is unset: each stored bank line gets its payee, 250 entries a write transaction with a 50 ms pause
+after each. Then it learns from the books: a payee without a default whose categorised lines went two in three to
+one category takes it; a rule that matches one payee only, by text with one category (a sign bound aside), gives
+that payee its category as the default, and the rule stays; drafts already categorised post. `payees_learned` is set
+last. Every step is idempotent, so a restart halfway goes on where it stopped and a second run changes nothing.
+
+While it runs, Finance answers as usual, `fin_inbox_summary` carries `preparing: {done, total}` (entries), and
+`fin_import` is refused with "still sorting your existing lines into payees (N of M)". An older build run on a
+half-done database (a rollback) ignores the new tables and columns; it sees the categorised drafts the job already
+posted as posted, and its rules as they were. Back on this build, the job picks up the lines left, including any the
+older build imported. It doesn't file uncategorised drafts or post old ones: the Finance screen offers that as
+`fin_tidy_inbox`, with the counts first. A reset deletes payees with the lines.
 
 ## The inbox at scale
 
@@ -202,8 +339,9 @@ groups them all (`crates/core/src/finance/inbox.rs`).
   (a payee group's merchant pattern and direction, else the search text, with the account), or creates it with
   `createRule`.
 - **Payee groups.** Each draft gets a `group_key`: its direction (`out` for money spent, `in` for money received)
-  and its merchant (`rules::merchant_key`: the payee, else the description without digits and punctuation), as
-  `out:green market`. Keys are filled when the inbox first groups (and again after an entry's text changes).
+  and its payee, as `out:#12`, so every spelling of a payee is one row; a line without a payee falls back to its
+  merchant (`rules::merchant_key`: the description without digits and punctuation), as `out:green market`. A
+  payee group's label is the payee's name. Keys are filled when the inbox first groups (and again after an entry's text changes).
   `fin_inbox_groups` returns a page of groups, the most drafts first. A `groupKey` filter narrows any of these
   commands to one group.
 - **Suggestions per group.** `fin_suggest_groups` starts a background job (one per user, in the host's memory)
@@ -211,16 +349,19 @@ groups them all (`crates/core/src/finance/inbox.rs`).
   prompt, on the same terms as § Category suggestions (a group's latest description, payee and amount). It stores one
   suggestion per group in `fin_group_suggestions`; the user takes it group by group. Taking or dismissing it ends
   it. Without a local model the job is refused and the button hidden.
-- **Import option.** The Import screen offers "Post lines older than [30] days straight away", off by default and
-  remembered per user (`fin_settings.import_post_older`, `import_post_older_days`). Those lines are paired and run
-  through the rules first, then posted, uncategorised or not; a line in a pair to review stays in the inbox.
+- **Import option.** The Import screen offers "Post lines older than [90] days straight away", on by default and
+  remembered per user (`fin_settings.import_post_older`, `import_post_older_days`). It is the history cut-off of
+  § Payees, Filing.
+- **Bulk categorising needs a narrowing filter.** `fin_categorise_matching` refuses a filter without a payee, a
+  payee group, a search, an account, dates or `ids`: one category for every unsorted line is how a salary gets
+  filed under Shopping. With `unsorted: true` it acts on unsorted history instead of drafts. What it files posts.
 - **Indexes:** `fin_entries(entity_id, status, date)` and `(entity_id, status, group_key)`, and `fin_pairs(entry_a)`
   and `(entry_b)` for the transfer-leg checks.
 
 | Command | Args | Returns |
 |---|---|---|
 | `fin_post_matching` | `filter` | `{posted, closed, review}` (drafts left: their month is closed, or they wait in a pair to review) |
-| `fin_categorise_matching` | `filter, ledgerAccountId, createRule?` | `{categorised, skipped, rule: Rule \| null, rule_input: RuleInput \| null}`. The category must be an income or expense account (not uncategorised). `createRule` without a group or search to match on is refused. |
+| `fin_categorise_matching` | `filter` (narrowed, see above), `ledgerAccountId, createRule?` | `{categorised, skipped, rule: Rule \| null, rule_input: RuleInput \| null, payee_defaults: DefaultChange[]}`. Sorting by a payee group or a payee teaches each payee without a default this category, as `fin_categorise` does. The category must be an income or expense account (not uncategorised). `createRule` without a group or search to match on is refused. |
 | `fin_inbox_groups` | `filter, limit? (50, ≤ 500), offset?` | `{groups: [{key, label, direction: out\|in, count, total_minor (functional), first_date, last_date, category_id, uncategorised, paired, suggested_ledger_account_id}], total_groups, total_lines}` |
 | `fin_dismiss_group_suggestion` | `groupKey` | `{}` |
 | `fin_suggest_groups` / `fin_suggest_groups_status` | — | `SuggestJob {job_id, state: running\|done\|failed, done, total (groups), suggested, started_at, finished_at?, error?}` / the latest, or `null` |
@@ -234,13 +375,32 @@ groups them all (`crates/core/src/finance/inbox.rs`).
 - Sub-views:
   - **Overview:** wave 1 shows accounts with balances, the inbox count and the review count. Wave 2 adds budgets,
     the forecast and net worth.
-  - **Transactions:** the drafts inbox and the posted list, filters, inline categorising with a category picker,
-    a splits editor, bulk post, and the rule suggestion after a correction. The inbox pages on scroll. "Select all"
-    ticks the lines shown and says so; "Post all N matching" and "Categorise all N unsorted as…" act on everything
-    the filters match, after a confirm with the count (§ The inbox at scale). **By payee** shows the host's payee
-    groups: one pick sorts a group and offers "and remember as a rule". The date filters read "Any date" while
-    empty (WebKit draws an empty date field with today's date).
-  - **Accounts:** list, create with an opening balance, archive.
+  - **Transactions** (phase F1, `Transactions.tsx`, `sortParts.tsx`, the pure rules in `sorting.pure.ts`): four
+    filters, **To sort · N** (the inbox summary's `decisions`), **All**, **Transfers** and **Unsorted history**.
+    - *To sort* lists only drafts. A row shows the payee's name, the date and account, the amount and a category
+      picker; picking files the line and it leaves the list (no Post step). A waiting suggestion (`Entry.
+      suggested_ledger_account_id`, the local model's for the line's payee group) shows greyed in the picker with
+      ✓ to accept, and "Accept all N suggestions" takes every one. A transfer to review asks "It's a transfer" or
+      "Not a transfer". **By payee** shows the host's groups with the same picker. A payee's first category shows
+      the toast "Wolt → Eating out from now on · Undo"; filing a later line elsewhere asks "Just this one" or
+      "Change Wolt's default". The picker lists spending and income categories without system or money
+      accounts (Bank fees kept), the most used first (by the payees' lines).
+    - Bulk filing acts on the ticked lines or on everything a narrowing filter matches, after a confirm.
+    - When To sort holds 200 lines or more, `fin_tidy_inbox`'s dry run becomes one banner and "Tidy up" runs it
+      after a confirm. While the host builds payees from old books, the banner shows its `preparing` progress
+      instead. "N payees look like others" opens the merge suggestions: "Same payee" or "Different".
+    - *Transfers* folds the moves by kind (`fin_transfer_groups`) and lists the lines, each with "Not a transfer".
+      *Unsorted history* lists payees by their unsorted total, each with a picker that sets the payee's default
+      (which files its history).
+    - A payee's name opens **its page**: rename in place, lines, total, usual amount (the median), default
+      category, "Ask every time", the spellings with "split off", and "Merge with…". **Payees & rules** lists the
+      payees (sortable, searchable) and the rules (what each matches and sets, the lines it filed; edit, delete).
+    - The import result's numbers open their lines: "N filed by your payees and rules" opens All filtered to the
+      import (`importBatchId` with `transfers: false`), "N transfers matched" opens Transfers likewise. After a
+      first import with a large unsorted history it points at "your biggest payees". The date filters read "Any
+      date" while empty (WebKit draws an empty date field with today's date).
+  - **Accounts:** grouped under their bank, create with an opening balance, archive. An `unconfirmed` account says
+    that no statement has come in for it, so its balance is only what the other side sent.
   - **Import:** file, preview, profile (or the mapping wizard), account mapping, import with a progress bar (a
     refreshed page finds the running import), and the result with the review list.
   - **Accounting:** the journal with debit and credit columns, a manual journal form, the trial balance and the
@@ -382,7 +542,7 @@ on the desktop and on the phone (`src/lib/notificationFeed.ts`) while the app is
 
 - A manual journal may mix currencies: each line is translated at the spot rate of its date, and what's left over
   after translation posts to `fx_realised_gain` or `fx_realised_loss`.
-- Fee kinds (Revolut's "Plan fee" and other `fee` lines) draft against `bank_fees` instead of uncategorised.
+- Fee kinds (a plan's monthly fee and other `fee` lines) draft against `bank_fees` instead of uncategorised.
 - A refund and the expense it nets against don't count as the same fix for the rule offer.
 - An import skips lines dated in a closed month, with a warning; they're corrected in an open month.
 

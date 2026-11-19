@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
+import { parsePatchNotes } from "./src/lib/patchNotes.pure";
 
 /** What build is this? Git short hash + build time, compiled into the bundle
  * (`__GANBAN_BUILD__`) AND written to dist/build.json. The two let a running
@@ -38,6 +39,11 @@ function buildJson() {
     generateBundle() {
       // @ts-expect-error rollup plugin context
       this.emitFile({ type: "asset", fileName: "build.json", source: JSON.stringify(BUILD) });
+      // This build's patch notes, beside build.json and served uncached like it: an open tab on an
+      // older build reads them to say what the reload brings. The app bundles its own copy.
+      const changelog = existsSync(resolve("CHANGELOG.md")) ? readFileSync(resolve("CHANGELOG.md"), "utf8") : "";
+      // @ts-expect-error rollup plugin context
+      this.emitFile({ type: "asset", fileName: "patch-notes.json", source: JSON.stringify({ build: BUILD.hash, releases: parsePatchNotes(changelog) }) });
     },
   };
 }

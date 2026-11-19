@@ -43,10 +43,8 @@ where
 async fn ingest_maps_host_graph_into_replica_id_space() {
     // ---- Host (authoritative) ----
     let host = init_db_role(&temp_db("host"), Role::Server).await.unwrap();
-    let h_pid = ops::create_project(&host, CreateProjectInput { name: "Roof".into(), description: None })
-        .await
-        .unwrap()
-        .id;
+    let h_pid =
+        ops::create_project(&host, CreateProjectInput { name: "Roof".into(), description: None }).await.unwrap().id;
     let h_tid = ops::create_task(
         &host,
         CreateTaskInput {
@@ -65,10 +63,20 @@ async fn ingest_maps_host_graph_into_replica_id_space() {
     .await
     .unwrap()
     .id;
-    let h_cid = ops::create_comment(&host, CreateCommentInput { task_id: h_tid, content: "done".into(), user_id: Some(1), parent_id: None, profile_id: None, task_ids: vec![] })
-        .await
-        .unwrap()
-        .id;
+    let h_cid = ops::create_comment(
+        &host,
+        CreateCommentInput {
+            task_id: h_tid,
+            content: "done".into(),
+            user_id: Some(1),
+            parent_id: None,
+            profile_id: None,
+            task_ids: vec![],
+        },
+    )
+    .await
+    .unwrap()
+    .id;
 
     let proj_uuid: String = col(&host, "SELECT sync_uuid FROM projects WHERE id=?", h_pid).await;
     let task_uuid: String = col(&host, "SELECT sync_uuid FROM tasks WHERE id=?", h_tid).await;
@@ -95,8 +103,11 @@ async fn ingest_maps_host_graph_into_replica_id_space() {
     assert!(report["rejected"].as_array().unwrap().is_empty(), "nothing rejected: {report}");
 
     // Project landed with a LOCAL (minted, offset) id, same sync_uuid.
-    let (r_pid, r_pname): (i64, String) =
-        sqlx::query_as("SELECT id, name FROM projects WHERE sync_uuid=?").bind(&proj_uuid).fetch_one(&replica).await.unwrap();
+    let (r_pid, r_pname): (i64, String) = sqlx::query_as("SELECT id, name FROM projects WHERE sync_uuid=?")
+        .bind(&proj_uuid)
+        .fetch_one(&replica)
+        .await
+        .unwrap();
     assert_eq!(r_pname, "Roof");
     assert_ne!(r_pid, h_pid, "replica minted its own project id (FK remap is real)");
 
@@ -135,12 +146,32 @@ async fn ingest_remaps_reply_parent_id() {
     use ganban_core::models::CreateCommentInput;
     let host = init_db_role(&temp_db("replyhost"), Role::Server).await.unwrap();
     let tid = ops::create_task(&host, task_in(&host).await).await.unwrap().id;
-    let parent = ops::create_comment(&host, CreateCommentInput { task_id: tid, content: "q".into(), user_id: Some(1), parent_id: None, profile_id: None, task_ids: vec![] })
-        .await
-        .unwrap();
-    let reply = ops::create_comment(&host, CreateCommentInput { task_id: tid, content: "a".into(), user_id: Some(1), parent_id: Some(parent.id), profile_id: None, task_ids: vec![] })
-        .await
-        .unwrap();
+    let parent = ops::create_comment(
+        &host,
+        CreateCommentInput {
+            task_id: tid,
+            content: "q".into(),
+            user_id: Some(1),
+            parent_id: None,
+            profile_id: None,
+            task_ids: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let reply = ops::create_comment(
+        &host,
+        CreateCommentInput {
+            task_id: tid,
+            content: "a".into(),
+            user_id: Some(1),
+            parent_id: Some(parent.id),
+            profile_id: None,
+            task_ids: vec![],
+        },
+    )
+    .await
+    .unwrap();
     let parent_uuid: String = col(&host, "SELECT sync_uuid FROM comments WHERE id=?", parent.id).await;
     let reply_uuid: String = col(&host, "SELECT sync_uuid FROM comments WHERE id=?", reply.id).await;
 
@@ -150,9 +181,19 @@ async fn ingest_remaps_reply_parent_id() {
     let replica = init_db_role(&temp_db("replyreplica"), Role::Replica).await.unwrap();
     // Offset the replica's comment id space so a blind id-copy would be wrong.
     let rt = ops::create_task(&replica, task_in(&replica).await).await.unwrap().id;
-    ops::create_comment(&replica, CreateCommentInput { task_id: rt, content: "local".into(), user_id: None, parent_id: None, profile_id: None, task_ids: vec![] })
-        .await
-        .unwrap();
+    ops::create_comment(
+        &replica,
+        CreateCommentInput {
+            task_id: rt,
+            content: "local".into(),
+            user_id: None,
+            parent_id: None,
+            profile_id: None,
+            task_ids: vec![],
+        },
+    )
+    .await
+    .unwrap();
     sqlx::query("UPDATE _sync_ctl SET value='1' WHERE key='applying'").execute(&replica).await.unwrap();
     sync::ingest(&replica, changes).await.unwrap();
     sqlx::query("UPDATE _sync_ctl SET value='0' WHERE key='applying'").execute(&replica).await.unwrap();
@@ -183,6 +224,7 @@ async fn push_still_rejects_users() {
     assert!(report["id_remap"].as_object().unwrap().is_empty(), "users push mints nothing");
     let rejected = report["rejected"].as_array().unwrap();
     assert_eq!(rejected.len(), 1, "users push rejected");
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username='hacker'").fetch_one(&host).await.unwrap();
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username='hacker'").fetch_one(&host).await.unwrap();
     assert_eq!(n, 0, "no hacker user created");
 }

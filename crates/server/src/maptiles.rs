@@ -51,7 +51,8 @@ pub struct Provider {
     pub layers: &'static [Layer],
 }
 
-const ESRI_IMAGERY_ATTR: &str = "Imagery © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community";
+const ESRI_IMAGERY_ATTR: &str =
+    "Imagery © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community";
 
 pub const PROVIDERS: &[Provider] = &[
     Provider {
@@ -240,7 +241,10 @@ pub async fn get_tile(db: &Db, root: &FsPath, layer: &str, z: u8, x: u32, y: u32
         let k = ops::get_app_setting(db, SETTING_KEY).await.ok().flatten().unwrap_or_default();
         let k = k.trim().to_string();
         if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            return Err(TileError::Upstream(format!("{} needs an API key (Settings → Plug-ins → Map imagery)", provider.name)));
+            return Err(TileError::Upstream(format!(
+                "{} needs an API key (Settings → Plug-ins → Map imagery)",
+                provider.name
+            )));
         }
         k
     } else {
@@ -267,13 +271,15 @@ enum UpstreamErr {
 
 async fn fetch_upstream(url: &str) -> Result<(Vec<u8>, &'static str), UpstreamErr> {
     let _permit = upstream_permits().acquire().await.map_err(|e| UpstreamErr::Other(e.to_string()))?;
-    let resp = client().get(url).send().await.map_err(|e| UpstreamErr::Other(format!("imagery provider unreachable: {e}")))?;
+    let resp =
+        client().get(url).send().await.map_err(|e| UpstreamErr::Other(format!("imagery provider unreachable: {e}")))?;
     let status = resp.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(UpstreamErr::NotFound);
     }
     if !status.is_success() {
-        let hint = if status.as_u16() == 401 || status.as_u16() == 403 { " — check the API key / account" } else { "" };
+        let hint =
+            if status.as_u16() == 401 || status.as_u16() == 403 { " — check the API key / account" } else { "" };
         return Err(UpstreamErr::Other(format!("imagery provider answered {status}{hint}")));
     }
     if resp.content_length().is_some_and(|n| n as usize > MAX_TILE_BYTES) {
@@ -283,7 +289,8 @@ async fn fetch_upstream(url: &str) -> Result<(Vec<u8>, &'static str), UpstreamEr
     if bytes.len() > MAX_TILE_BYTES {
         return Err(UpstreamErr::Other("tile too large".into()));
     }
-    let ct = sniff_image(&bytes).ok_or_else(|| UpstreamErr::Other("provider returned something that isn't an image".into()))?;
+    let ct = sniff_image(&bytes)
+        .ok_or_else(|| UpstreamErr::Other("provider returned something that isn't an image".into()))?;
     Ok((bytes.to_vec(), ct))
 }
 

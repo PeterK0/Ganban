@@ -1,8 +1,9 @@
 // The desktop app updates itself (ADR 0007, ADR 0008, docs/design/UPDATES.md) from the
 // device's update source: This server (the host it's connected to, which builds and signs
 // the app) or GitHub Releases. Tauri's updater (driven by the Rust commands in
-// src-tauri/src/app_update.rs) checks, downloads in the background, verifies the signature
-// and swaps the app in on "Restart". GitHub is asked only while "Check GitHub for new
+// src-tauri/src/app_update.rs) checks; a newer version is an offer with its patch notes, and
+// only the user's "Download and install" downloads it (ADR 0012). The signature is verified,
+// and the app swaps in on "Restart to finish". GitHub is asked only while "Check GitHub for new
 // versions" is on; off, this device sends GitHub nothing. This server's updater key is
 // pinned on the device the first time, and a different one waits for the user's word.
 //
@@ -21,11 +22,11 @@ import { confirmDialog } from './confirm';
 import { listWorkspaces, getActiveWorkspace } from './workspaces';
 import { flushBeforeRestart } from './restartFlush';
 import { githubChecksOn, githubRepoToAsk, pinHostKey, pinnedHostKey, setUpdateSource, updateSource } from './updateChannel';
-import { canStartCheck, githubLatestReleaseApi, initialUpdateState, updateReducer, type UpdateEvent, type UpdateState } from './update.pure';
+import { createUpdateFlow, githubLatestReleaseApi, initialUpdateState, updateReducer, type CheckFound, type OfferAnswers, type UpdateEvent, type UpdateState } from './update.pure';
 import { decideHostKey, keyFingerprint, type PinDecision, type SourceStatus, type UpdateSource } from './updateSource.pure';
 
-export { describeUpdateState, downloadPercent } from './update.pure';
-export type { UpdateState } from './update.pure';
+export { describeUpdateState, downloadPercent, offerNoticeVisible, shownUpdateState } from './update.pure';
+export type { OfferAnswers, UpdateState } from './update.pure';
 
 const CHECK_EVERY_MS = 6 * 60 * 60_000;
 
@@ -79,12 +80,8 @@ export function useUpdateState(): UpdateState {
   return useSyncExternalStore(subscribe, getUpdateState, getUpdateState);
 }
 
-interface UpdateCheck {
-  canUpdate: boolean;
+interface UpdateCheck extends CheckFound {
   current: string;
-  version: string | null;
-  notes: string | null;
-  reason: string | null;
 }
 
 type DownloadEvent = { event: 'progress'; data: { received: number; total: number | null } } | { event: 'finished' };
@@ -146,71 +143,110 @@ export async function switchUpdateSource(source: UpdateSource): Promise<void> {
   await checkForUpdate();
 }
 
-/** Check the device's update source and, when it offers another build, download it in the
- * background. A no-op off the desktop app, while a check or download runs, or once a build
- * is waiting for its restart. */
-export async function checkForUpdate(): Promise<void> {
-  if (!isDesktopApp() || !canStartCheck(state)) return;
-  // A dev build has no source: Rust says it can't update itself.
+/** The checks and the download, over Tauri (the pure driver: update.pure.ts). */
+const flow = createUpdateFlow(
+  {
+    // Off, GitHub gets nothing at all. A dev build has no source: Rust says it can't update itself.
+    mayCheck: () => isDesktopApp() && !(updateSource() === 'github' && !githubChecksOn()),
+    check: async () => invoke<UpdateCheck>('update_check', await checkArgs()),
+    download: async (onProgress) => {
+      const onEvent = new Channel<DownloadEvent>();
+      onEvent.onmessage = (m) => {
+        if (m.event === 'progress') onProgress(m.data.received, m.data.total);
+      };
+      return invoke<string>('update_download', { onEvent });
+    },
+  },
+  { get: getUpdateState, dispatch },
+);
+
+/** What `update_check` needs for the device's source: This server's address, token and
+ * pinned key (pinning it the first time), or nothing for GitHub. Throws with the reason
+ * the source can't be asked. */
+async function checkArgs(): Promise<{ baseUrl: string; token: string | null; source: UpdateSource | null; hostKey: string | null }> {
   const source = updateSource();
-  // Off, GitHub gets nothing at all.
-  if (source === 'github' && !githubChecksOn()) return;
-  dispatch({ type: 'check' });
-  let args: { baseUrl: string; token: string | null; source: UpdateSource | null; hostKey: string | null };
-  if (source === 'github') {
-    args = { baseUrl: '', token: null, source, hostKey: null };
-  } else {
-    const host = updateHost();
-    if (!host) {
-      dispatch({ type: 'error', why: 'No host to update from. Connect to your host first.' });
-      return;
-    }
-    // The key the host advertises, against the device's pin.
-    let advertised: string | null = null;
-    let buildsErr: string | null = null;
-    try {
-      advertised = (await getClientBuilds()).desktop?.pubkey ?? null;
-    } catch (e) {
-      buildsErr = why(e);
-    }
-    const d = await hostKeyDecision(advertised);
-    if (d.kind === 'unknown' && buildsErr) {
-      dispatch({ type: 'error', why: `Couldn't ask the server for its build: ${buildsErr}` });
-      return;
-    }
-    if (d.kind === 'changed') {
-      keyChange = d;
-      dispatch({ type: 'error', why: "This server's update key changed. Trust the new key in Settings → Updates before updating from it." });
-      return;
-    }
-    if (d.kind === 'first') pinHostKey(d.key);
-    args = { baseUrl: host.url, token: host.token, source, hostKey: d.kind === 'unknown' ? null : d.key };
-  }
-  let found: UpdateCheck;
+  if (source === 'github') return { baseUrl: '', token: null, source, hostKey: null };
+  const host = updateHost();
+  if (!host) throw new Error('No host to update from. Connect to your host first.');
+  // The key the host advertises, against the device's pin.
+  let advertised: string | null = null;
+  let buildsErr: string | null = null;
   try {
-    found = await invoke<UpdateCheck>('update_check', args);
+    advertised = (await getClientBuilds()).desktop?.pubkey ?? null;
   } catch (e) {
-    dispatch({ type: 'error', why: why(e) });
-    return;
+    buildsErr = why(e);
   }
-  dispatch({
-    type: 'checked',
-    version: found.version,
-    canUpdate: found.canUpdate,
-    at: Date.now(),
-    why: found.reason ?? undefined,
-  });
-  if (!found.canUpdate || !found.version) return;
+  const d = await hostKeyDecision(advertised);
+  if (d.kind === 'unknown' && buildsErr) throw new Error(`Couldn't ask the server for its build: ${buildsErr}`);
+  if (d.kind === 'changed') {
+    keyChange = d;
+    throw new Error("This server's update key changed. Trust the new key in Settings → Updates before updating from it.");
+  }
+  if (d.kind === 'first') pinHostKey(d.key);
+  return { baseUrl: host.url, token: host.token, source, hostKey: d.kind === 'unknown' ? null : d.key };
+}
+
+/** Check the device's update source. A newer version becomes an offer: the top bar's notice
+ * and Settings show it, and nothing downloads until the user chooses "Download and install"
+ * (ADR 0012). A no-op off the desktop app, while a check or download runs, or once a build
+ * is waiting for its restart. */
+export function checkForUpdate(): Promise<void> {
+  return flow.check();
+}
+
+/** The user's "Download and install": download the offered version and verify it. The only
+ * caller of `update_download`. */
+export function downloadUpdate(): Promise<void> {
+  return flow.download();
+}
+
+// ---- The user's answers to an offer --------------------------------------------
+// "Later" hides the offer until the next launch (memory only); "Skip this version" hides
+// it until a newer one comes (stored on the device). Settings → Updates still shows it.
+
+const SKIP_KEY = 'ganban.updates.skip';
+let answers: OfferAnswers = { later: null, skipped: readSkipped() };
+const answerListeners = new Set<() => void>();
+
+function readSkipped(): string | null {
   try {
-    const onEvent = new Channel<DownloadEvent>();
-    onEvent.onmessage = (m) => {
-      if (m.event === 'progress') dispatch({ type: 'progress', received: m.data.received, total: m.data.total });
-    };
-    const version = await invoke<string>('update_download', { onEvent });
-    dispatch({ type: 'downloaded', version });
-  } catch (e) {
-    dispatch({ type: 'error', why: why(e) });
+    return localStorage.getItem(SKIP_KEY);
+  } catch {
+    return null;
   }
+}
+
+function setAnswers(next: OfferAnswers) {
+  answers = next;
+  answerListeners.forEach((l) => l());
+}
+
+/** "Later": not until the next launch. */
+export function putOffUpdate(version: string) {
+  setAnswers({ ...answers, later: version });
+}
+
+/** "Skip this version": silent until a newer one. */
+export function skipUpdate(version: string) {
+  try {
+    localStorage.setItem(SKIP_KEY, version);
+  } catch {
+    /* private mode: skipped for this run only */
+  }
+  setAnswers({ ...answers, skipped: version });
+}
+
+const getAnswers = () => answers;
+/** What the user said about offers, live. */
+export function useOfferAnswers(): OfferAnswers {
+  return useSyncExternalStore(
+    (l) => {
+      answerListeners.add(l);
+      return () => answerListeners.delete(l);
+    },
+    getAnswers,
+    getAnswers,
+  );
 }
 
 /** GitHub's latest release tag (no token, no cookies), or null. Only while the switch is on. */
@@ -317,6 +353,16 @@ function onUpdateHost<T>(command: string, timeoutMs = 8000): Promise<T> {
 export const getClientBuilds = () => onUpdateHost<ClientBuilds>('get_client_builds');
 export const startHostUpdate = () => onUpdateHost<unknown>('start_host_update', 20000);
 export const getHostUpdateStatus = () => onUpdateHost<HostUpdateStatus>('get_host_update_status', 5000);
+
+/** What "Update the server" would bring (`preview_host_update`, owner only): the host fetches
+ * without pulling. `changelog`: the checkout's and the upstream's CHANGELOG.md, diffed here. */
+export interface HostUpdatePreview {
+  known: boolean;
+  why: string | null;
+  behind: number | null;
+  changelog: { current: string | null; incoming: string | null } | null;
+}
+export const previewHostUpdate = () => onUpdateHost<HostUpdatePreview>('preview_host_update', 30000);
 
 /** Whether this device owns the update host AND that host can update itself
  * and build the clients (its /health lists 'client-updates'; older hosts don't). */

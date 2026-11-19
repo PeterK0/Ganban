@@ -64,7 +64,14 @@ pub async fn is_own_personal(db: &Db, user_id: i64, project_id: i64) -> bool {
 
 /// The caller's entity when the finance tools may run for this chat, else `None`: their own
 /// personal container, a local engine, and Finance already in use (a chat never sets it up).
-async fn gate(db: &Db, user_id: i64, project_id: i64, runner: &Runner, params: &ChatParams, host_url: &str) -> Option<Entity> {
+async fn gate(
+    db: &Db,
+    user_id: i64,
+    project_id: i64,
+    runner: &Runner,
+    params: &ChatParams,
+    host_url: &str,
+) -> Option<Entity> {
     if !engine_is_local(runner, params, host_url) || !is_own_personal(db, user_id, project_id).await {
         return None;
     }
@@ -73,7 +80,14 @@ async fn gate(db: &Db, user_id: i64, project_id: i64, runner: &Runner, params: &
 
 /// The finance tool definitions this chat turn may offer: all of them when the gate passes,
 /// none otherwise.
-pub async fn offered_defs(db: &Db, user_id: i64, project_id: i64, runner: &Runner, params: &ChatParams, host_url: &str) -> Vec<Value> {
+pub async fn offered_defs(
+    db: &Db,
+    user_id: i64,
+    project_id: i64,
+    runner: &Runner,
+    params: &ChatParams,
+    host_url: &str,
+) -> Vec<Value> {
     if gate(db, user_id, project_id, runner, params, host_url).await.is_some() {
         tool_defs()
     } else {
@@ -198,7 +212,8 @@ async fn run(db: &Db, ent: &Entity, name: &str, args: &Value, today: NaiveDate) 
     match name {
         "finance_balances" => {
             let accounts = finance::list_accounts(db, ent, false).await?;
-            let total: i64 = accounts.iter().map(|a| a.balance_functional_minor + a.draft_balance_functional_minor).sum();
+            let total: i64 =
+                accounts.iter().map(|a| a.balance_functional_minor + a.draft_balance_functional_minor).sum();
             let rows: Vec<Value> = accounts
                 .iter()
                 .map(|a| {
@@ -230,7 +245,9 @@ async fn run(db: &Db, ent: &Entity, name: &str, args: &Value, today: NaiveDate) 
                     .map(|r| json!({ "category": r.name, "amount": amount(r.amount_minor, cur), "transactions": r.entries }))
                     .collect()
             };
-            let total = |class: &str| rows.iter().filter(|r| r.class == class && matches(&r.name)).map(|r| r.amount_minor).sum::<i64>();
+            let total = |class: &str| {
+                rows.iter().filter(|r| r.class == class && matches(&r.name)).map(|r| r.amount_minor).sum::<i64>()
+            };
             let mut out = json!({
                 "from": from, "to": to, "currency": cur,
                 "spending": side("expense"), "total_spent": amount(total("expense"), cur),
@@ -254,9 +271,16 @@ async fn run(db: &Db, ent: &Entity, name: &str, args: &Value, today: NaiveDate) 
             };
             let ledger = finance::list_ledger_accounts(db, ent, true).await?;
             let category = match opt_str(args, "category") {
-                Some(c) => match ledger.iter().find(|l| matches!(l.class.as_str(), "income" | "expense") && l.name.eq_ignore_ascii_case(c.trim())) {
+                Some(c) => match ledger
+                    .iter()
+                    .find(|l| matches!(l.class.as_str(), "income" | "expense") && l.name.eq_ignore_ascii_case(c.trim()))
+                {
                     Some(l) => Some(l.id),
-                    None => return Ok(json!({ "note": format!("no category named '{c}'"), "categories": category_names(db, ent).await? })),
+                    None => {
+                        return Ok(
+                            json!({ "note": format!("no category named '{c}'"), "categories": category_names(db, ent).await? }),
+                        )
+                    }
                 },
                 None => None,
             };
@@ -270,12 +294,15 @@ async fn run(db: &Db, ent: &Entity, name: &str, args: &Value, today: NaiveDate) 
             };
             let page = finance::list_entries(db, ent, filter, limit, 0).await?;
             let accounts = finance::list_accounts(db, ent, true).await?;
-            let names: std::collections::HashMap<i64, &finance::LedgerAccount> = ledger.iter().map(|l| (l.id, l)).collect();
+            let names: std::collections::HashMap<i64, &finance::LedgerAccount> =
+                ledger.iter().map(|l| (l.id, l)).collect();
             let rows: Vec<Value> = page
                 .entries
                 .iter()
                 .map(|e| {
-                    let bank = e.lines.iter().find_map(|l| accounts.iter().find(|a| a.ledger_account_id == l.ledger_account_id).map(|a| (l, a)));
+                    let bank = e.lines.iter().find_map(|l| {
+                        accounts.iter().find(|a| a.ledger_account_id == l.ledger_account_id).map(|a| (l, a))
+                    });
                     let categories: Vec<&str> = e
                         .lines
                         .iter()
@@ -406,7 +433,9 @@ pub fn range(args: &Value, today: NaiveDate) -> ganban_core::Result<(String, Str
     if let Some(p) = opt_str(args, "period") {
         return period_range(p, today);
     }
-    let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| bad(format!("'{s}' is not a date (YYYY-MM-DD)")));
+    let day = |s: &str| {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| bad(format!("'{s}' is not a date (YYYY-MM-DD)")))
+    };
     let from = opt_str(args, "from").map(day).transpose()?;
     let to = opt_str(args, "to").map(day).transpose()?;
     match (from, to) {
@@ -499,7 +528,8 @@ pub async fn local_engine(db: &Db) -> Option<(OllamaClient, ChatParams)> {
     candidates.push(crate::chat_profile_fallback(db).await.0.model);
     let installed = tokio::time::timeout(std::time::Duration::from_secs(5), client.list_models()).await.ok()?.ok()?;
     let model = pick_model(&candidates, &installed)?;
-    let params = ChatParams { model, temperature: Some(0.0), max_tokens: Some(400), num_ctx: Some(4096), endpoint: None };
+    let params =
+        ChatParams { model, temperature: Some(0.0), max_tokens: Some(400), num_ctx: Some(4096), endpoint: None };
     Some((client, params))
 }
 
@@ -538,7 +568,12 @@ pub fn build_prompt(items: &[SuggestItem], expense: &[String], income: &[String]
 
 /// The category the model picked for each item, as an index into `expense` or `income` by the
 /// item's sign. Anything that isn't one of the user's names, or is on the wrong side, is `None`.
-pub fn parse_reply<'a>(reply: &str, items: &[SuggestItem], expense: &'a [String], income: &'a [String]) -> Vec<Option<&'a str>> {
+pub fn parse_reply<'a>(
+    reply: &str,
+    items: &[SuggestItem],
+    expense: &'a [String],
+    income: &'a [String],
+) -> Vec<Option<&'a str>> {
     let obj = match (reply.find('{'), reply.rfind('}')) {
         (Some(a), Some(b)) if a < b => serde_json::from_str::<Value>(&reply[a..=b]).ok(),
         _ => None,
@@ -556,13 +591,18 @@ pub fn parse_reply<'a>(reply: &str, items: &[SuggestItem], expense: &'a [String]
 
 /// The chart's expense and income categories the model may pick from (no uncategorised or
 /// FX accounts), as `(id, name)`.
-pub async fn suggestable_categories(db: &Db, ent: &Entity) -> ganban_core::Result<(Vec<(i64, String)>, Vec<(i64, String)>)> {
+pub async fn suggestable_categories(
+    db: &Db,
+    ent: &Entity,
+) -> ganban_core::Result<(Vec<(i64, String)>, Vec<(i64, String)>)> {
     let chart = finance::list_ledger_accounts(db, ent, false).await?;
     let usable = |class: &str| -> Vec<(i64, String)> {
         chart
             .iter()
             .filter(|l| l.class == class)
-            .filter(|l| !l.system_key.as_deref().is_some_and(|k| k.starts_with("uncategorised") || k.starts_with("fx_")))
+            .filter(|l| {
+                !l.system_key.as_deref().is_some_and(|k| k.starts_with("uncategorised") || k.starts_with("fx_"))
+            })
             .map(|l| (l.id, l.name.clone()))
             .collect()
     };
@@ -581,11 +621,12 @@ pub async fn ask_batch(
     let (expense_names, income_names) = (names(expense), names(income));
     let prompt = build_prompt(items, &expense_names, &income_names);
     let messages = [json!({ "role": "user", "content": prompt })];
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(SUGGEST_TIMEOUT_SECS), client.chat_json(params, &messages))
-        .await
-        .map_err(|_| bad("the local model took too long to answer".into()))?
-        // Ollama's error text is the engine's, not the user's data, but keep it out anyway.
-        .map_err(|_| bad("the local model didn't answer; check the engine in Settings → AI".into()))?;
+    let reply =
+        tokio::time::timeout(std::time::Duration::from_secs(SUGGEST_TIMEOUT_SECS), client.chat_json(params, &messages))
+            .await
+            .map_err(|_| bad("the local model took too long to answer".into()))?
+            // Ollama's error text is the engine's, not the user's data, but keep it out anyway.
+            .map_err(|_| bad("the local model didn't answer; check the engine in Settings → AI".into()))?;
     let picked = parse_reply(&reply, items, &expense_names, &income_names);
     Ok(items
         .iter()
@@ -610,10 +651,19 @@ pub async fn suggest_categories(db: &Db, ent: &Entity, entry_ids: &[i64]) -> gan
     let mut items: Vec<(i64, SuggestItem)> = Vec::new();
     for id in entry_ids {
         let e = finance::get_entry(db, ent, *id).await?;
-        let Some(bank) = e.lines.iter().find(|l| accounts.iter().any(|a| a.ledger_account_id == l.ledger_account_id)) else {
+        let Some(bank) = e.lines.iter().find(|l| accounts.iter().any(|a| a.ledger_account_id == l.ledger_account_id))
+        else {
             continue; // a manual journal has no bank line to sort
         };
-        items.push((e.id, SuggestItem { description: e.description.clone(), payee: e.payee.clone(), amount_minor: bank.amount_minor, currency: bank.currency.clone() }));
+        items.push((
+            e.id,
+            SuggestItem {
+                description: e.description.clone(),
+                payee: e.payee.clone(),
+                amount_minor: bank.amount_minor,
+                currency: bank.currency.clone(),
+            },
+        ));
     }
 
     if items.is_empty() {
@@ -642,7 +692,13 @@ mod tests {
     const LOCAL: &str = "http://127.0.0.1:11434";
 
     fn params(model: &str, endpoint: Option<&str>) -> ChatParams {
-        ChatParams { model: model.into(), temperature: None, max_tokens: None, num_ctx: None, endpoint: endpoint.map(String::from) }
+        ChatParams {
+            model: model.into(),
+            temperature: None,
+            max_tokens: None,
+            num_ctx: None,
+            endpoint: endpoint.map(String::from),
+        }
     }
 
     fn day(s: &str) -> NaiveDate {
@@ -652,12 +708,27 @@ mod tests {
     #[test]
     fn only_local_ollama_engines_count() {
         assert!(engine_is_local(&Runner::Ollama, &params("qwen2.5:7b", None), "http://127.0.0.1:11434"));
-        assert!(engine_is_local(&Runner::Ollama, &params("qwen2.5:7b", Some("http://100.70.1.2:11434")), LOCAL), "an engine the owner runs");
-        assert!(!engine_is_local(&Runner::Pi, &params("qwen2.5:7b", None), "http://127.0.0.1:11434"), "a pi runner never");
-        assert!(!engine_is_local(&Runner::Ollama, &params("gpt-oss:120b-cloud", None), "http://127.0.0.1:11434"), "an Ollama cloud tag");
+        assert!(
+            engine_is_local(&Runner::Ollama, &params("qwen2.5:7b", Some("http://100.70.1.2:11434")), LOCAL),
+            "an engine the owner runs"
+        );
+        assert!(
+            !engine_is_local(&Runner::Pi, &params("qwen2.5:7b", None), "http://127.0.0.1:11434"),
+            "a pi runner never"
+        );
+        assert!(
+            !engine_is_local(&Runner::Ollama, &params("gpt-oss:120b-cloud", None), "http://127.0.0.1:11434"),
+            "an Ollama cloud tag"
+        );
         assert!(!engine_is_local(&Runner::Ollama, &params("kimi-k2:cloud", None), "http://127.0.0.1:11434"));
-        assert!(!engine_is_local(&Runner::Ollama, &params("llama3", Some("https://ollama.com")), LOCAL), "Ollama's cloud endpoint");
-        assert!(!engine_is_local(&Runner::Ollama, &params("llama3", None), "https://ollama.com"), "the host engine on Ollama's cloud");
+        assert!(
+            !engine_is_local(&Runner::Ollama, &params("llama3", Some("https://ollama.com")), LOCAL),
+            "Ollama's cloud endpoint"
+        );
+        assert!(
+            !engine_is_local(&Runner::Ollama, &params("llama3", None), "https://ollama.com"),
+            "the host engine on Ollama's cloud"
+        );
     }
 
     #[test]
@@ -678,7 +749,12 @@ mod tests {
 
     #[test]
     fn the_prompt_holds_only_description_payee_amount_and_the_chart() {
-        let items = vec![SuggestItem { description: "CORNER SHOP 123".into(), payee: Some("Corner Shop".into()), amount_minor: -4_250, currency: "EUR".into() }];
+        let items = vec![SuggestItem {
+            description: "CORNER SHOP 123".into(),
+            payee: Some("Corner Shop".into()),
+            amount_minor: -4_250,
+            currency: "EUR".into(),
+        }];
         let p = build_prompt(&items, &["Groceries".into(), "Transport".into()], &["Salary".into()]);
         assert!(p.contains("1. spent 42.50 EUR | CORNER SHOP 123 | payee: Corner Shop"), "{p}");
         assert!(p.contains("Expense categories: Groceries, Transport") && p.contains("Income categories: Salary"));
@@ -686,7 +762,12 @@ mod tests {
 
     #[test]
     fn replies_match_the_users_own_names_on_the_right_side() {
-        let it = |amount: i64| SuggestItem { description: "x".into(), payee: None, amount_minor: amount, currency: "EUR".into() };
+        let it = |amount: i64| SuggestItem {
+            description: "x".into(),
+            payee: None,
+            amount_minor: amount,
+            currency: "EUR".into(),
+        };
         let items = vec![it(-100), it(-100), it(500), it(-100), it(-100)];
         let (exp, inc) = (vec!["Groceries".to_string(), "Eating out".to_string()], vec!["Salary".to_string()]);
         let reply = "Sure! ```json\n{\"1\": \"groceries\", \"2\": \"Salary\", \"3\": \"Salary\", \"4\": null, \"5\": \"Crypto\"}\n```";
@@ -697,8 +778,14 @@ mod tests {
     #[test]
     fn suggestions_use_an_installed_local_model() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(pick_model(&s(&["qwen2.5"]), &s(&["nomic-embed-text:latest", "qwen2.5:latest"])), Some("qwen2.5:latest".into()));
-        assert_eq!(pick_model(&s(&["gpt-oss:120b-cloud", "llama3.1:8b"]), &s(&["gpt-oss:120b-cloud", "llama3.1:8b"])), Some("llama3.1:8b".into()));
+        assert_eq!(
+            pick_model(&s(&["qwen2.5"]), &s(&["nomic-embed-text:latest", "qwen2.5:latest"])),
+            Some("qwen2.5:latest".into())
+        );
+        assert_eq!(
+            pick_model(&s(&["gpt-oss:120b-cloud", "llama3.1:8b"]), &s(&["gpt-oss:120b-cloud", "llama3.1:8b"])),
+            Some("llama3.1:8b".into())
+        );
         assert_eq!(pick_model(&s(&["mistral"]), &s(&["llama3.1:8b"])), None);
     }
 
@@ -706,15 +793,28 @@ mod tests {
     async fn with_finance(db: &Db, user_id: i64, account: &str, spent: i64) -> i64 {
         let ent = finance::entity_for_user(db, user_id).await.unwrap();
         let input = finance::FinAccountInput {
-            kind: "current".into(), name: account.into(), institution: None, currency: "EUR".into(), iban_mask: None,
-            profile_key: None, opening_balance_minor: Some(100_000), opening_date: Some("2026-01-01".into()),
+            kind: "current".into(),
+            name: account.into(),
+            institution: None,
+            currency: "EUR".into(),
+            iban_mask: None,
+            profile_key: None,
+            opening_balance_minor: Some(100_000),
+            opening_date: Some("2026-01-01".into()),
         };
         let a = finance::create_account(db, &ent, input).await.unwrap();
         let ledger = finance::list_ledger_accounts(db, &ent, false).await.unwrap();
         let id = |n: &str| ledger.iter().find(|l| l.name == n).unwrap().id;
         let draft = finance::BankDraft {
-            account_id: a.id, date: "2026-02-10".into(), description: "Corner shop".into(), payee: None,
-            amount_minor: -spent, fee_minor: 0, counter_ledger_account_id: id("Groceries"), source_line_id: None, functional_minor: None,
+            account_id: a.id,
+            date: "2026-02-10".into(),
+            description: "Corner shop".into(),
+            payee: None,
+            amount_minor: -spent,
+            fee_minor: 0,
+            counter_ledger_account_id: id("Groceries"),
+            source_line_id: None,
+            functional_minor: None,
         };
         finance::create_bank_draft(db, &ent, draft).await.unwrap();
         ganban_core::ops::ensure_personal_project(db, user_id).await.unwrap()
@@ -724,21 +824,43 @@ mod tests {
     async fn finance_tools_are_offered_only_in_the_callers_personal_chat_on_a_local_engine() {
         let db = test_db("fin_tools_gate").await;
         let owner = owner(&db).await;
-        let project = ganban_core::ops::create_project(&db, ganban_core::models::CreateProjectInput { name: "Work".into(), description: None })
-            .await
-            .unwrap()
-            .id;
+        let project = ganban_core::ops::create_project(
+            &db,
+            ganban_core::models::CreateProjectInput { name: "Work".into(), description: None },
+        )
+        .await
+        .unwrap()
+        .id;
         let mia = member(&db, 7, &[(project, "member")]).await;
         let personal = with_finance(&db, mia.id, "Everyday", 4_200).await;
         let local = params("qwen2.5:7b", None);
-        let names = |defs: Vec<Value>| defs.iter().filter_map(|d| d["function"]["name"].as_str().map(String::from)).collect::<Vec<_>>();
+        let names = |defs: Vec<Value>| {
+            defs.iter().filter_map(|d| d["function"]["name"].as_str().map(String::from)).collect::<Vec<_>>()
+        };
 
-        assert_eq!(names(offered_defs(&db, mia.id, personal, &Runner::Ollama, &local, LOCAL).await), TOOL_NAMES.to_vec());
-        assert!(offered_defs(&db, mia.id, project, &Runner::Ollama, &local, LOCAL).await.is_empty(), "absent in a project chat");
-        assert!(offered_defs(&db, mia.id, personal, &Runner::Pi, &local, LOCAL).await.is_empty(), "absent on a pi runner");
-        assert!(offered_defs(&db, mia.id, personal, &Runner::Ollama, &params("gpt-oss:20b-cloud", None), LOCAL).await.is_empty(), "absent on a cloud model");
+        assert_eq!(
+            names(offered_defs(&db, mia.id, personal, &Runner::Ollama, &local, LOCAL).await),
+            TOOL_NAMES.to_vec()
+        );
+        assert!(
+            offered_defs(&db, mia.id, project, &Runner::Ollama, &local, LOCAL).await.is_empty(),
+            "absent in a project chat"
+        );
+        assert!(
+            offered_defs(&db, mia.id, personal, &Runner::Pi, &local, LOCAL).await.is_empty(),
+            "absent on a pi runner"
+        );
+        assert!(
+            offered_defs(&db, mia.id, personal, &Runner::Ollama, &params("gpt-oss:20b-cloud", None), LOCAL)
+                .await
+                .is_empty(),
+            "absent on a cloud model"
+        );
         // The owner reaches Mia's container through the project bypass, but it isn't theirs.
-        assert!(offered_defs(&db, owner.id, personal, &Runner::Ollama, &local, LOCAL).await.is_empty(), "absent in someone else's container");
+        assert!(
+            offered_defs(&db, owner.id, personal, &Runner::Ollama, &local, LOCAL).await.is_empty(),
+            "absent in someone else's container"
+        );
         // The owner's own container, with no Finance in use: nothing offered, nothing created.
         let mine = ganban_core::ops::ensure_personal_project(&db, owner.id).await.unwrap();
         assert!(offered_defs(&db, owner.id, mine, &Runner::Ollama, &local, LOCAL).await.is_empty());
@@ -759,15 +881,28 @@ mod tests {
             async move { execute(&db, user, project, &runner, &local, LOCAL, name, &args, today).await }
         };
 
-        let spent = run(7, mia_personal, Runner::Ollama, "finance_by_category", json!({ "period": "last_month", "category": "groceries" })).await.unwrap();
+        let spent = run(
+            7,
+            mia_personal,
+            Runner::Ollama,
+            "finance_by_category",
+            json!({ "period": "last_month", "category": "groceries" }),
+        )
+        .await
+        .unwrap();
         let v: Value = serde_json::from_str(&spent).unwrap();
         assert_eq!((v["total_spent"].as_f64(), v["from"].as_str()), (Some(42.0), Some("2026-02-01")), "{v}");
         let balances = run(7, mia_personal, Runner::Ollama, "finance_balances", json!({})).await.unwrap();
         assert!(balances.contains("Mia's current") && !balances.contains("Owner's current"), "{balances}");
-        let found = run(7, mia_personal, Runner::Ollama, "finance_transactions", json!({ "search": "corner" })).await.unwrap();
+        let found =
+            run(7, mia_personal, Runner::Ollama, "finance_transactions", json!({ "search": "corner" })).await.unwrap();
         assert!(found.contains("-42.0") && found.contains("Groceries"), "{found}");
         for name in ["finance_statement", "finance_forecast", "finance_budgets"] {
-            let args = if name == "finance_statement" { json!({ "kind": "profit_loss", "period": "2026-02" }) } else { json!({}) };
+            let args = if name == "finance_statement" {
+                json!({ "kind": "profit_loss", "period": "2026-02" })
+            } else {
+                json!({})
+            };
             assert!(run(7, mia_personal, Runner::Ollama, name, args).await.is_ok(), "{name}");
         }
 
@@ -786,7 +921,8 @@ mod tests {
         let _ = member(&db, 7, &[]).await;
         let personal = with_finance(&db, 7, "Everyday", 100).await;
         let viewer = ganban_core::visibility::Viewer { user_id: 7, is_owner: false };
-        let err = crate::tools::execute_tool(&db, None, personal, "finance_balances", &json!({}), viewer).await.unwrap_err();
+        let err =
+            crate::tools::execute_tool(&db, None, personal, "finance_balances", &json!({}), viewer).await.unwrap_err();
         assert!(err.contains("Personal"), "{err}");
     }
 }

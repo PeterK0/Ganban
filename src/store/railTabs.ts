@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import { hasDaemon, listAvailableTabs } from '../lib/daemon';
 import { getUserSetting, setUserSetting } from '../lib/api';
 import { RAIL_MODULES, RAIL_SETTING, type TabModule } from '../tabs/modules';
+import { mergeLoadedSwitches } from './railTabs.pure';
 
 interface RailState {
   /** The user the switches belong to (the host's signed-in member, or the desktop's profile). */
@@ -20,6 +21,9 @@ interface RailState {
 }
 
 let generation = 0;
+/** Per switch, the load counter when the user's last flip was saved (Infinity while the save runs): a load that
+ * started by then may have read the host before the save landed, so it keeps its hands off that switch. */
+let flippedAt: Record<string, number> = {};
 
 export const useRailTabs = create<RailState>((set, get) => ({
   userId: null,
@@ -29,7 +33,10 @@ export const useRailTabs = create<RailState>((set, get) => ({
   load: async (userId) => {
     const gen = ++generation;
     // Another user's switches never stay on screen for this one.
-    if (userId !== get().userId) set({ userId, on: {} });
+    if (userId !== get().userId) {
+      flippedAt = {};
+      set({ userId, on: {} });
+    }
     if (!RAIL_MODULES.length || !hasDaemon()) return;
     let tabs: string[];
     try {
@@ -51,18 +58,21 @@ export const useRailTabs = create<RailState>((set, get) => ({
         }),
       );
     }
-    if (gen === generation) set({ hostTabs: tabs, on });
+    if (gen === generation) set({ hostTabs: tabs, on: mergeLoadedSwitches(on, get().on, flippedAt, gen) });
   },
 
   setOn: async (id, value) => {
     const { userId, on } = get();
     if (userId == null) throw new Error('No signed-in user to save this for.');
+    flippedAt = { ...flippedAt, [id]: Infinity };
     set({ on: { ...on, [id]: value } });
     try {
       await setUserSetting(userId, RAIL_SETTING(id), value ? 'on' : 'off');
     } catch (e) {
       set({ on: { ...get().on, [id]: !value } });
       throw e;
+    } finally {
+      flippedAt = { ...flippedAt, [id]: generation };
     }
   },
 }));

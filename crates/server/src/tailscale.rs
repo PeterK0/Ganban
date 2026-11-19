@@ -80,17 +80,15 @@ impl TailscaleConfig {
     /// Parse the stored JSON. Split out for unit testing (no DB/network).
     fn parse(raw: &str) -> Option<TailscaleConfig> {
         let v: Value = serde_json::from_str(raw).ok()?;
-        let access_token = v
-            .get("access_token")
-            .and_then(|t| t.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
+        let access_token =
+            v.get("access_token").and_then(|t| t.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
         let oauth = match (
             v.get("oauth").and_then(|o| o.get("client_id")).and_then(|s| s.as_str()).map(str::trim),
             v.get("oauth").and_then(|o| o.get("client_secret")).and_then(|s| s.as_str()).map(str::trim),
         ) {
-            (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => Some((id.to_string(), secret.to_string())),
+            (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => {
+                Some((id.to_string(), secret.to_string()))
+            }
             _ => None,
         };
         // Neither a usable access token nor an OAuth client → not configured.
@@ -136,11 +134,8 @@ impl TailscaleConfig {
             return Ok(tok.clone());
         }
         let (id, secret) = self.oauth.as_ref().ok_or("no Tailscale credential configured")?;
-        let form = [
-            ("grant_type", "client_credentials"),
-            ("client_id", id.as_str()),
-            ("client_secret", secret.as_str()),
-        ];
+        let form =
+            [("grant_type", "client_credentials"), ("client_id", id.as_str()), ("client_secret", secret.as_str())];
         let resp = client
             .post(format!("{API_BASE}/oauth/token"))
             .form(&form)
@@ -150,10 +145,17 @@ impl TailscaleConfig {
         let status = resp.status();
         let v: Value = resp.json().await.map_err(|e| format!("Tailscale OAuth: {e}"))?;
         if !status.is_success() {
-            let d = v.get("error_description").or_else(|| v.get("error")).and_then(|e| e.as_str()).unwrap_or("token request failed");
+            let d = v
+                .get("error_description")
+                .or_else(|| v.get("error"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("token request failed");
             return Err(format!("Tailscale OAuth {}: {d}", status.as_u16()));
         }
-        v.get("access_token").and_then(|t| t.as_str()).map(String::from).ok_or_else(|| "Tailscale OAuth returned no access token".into())
+        v.get("access_token")
+            .and_then(|t| t.as_str())
+            .map(String::from)
+            .ok_or_else(|| "Tailscale OAuth returned no access token".into())
     }
 }
 
@@ -329,7 +331,8 @@ mod tests {
 
     #[test]
     fn parse_oauth_client_and_tailnet() {
-        let c = TailscaleConfig::parse(r#"{"oauth":{"client_id":"k","client_secret":"s"},"tailnet":"example.com"}"#).expect("configured");
+        let c = TailscaleConfig::parse(r#"{"oauth":{"client_id":"k","client_secret":"s"},"tailnet":"example.com"}"#)
+            .expect("configured");
         assert!(c.access_token.is_none());
         assert_eq!(c.oauth, Some(("k".into(), "s".into())));
         assert_eq!(c.tailnet, "example.com");

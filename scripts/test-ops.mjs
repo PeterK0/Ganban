@@ -312,7 +312,7 @@ const deadPort = await new Promise((r) => {
  *  live/BAD exists), like a service that runs whatever live/ holds. */
 /** Client builds (`clients`): 'none' (GANBAN_CLIENT_BUILDS=none), 'nokeys' (no keys: both skipped),
  *  'built' (keys, a fake tauri that makes the artifacts), 'failed' (keys, a tauri that fails). */
-async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = false, slowStart = 0, clients = 'none', prior = false, status = null, before = null, appVersion = '1.0.0', tabSuite = true }) {
+async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = false, slowStart = 0, clients = 'none', prior = false, status = null, before = null, appVersion = '1.0.0', tabSuite = true, pullChangesUpdate = false, changelog = null, brokenParser = false }) {
   const s = sandbox();
   const repo = join(s.dir, 'repo');
   mkdirSync(join(repo, 'ops'), { recursive: true });
@@ -324,6 +324,13 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
   writeFileSync(join(repo, 'live/BUILD'), 'old1');
   writeFileSync(join(repo, 'src-tauri/tauri.conf.json'), JSON.stringify({ productName: 'Ganban', version: appVersion }, null, 2));
   for (const f of ['update.sh', 'build-clients.sh', 'json.mjs', 'version-code.mjs']) writeFileSync(join(repo, 'ops', f), readFileSync(join(root, 'ops', f)));
+  // The patch notes: the real script and parser, and a CHANGELOG.md (`brokenParser`: a parser that throws).
+  if (changelog != null) {
+    writeFileSync(join(repo, 'scripts/patch-notes.mjs'), readFileSync(join(root, 'scripts/patch-notes.mjs')));
+    mkdirSync(join(repo, 'src/lib'), { recursive: true });
+    writeFileSync(join(repo, 'src/lib/patchNotes.pure.ts'), brokenParser ? 'throw new Error("broken parser");\n' : readFileSync(join(root, 'src/lib/patchNotes.pure.ts')));
+    writeFileSync(join(repo, 'CHANGELOG.md'), changelog);
+  }
   const stub = (name, body) => writeFileSync(join(repo, 'ops', name), `#!/bin/bash\n${body}\n`);
   stub('build.sh', buildFails ? 'echo "cargo: error" >&2; exit 101' : `mkdir -p "$1" && echo ${newBuild} > "$1/BUILD"${bad ? ' && touch "$1/BAD"' : ''}`);
   stub('smoke.sh', 'echo "smoke ok: server $(cat "$1/BUILD"), web x"');
@@ -351,7 +358,13 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
     'fi',
   ].join('\n'));
   chmodSync(join(s.bin, 'npx'), 0o755);
-  writeFileSync(join(s.bin, 'git'), '#!/bin/bash\necho "git $*" >> "$(dirname "$0")/tools.log"\n[ "$1" = rev-parse ] && echo abc1234\n[ "$1" = rev-list ] && echo 975\ntrue\n');
+  writeFileSync(join(s.bin, 'git'), '#!/bin/bash\necho "git $*" >> "$(dirname "$0")/tools.log"\n[ "$1" = rev-parse ] && echo abc1234\n[ "$1" = rev-list ] && echo 975\n'
+    // `pullChangesUpdate`: the pull brings a new ops/update.sh (written beside it and renamed over it, as git does).
+    + '[ "$1" = pull ] && [ -f ops/update.sh.pulled ] && mv ops/update.sh.pulled ops/update.sh\ntrue\n');
+  if (pullChangesUpdate) {
+    const pulled = readFileSync(join(root, 'ops/update.sh'), 'utf8').replace('set -Eeuo pipefail\n', () => 'set -Eeuo pipefail\necho "the pulled update.sh runs (pid $$)"\n');
+    writeFileSync(join(repo, 'ops/update.sh.pulled'), pulled);
+  }
   chmodSync(join(s.bin, 'git'), 0o755);
   if (clients === 'built' || clients === 'failed') {
     mkdirSync(join(s.data, 'keys'));
@@ -407,6 +420,18 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
   ok(u.lc.includes(`kickstart -k gui/${uid}/com.ganban.server`), 'update restarts the service', u.lc);
   ok(u.out.includes('ganban updated abc1234 → abc1234: build new1, healthy; backup /backups/gansty-1.db.gz'), 'update ends on one summary line with the new build', u.out);
   ok(['git pull --ff-only', 'npm ci', 'npx tsc --noEmit -p .', 'cargo test -p ganban-core -p ganban-server', 'npm run -s test:extra-tabs'].every((t) => u.tools.includes(t)), 'update runs the gate', u.tools);
+}
+{
+  // 2026-11-04, on a real host: the pull brought a fixed update.sh, but bash went on running the old file.
+  const u = await fakeUpdate({ newBuild: 'new6', pullChangesUpdate: true });
+  ok(u.code === 0 && u.build('live') === 'new6', 'update: a run whose pull changes update.sh succeeds', u.all);
+  ok(u.out.includes('ops/update.sh changed in the pull; running the new copy') && /the pulled update\.sh runs/.test(u.out), 'and runs the pulled copy', u.out);
+  const pid = (u.out.match(/^──── ops\/update\.sh .*\(pid (\d+)\)$/m) || [])[1];
+  ok(!!pid && u.out.includes(`the pulled update.sh runs (pid ${pid})`), 'in the same process', u.out);
+  ok((u.tools.match(/git pull/g) || []).length === 2 && (u.tools.match(/npm ci/g) || []).length === 1, 'it pulls again and runs the gate once', u.tools);
+  ok((u.log.match(/──── ops\/update\.sh/g) || []).length === 1 && (u.log.match(/ganban updated/g) || []).length === 1, 'into the same log, each line once', u.log);
+  ok(!u.all.includes('stale') && !u.all.includes('another update is running'), 'the new copy does not take its own run for another one', u.all);
+  ok(u.st && u.st.state === 'succeeded' && u.st.pid === Number(pid), 'the status ends succeeded, same pid', JSON.stringify(u.st));
 }
 {
   const u = await fakeUpdate({ newBuild: 'pub1', tabSuite: false });
@@ -561,6 +586,30 @@ async function fakeUpdate({ newBuild, bad = false, holder = false, buildFails = 
 {
   const u = await fakeUpdate({ newBuild: 'c6', clients: 'built', appVersion: 'oops' });
   ok(u.code === 0 && u.all.includes('no major.minor version in src-tauri/tauri.conf.json') && u.st.state === 'succeeded' && u.build('live') === 'c6', 'a bad app version stops the client builds, not the server update', u.all);
+}
+
+// ── build-clients.sh: the patch notes in the manifests, never a reason to fail ──
+{
+  const md = '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **A fix on the host.** Wrapped\n  over two lines.\n\n## [1.0.11] - 2026-11-06\n\n### Added\n\n- **A released feature.**\n\n## [1.0.10] - 2026-11-05\n\n### Added\n\n- **Older.**\n';
+  const u = await fakeUpdate({ newBuild: 'n1', clients: 'built', changelog: md });
+  const d = u.manifest('desktop/darwin-aarch64');
+  const a = u.manifest('android');
+  ok(u.out.includes('desktop: built 1.0.975') && u.out.includes('android: built 1.0.975'), 'notes: the clients are built', u.all);
+  for (const [name, m] of [['desktop', d], ['android', a]]) {
+    ok(m?.notes?.includes('## [Unreleased]') && m.notes.includes('A fix on the host.') && m.notes.includes('## [1.0.11] - 2026-11-06') && !m.notes.includes('Older.'), `the ${name} manifest carries Unreleased and the last release's notes`, JSON.stringify(m));
+    ok(m?.releasedVersion === '1.0.11', `the ${name} manifest names the release it follows`, JSON.stringify(m));
+  }
+}
+for (const [what, opts] of [
+  ['a parser that throws', { changelog: '## [Unreleased]\n\n- **x**\n', brokenParser: true }],
+  ['no CHANGELOG.md or script', {}],
+  ['a CHANGELOG.md with no entries', { changelog: 'nothing here\n' }],
+]) {
+  const u = await fakeUpdate({ newBuild: 'n2', clients: 'built', ...opts });
+  const d = u.manifest('desktop/darwin-aarch64');
+  const a = u.manifest('android');
+  ok(u.code === 0 && u.out.includes('desktop: built 1.0.975') && u.out.includes('android: built 1.0.975'), `notes: ${what} doesn't fail the builds`, u.all);
+  ok(d && a && !('notes' in d) && !('notes' in a) && d.signature === 'SIGNATURE', `and the manifests are written without notes (${what})`, JSON.stringify({ d, a }));
 }
 
 health.close();

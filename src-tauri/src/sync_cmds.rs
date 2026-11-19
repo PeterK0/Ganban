@@ -20,8 +20,7 @@ pub async fn sync_collect(pool: State<'_, Db>) -> Result<Vec<Value>, String> {
 /// ({ applied, conflicts, rejected, id_remap }).
 #[tauri::command]
 pub async fn sync_ingest(pool: State<'_, Db>, changes: Vec<Value>) -> Result<Value, String> {
-    let parsed: Vec<sync::IncomingChange> =
-        serde_json::from_value(Value::Array(changes)).map_err(|e| e.to_string())?;
+    let parsed: Vec<sync::IncomingChange> = serde_json::from_value(Value::Array(changes)).map_err(|e| e.to_string())?;
     let report = sync::ingest(pool.inner(), parsed).await.map_err(|e| e.to_string())?;
     if let Some(conflicts) = report.get("conflicts").and_then(|c| c.as_array()) {
         if !conflicts.is_empty() {
@@ -36,8 +35,7 @@ pub async fn sync_ingest(pool: State<'_, Db>, changes: Vec<Value>) -> Result<Val
 /// reported back.
 #[tauri::command]
 pub async fn sync_ack(pool: State<'_, Db>, acked: Vec<Value>, conflicts: Vec<Value>) -> Result<(), String> {
-    let items: Vec<sync::AckItem> =
-        serde_json::from_value(Value::Array(acked)).map_err(|e| e.to_string())?;
+    let items: Vec<sync::AckItem> = serde_json::from_value(Value::Array(acked)).map_err(|e| e.to_string())?;
     sync::ack(pool.inner(), items).await.map_err(|e| e.to_string())?;
     if !conflicts.is_empty() {
         sync::record_conflicts(pool.inner(), conflicts).await.map_err(|e| e.to_string())?;

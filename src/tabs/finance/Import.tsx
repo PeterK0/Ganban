@@ -8,6 +8,7 @@ import * as fin from './api';
 import { progressPercent, stageLabel } from './importJob.pure';
 import { AUTO_PERCENT, clampPercent, pairsAtLeast, pairsLike } from './reviewPairs.pure';
 import { formatDate } from './money.pure';
+import { columnsFromMapping, nextStep, resultItems, type ResultLink } from './sorting.pure';
 import { Empty, MUTED, Money, errText, splitEntry, useFinance } from './shared';
 
 type Step =
@@ -39,6 +40,13 @@ export default function ImportView() {
       })
       .catch(() => {});
   }, []);
+
+  // Imports a host restart cut short (an "Update the server" mid-import): say so while picking a file.
+  const [cut, setCut] = useState<fin.InterruptedImport[]>([]);
+  useEffect(() => {
+    if (step.at !== 'pick') return;
+    fin.interruptedImports().then(setCut).catch(() => setCut([]));
+  }, [step.at]);
 
   // Follow a running import until it's done.
   const runningId = step.at === 'running' ? step.job.job_id : null;
@@ -107,8 +115,19 @@ export default function ImportView() {
         <DecoHeading>Import a statement</DecoHeading>
         {step.at === 'pick' && (
           <div className="g-card g-corners p-6 space-y-3 text-center">
+            {cut.length > 0 && (
+              <div className="g-card p-3 text-left text-sm text-warning space-y-1" role="status">
+                {cut.map((c) => (
+                  <p key={c.batch_id}>
+                    The import of {c.file_name} on {formatDate(c.imported_at.slice(0, 10))} stopped before it finished
+                    (a host restart or an error), after {c.lines} {c.lines === 1 ? 'line' : 'lines'}.
+                  </p>
+                ))}
+                <p className={MUTED}>Import the same file again: it adds only what is missing and finishes the rest.</p>
+              </div>
+            )}
             <p className="text-text">A CSV or Excel export from your bank.</p>
-            <p className={`text-sm ${MUTED}`}>Revolut and Piraeus are recognised; for another bank you map its columns once. Re-importing an overlapping export adds nothing twice.</p>
+            <p className={`text-sm ${MUTED}`}>A layout Ganban knows is read as it is; for any other bank you map its columns once and the layout is remembered. Re-importing an overlapping export adds nothing twice.</p>
             <input
               ref={input}
               type="file"
@@ -186,7 +205,7 @@ function Preview({
   );
   const live = accounts.filter((a) => !a.archived);
   const profileKey = preview.profile_key;
-  // "Post lines older than N days straight away": off by default, remembered per user on the host.
+  // "Sort lines older than N days by themselves": off by default, remembered per user on the host.
   const [postOlder, setPostOlder] = useState<{ on: boolean; days: string }>({ on: false, days: '30' });
   useEffect(() => {
     fin
@@ -212,7 +231,7 @@ function Preview({
           ? { create: { kind: g.kind, name: g.name, currency: g.currency, institution: g.institution ?? profiles.find((p) => p.key === profileKey)?.name } }
           : v;
     }
-    void onImport(profileKey, out, postOlder.on && daysOk ? postDays : undefined);
+    void onImport(profileKey, out, postOlder.on && daysOk ? postDays : 0);
   };
 
   return (
@@ -248,7 +267,7 @@ function Preview({
         ))}
       </div>
 
-      {wizard && <MappingWizard sample={preview.sample ?? []} header={preview.header} onSaved={onProfileSaved} />}
+      {wizard && <MappingWizard sample={preview.sample ?? []} header={preview.header} guess={preview.suggested_mapping} onSaved={onProfileSaved} />}
 
       {preview.rows.length > 0 && (
         <div className="g-card p-0">
@@ -300,7 +319,7 @@ function Preview({
       <div className="space-y-1">
         <label className="flex flex-wrap items-center gap-2 text-sm text-text min-h-[32px]">
           <input type="checkbox" checked={postOlder.on} onChange={(e) => savePostOlder({ ...postOlder, on: e.target.checked })} />
-          Post lines older than
+          Sort lines older than
           <input
             className="g-field g-field-sm !w-[72px] text-right tabular-nums"
             inputMode="numeric"
@@ -309,10 +328,10 @@ function Preview({
             aria-label="Days"
             aria-invalid={!daysOk}
           />
-          days straight away
+          days by themselves
         </label>
         <p className={`text-xs ${MUTED} pl-6`}>
-          For history your bank settled long ago: those lines are paired and run through your rules, then posted instead of waiting in the inbox. Posted lines stay editable until their month is closed.
+          Old lines don't wait in To sort: your payees and rules file what they can, and the rest goes to Unsorted history, to sort by payee when you like. Every line stays editable until its month is closed.
         </p>
       </div>
 
@@ -348,16 +367,17 @@ const FIELDS: { key: ColField; label: string; required?: boolean }[] = [
  * is picked from the file's first rows (some banks put a preamble above it), and columns are saved by
  * their header name.
  */
-function MappingWizard({ sample, header, onSaved }: { sample: string[][]; header: string[]; onSaved: (p: fin.Profile) => void }) {
-  const guessRow = Math.max(0, sample.findIndex((r) => r.length > 0 && r.join('\u0001') === header.join('\u0001')));
+function MappingWizard({ sample, header, guess, onSaved }: { sample: string[][]; header: string[]; guess?: fin.ProfileMapping | null; onSaved: (p: fin.Profile) => void }) {
+  const guessRow = guess?.headerRow ?? Math.max(0, sample.findIndex((r) => r.length > 0 && r.join('\u0001') === header.join('\u0001')));
   const [headerRow, setHeaderRow] = useState(guessRow);
   const cols = sample[headerRow] ?? header;
-  const [name, setName] = useState('');
-  const [map, setMap] = useState<Partial<Record<ColField, number>>>({});
-  const [dateFormat, setDateFormat] = useState(''); // '' = the host works it out
-  const [decimal, setDecimal] = useState<fin.ProfileMapping['decimal']>('auto');
-  const [invertSign, setInvertSign] = useState(false);
-  const [currencyDefault, setCurrencyDefault] = useState('EUR');
+  const [name, setName] = useState(guess?.institution ?? '');
+  // The host's guess at the columns fills the choices; he only corrects them.
+  const [map, setMap] = useState<Partial<Record<ColField, number>>>(() => columnsFromMapping(guess as Record<string, unknown> | null, sample[guessRow] ?? header));
+  const [dateFormat, setDateFormat] = useState(guess?.dateFormat ?? ''); // '' = the host works it out
+  const [decimal, setDecimal] = useState<fin.ProfileMapping['decimal']>(guess?.decimal ?? 'auto');
+  const [invertSign, setInvertSign] = useState(!!guess?.invertSign);
+  const [currencyDefault, setCurrencyDefault] = useState(guess?.currencyDefault ?? 'EUR');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const hasAmount = map.amount != null || (map.debit != null && map.credit != null);
@@ -500,36 +520,66 @@ function Running({ job }: { job: fin.ImportJob }) {
 }
 
 function Result({ result, onAgain }: { result: fin.ImportResult; onAgain: () => void }) {
-  const { goto } = useFinance();
-  const items: [string, number][] = [
-    ['new', result.created],
-    ['already there', result.duplicates],
-    ['sorted by rules', result.categorised_by_rules],
-    ['transfers matched', result.paired],
-    ['to review', result.review],
-    ['refunds matched', result.refunds ?? 0],
-    ...(result.posted ? ([['posted straight away', result.posted]] as [string, number][]) : []),
-  ];
+  const { goto, locale } = useFinance();
+  const items = resultItems(result, locale);
+  const open = (link: ResultLink) => {
+    if (link === 'tosort') goto('transactions', { view: 'tosort' });
+    else if (link === 'transfers') goto('transactions', { view: 'transfers', importBatchId: result.batch_id });
+    else if (link === 'filed') goto('transactions', { view: 'all', importBatchId: result.batch_id, filedOnly: true });
+    else if (link === 'history') goto('transactions', { view: 'history' });
+  };
+  const toSort = result.decisions ?? result.created;
+  const next = nextStep(result.history_unsorted ?? 0, toSort);
   return (
     <div className="g-card g-corners p-5 space-y-4">
-      <div className="g-stitle">Imported</div>
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
-        {items.map(([label, n]) => (
-          <div key={label} className="g-inset px-3 py-2">
-            <div className="text-2xl text-text tabular-nums">{n}</div>
-            <div className={`text-xs ${MUTED}`}>{label}</div>
-          </div>
-        ))}
+      <div className="g-stitle">
+        {result.created === 0
+          ? `Nothing new: all ${result.duplicates.toLocaleString(locale)} ${result.duplicates === 1 ? 'line was' : 'lines were'} already there`
+          : `Imported ${result.created.toLocaleString(locale)} new ${result.created === 1 ? 'line' : 'lines'}`}
+      </div>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+        {items.map((i) => {
+          const body = (
+            <>
+              <div className="text-2xl text-text tabular-nums">{i.n.toLocaleString(locale)}</div>
+              <div className={`text-xs ${i.link ? 'text-subtext-1' : MUTED}`}>{i.label}</div>
+            </>
+          );
+          return i.link && i.n > 0 ? (
+            <button key={i.label} className="g-inset px-3 py-2 text-left hover:bg-surface-0" onClick={() => open(i.link)}>
+              {body}
+            </button>
+          ) : (
+            <div key={i.label} className="g-inset px-3 py-2">
+              {body}
+            </div>
+          );
+        })}
       </div>
       {(result.warnings ?? []).map((w, i) => (
         <p key={i} className="text-sm g-tag g-tag-warn !rounded !py-1 !h-auto">
           {w}
         </p>
       ))}
+      {next === 'history' && (
+        <p className="text-sm text-text">
+          {(result.history_unsorted ?? 0).toLocaleString(locale)} older lines went to Unsorted history. When you've sorted the new ones, give your biggest payees there a category: it's optional, and it's what makes next week's import short.
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
-        <button className="g-btn g-btn-pri" onClick={() => goto('transactions')}>
-          Sort the inbox
-        </button>
+        {toSort > 0 ? (
+          <button className="g-btn g-btn-pri" onClick={() => goto('transactions', { view: 'tosort' })}>
+            Sort {toSort.toLocaleString(locale)} {toSort === 1 ? 'line' : 'lines'}
+          </button>
+        ) : next === 'history' ? (
+          <button className="g-btn g-btn-pri" onClick={() => goto('transactions', { view: 'history' })}>
+            Your biggest payees
+          </button>
+        ) : (
+          <button className="g-btn g-btn-pri" onClick={() => goto('transactions', { view: 'all', importBatchId: result.batch_id })}>
+            See the lines
+          </button>
+        )}
         <button className="g-btn g-btn-ghost" onClick={onAgain}>
           Import another
         </button>
@@ -577,11 +627,11 @@ function ReviewList() {
     }
   };
 
-  /** "Same money" for many pairs in one call, after saying how many. */
+  /** "It's a transfer" for many pairs in one call, after saying how many. */
   const acceptMany = async (chosen: fin.Pair[], what: string) => {
     if (!chosen.length) return;
     const n = chosen.length;
-    if (!(await confirmDialog(`Mark ${n} ${n === 1 ? 'pair' : 'pairs'} ${what} as the same money?`))) return;
+    if (!(await confirmDialog(`Mark ${n} ${n === 1 ? 'pair' : 'pairs'} ${what} as transfers between your accounts?`))) return;
     setBusy(true);
     try {
       const r = await fin.resolvePairs(chosen.map((p) => p.id), true);
@@ -658,14 +708,14 @@ function ReviewList() {
                   disabled={busy}
                   onClick={() => void acceptMany(pairsLike(pairs ?? [], p), 'like this one')}
                 >
-                  Same money for all like this ({likeCount.get(p.like_key)})
+                  Transfers, all like this ({likeCount.get(p.like_key)})
                 </button>
               )}
               <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void resolve(p, false)}>
                 Not a transfer
               </button>
               <button className="g-btn g-btn-gilt g-btn-sm" onClick={() => void resolve(p, true)}>
-                Same money
+                It’s a transfer
               </button>
             </div>
           </div>

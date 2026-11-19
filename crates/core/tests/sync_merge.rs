@@ -33,8 +33,10 @@ async fn seed_task(db: &Db, status: &str) -> (i64, String, String) {
     .await
     .unwrap()
     .id;
-    let p_uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM projects WHERE id=?").bind(pid).fetch_one(db).await.unwrap();
-    let t_uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?").bind(tid).fetch_one(db).await.unwrap();
+    let p_uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM projects WHERE id=?").bind(pid).fetch_one(db).await.unwrap();
+    let t_uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?").bind(tid).fetch_one(db).await.unwrap();
     (tid, t_uuid, p_uuid)
 }
 
@@ -46,7 +48,8 @@ fn changes(v: Value) -> Vec<sync::IncomingChange> {
 async fn push_disjoint_fields_auto_merge() {
     let host = init_db_role(&temp_db("merge"), Role::Server).await.unwrap();
     let (tid, t_uuid, p_uuid) = seed_task(&host, "To Do").await;
-    let base_ts: String = sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
+    let base_ts: String =
+        sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
 
     // Host changes priority (disjoint from the replica's pending status edit).
     sqlx::query("UPDATE tasks SET priority='High', updated_at=? WHERE id=?")
@@ -83,8 +86,13 @@ async fn push_same_field_clash_is_reported() {
     let (tid, t_uuid, p_uuid) = seed_task(&host, "To Do").await;
     // Anchor the common ancestor strictly in the past so the host edit below is
     // unambiguously newer at julianday precision (avoids a same-instant flake).
-    sqlx::query("UPDATE tasks SET updated_at='2020-01-01T00:00:00Z' WHERE id=?").bind(tid).execute(&host).await.unwrap();
-    let base_ts: String = sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
+    sqlx::query("UPDATE tasks SET updated_at='2020-01-01T00:00:00Z' WHERE id=?")
+        .bind(tid)
+        .execute(&host)
+        .await
+        .unwrap();
+    let base_ts: String =
+        sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
 
     sqlx::query("UPDATE tasks SET status='Done', updated_at=? WHERE id=?")
         .bind(chrono::Utc::now().to_rfc3339())
@@ -114,7 +122,8 @@ async fn push_same_field_clash_is_reported() {
     assert_eq!(c["local"]["status"], "In Progress", "push: local = the replica's incoming value");
     assert_eq!(c["server"]["status"], "Done", "push: server = the host's current value");
 
-    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
     assert_eq!(status, "Done", "host row untouched on clash");
 }
 
@@ -159,7 +168,8 @@ async fn ingest_detects_conflict_from_local_dirty_state() {
     assert_eq!(c["server"]["status"], "Done", "ingest: server = the host's incoming value");
 
     // The local row is left intact for review (not clobbered).
-    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&replica).await.unwrap();
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&replica).await.unwrap();
     assert_eq!(status, "In Progress", "local edit preserved pending review");
 }
 
@@ -188,6 +198,7 @@ async fn ingest_clean_row_takes_host_value_without_conflict() {
     sqlx::query("UPDATE _sync_ctl SET value='0' WHERE key='applying'").execute(&replica).await.unwrap();
 
     assert!(report["conflicts"].as_array().unwrap().is_empty(), "clean row: host wins, no conflict");
-    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&replica).await.unwrap();
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE id=?").bind(tid).fetch_one(&replica).await.unwrap();
     assert_eq!(status, "Done", "clean local row overwritten by host");
 }

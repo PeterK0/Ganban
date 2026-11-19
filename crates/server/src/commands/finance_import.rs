@@ -48,9 +48,10 @@ fn file_bytes(a: &Args<'_>) -> Result<Vec<u8>, AppError> {
 }
 
 pub(super) const COMMANDS: &[Command] = &[
-    command("fin_list_profiles").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(pipeline::list_profiles(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_list_profiles")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(pipeline::list_profiles(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_save_profile").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(pipeline::save_profile(cx.db, &entity(cx, a).await?, a.input()?).await?) })
     }),
@@ -77,10 +78,16 @@ pub(super) const COMMANDS: &[Command] = &[
             let profile_key = a.req_str("profileKey")?;
             pipeline::check_request(cx.db, &ent, &profile_key, &account_map).await?;
             let file_name = a.opt_str("fileName").unwrap_or_default();
+            // Old lines file themselves: the user's setting (on, at 90 days, by default) unless
+            // the call says otherwise; 0 turns it off for this import.
             let post_older_than_days = match a.opt_i64("postOlderThanDays") {
-                None => None,
+                None => {
+                    let set = reminder::get_settings(cx.db, &ent).await?.import;
+                    set.post_older.then_some(set.post_older_days)
+                }
+                Some(0) => None,
                 Some(d) if (1..=i64::from(reminder::MAX_POST_OLDER_DAYS)).contains(&d) => Some(d as u32),
-                Some(_) => return Err(AppError::InvalidInput("'postOlderThanDays' is 1 to 3650".into())),
+                Some(_) => return Err(AppError::InvalidInput("'postOlderThanDays' is 0 to 3650".into())),
             };
             let req = jobs::ImportRequest { file_name, bytes, profile_key, account_map, post_older_than_days };
             reply(jobs::start(cx.db, &ent, req)?)
@@ -96,6 +103,12 @@ pub(super) const COMMANDS: &[Command] = &[
             reply(jobs::status(cx.db, &entity(cx, a).await?, job_id)?)
         })
     }),
+    // The caller's imports a host restart cut short, for the Import screen to say so; the
+    // next import finishes them.
+    command("fin_interrupted_imports")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(jobs::interrupted(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_list_pairs").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             let status = a.opt_str("status").filter(|s| !s.is_empty());
@@ -115,18 +128,20 @@ pub(super) const COMMANDS: &[Command] = &[
             reply(pairing::resolve_pairs(cx.db, &entity(cx, a).await?, &ids, accept).await?)
         })
     }),
-    command("fin_rescore_pairs").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(pairing::rescore_pairs(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_rescore_pairs")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(pairing::rescore_pairs(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_pair_entries").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             let (x, y) = (a.req_i64("entryA")?, a.req_i64("entryB")?);
             reply(pairing::pair_entries(cx.db, &entity(cx, a).await?, x, y).await?)
         })
     }),
-    command("fin_list_rules").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(rules::list_rules(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_list_rules")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(rules::list_rules(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_create_rule").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(rules::create_rule(cx.db, &entity(cx, a).await?, a.input()?).await?) })
     }),
@@ -164,7 +179,7 @@ mod tests {
     #[test]
     fn every_import_command_is_the_callers_own() {
         let names: Vec<&str> = super::COMMANDS.iter().map(|c| c.name).collect();
-        assert_eq!(names.len(), 17, "{names:?}");
+        assert_eq!(names.len(), 18, "{names:?}");
         for c in super::COMMANDS {
             assert!(c.name.starts_with("fin_"));
             assert!(matches!(c.access, Some(Access::OwnFinance)), "{} must use OwnFinance", c.name);
@@ -177,9 +192,9 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(s)
     }
 
-    const FILE: &str = "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n\
-        Card Payment,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,COMPLETED,980.00\n\
-        Transfer,Current,2026-10-02 09:00:00,2026-10-02 09:00:00,To EUR Holiday,-50.00,0.00,EUR,COMPLETED,930.00\n";
+    const FILE: &str = "Kind,Account,Time,Booked,Text,Amount,Fee,Currency,Balance,Other,Fx\n\
+        card,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,980.00,,\n\
+        transfer,Current,2026-10-02 09:00:00,2026-10-02 09:00:00,To EUR Holiday,-50.00,0.00,EUR,930.00,Holiday,\n";
 
     fn id(v: &Value) -> i64 {
         v["id"].as_i64().unwrap()
@@ -203,16 +218,18 @@ mod tests {
     async fn preview_then_import_over_the_table() {
         let db = test_db("fin_import_flow").await;
         let mia = member(&db, 7, &[]).await;
-        let p = http(&db, mia, "fin_preview_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE) })).await.unwrap();
-        assert_eq!((p["format"].as_str(), p["profile_key"].as_str()), (Some("csv"), Some("revolut")));
+        let p = http(&db, mia, "fin_preview_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE) }))
+            .await
+            .unwrap();
+        assert_eq!((p["format"].as_str(), p["profile_key"].as_str()), (Some("csv"), Some("sample")));
         assert_eq!(p["rows"][0]["amount_minor"], -2000);
-        assert_eq!(p["accounts"][0]["guess_key"], "revolut:current:EUR");
+        assert_eq!(p["accounts"][0]["guess_key"], "sample:current:EUR");
         assert!(p["sample"].as_array().unwrap().len() >= 3);
 
-        let args = json!({ "fileName": "s.csv", "contentBase64": format!("data:text/csv;base64,{}", b64(FILE)), "profileKey": "revolut",
+        let args = json!({ "fileName": "s.csv", "contentBase64": format!("data:text/csv;base64,{}", b64(FILE)), "profileKey": "sample",
             "accountMap": {
-                "revolut:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } },
-                "revolut:pocket:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } }
+                "sample:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } },
+                "sample:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } }
             } });
         let r = import(&db, mia, args).await;
         assert_eq!((r["created"].as_i64(), r["paired"].as_i64(), r["review"].as_i64()), (Some(2), Some(1), Some(0)));
@@ -224,16 +241,21 @@ mod tests {
         // The same file again adds nothing.
         let accounts = http(&db, mia, "fin_list_accounts", json!({})).await.unwrap();
         let by_name = |n: &str| accounts.as_array().unwrap().iter().find(|a| a["name"] == n).map(id).unwrap();
-        let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
-            "accountMap": { "revolut:current:EUR": by_name("Everyday"), "revolut:pocket:holiday:EUR": by_name("Holiday") } });
+        let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+            "accountMap": { "sample:current:EUR": by_name("Everyday"), "sample:holiday:EUR": by_name("Holiday") } });
         let r = import(&db, mia, again).await;
         assert_eq!((r["created"].as_i64(), r["duplicates"].as_i64()), (Some(0), Some(2)));
 
         // Rules over the table.
         let chart = http(&db, mia, "fin_list_ledger_accounts", json!({})).await.unwrap();
         let groceries = chart.as_array().unwrap().iter().find(|a| a["name"] == "Groceries").map(id).unwrap();
-        let rule = http(&db, mia, "fin_create_rule", json!({ "input": {
-            "conditions": { "text": "market" }, "action": { "ledgerAccountId": groceries } } }))
+        let rule = http(
+            &db,
+            mia,
+            "fin_create_rule",
+            json!({ "input": {
+            "conditions": { "text": "market" }, "action": { "ledgerAccountId": groceries } } }),
+        )
         .await
         .unwrap();
         assert_eq!(rule["conditions"]["text"], "market");
@@ -248,17 +270,31 @@ mod tests {
         let mia = member(&db, 7, &[]).await;
         let ana = member(&db, 8, &[]).await;
         let owner = owner(&db).await;
-        let hers = http(&db, ana, "fin_create_account", json!({ "input": { "kind": "current", "name": "Ana", "currency": "EUR" } }))
-            .await
-            .unwrap();
+        let hers = http(
+            &db,
+            ana,
+            "fin_create_account",
+            json!({ "input": { "kind": "current", "name": "Ana", "currency": "EUR" } }),
+        )
+        .await
+        .unwrap();
         let chart = http(&db, ana, "fin_list_ledger_accounts", json!({})).await.unwrap();
         let groceries = chart.as_array().unwrap().iter().find(|a| a["name"] == "Groceries").map(id).unwrap();
-        let rule = http(&db, ana, "fin_create_rule", json!({ "input": { "conditions": { "text": "x" }, "action": { "ledgerAccountId": groceries } } }))
-            .await
-            .unwrap();
-        import(&db, ana, json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
-            "accountMap": { "revolut:current:EUR": id(&hers),
-                "revolut:pocket:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } } } }))
+        let rule = http(
+            &db,
+            ana,
+            "fin_create_rule",
+            json!({ "input": { "conditions": { "text": "x" }, "action": { "ledgerAccountId": groceries } } }),
+        )
+        .await
+        .unwrap();
+        import(
+            &db,
+            ana,
+            json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+            "accountMap": { "sample:current:EUR": id(&hers),
+                "sample:holiday:EUR": { "create": { "kind": "savings", "name": "Holiday", "currency": "EUR" } } } }),
+        )
         .await;
         let pair = id(&http(&db, ana, "fin_list_pairs", json!({})).await.unwrap()[0]);
         let entries = http(&db, ana, "fin_list_entries", json!({})).await.unwrap();
@@ -266,15 +302,24 @@ mod tests {
 
         for user in [mia, owner] {
             for (name, args) in [
-                ("fin_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
-                    "accountMap": { "revolut:current:EUR": id(&hers) } })),
+                (
+                    "fin_import",
+                    json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+                    "accountMap": { "sample:current:EUR": id(&hers) } }),
+                ),
                 ("fin_resolve_pair", json!({ "pairId": pair, "accept": false })),
                 ("fin_pair_entries", json!({ "entryA": entry, "entryB": entry + 1 })),
-                ("fin_update_rule", json!({ "ruleId": id(&rule), "input": { "conditions": { "text": "y" }, "action": { "ledgerAccountId": groceries } } })),
+                (
+                    "fin_update_rule",
+                    json!({ "ruleId": id(&rule), "input": { "conditions": { "text": "y" }, "action": { "ledgerAccountId": groceries } } }),
+                ),
                 ("fin_delete_rule", json!({ "ruleId": id(&rule) })),
                 ("fin_suggest_rule", json!({ "entryId": entry })),
                 ("fin_apply_rules", json!({ "entryIds": [entry] })),
-                ("fin_create_rule", json!({ "input": { "conditions": { "text": "y" }, "action": { "ledgerAccountId": groceries } } })),
+                (
+                    "fin_create_rule",
+                    json!({ "input": { "conditions": { "text": "y" }, "action": { "ledgerAccountId": groceries } } }),
+                ),
                 ("fin_delete_profile", json!({ "key": "anything" })),
             ] {
                 let err = http(&db, user, name, args).await.unwrap_err();
@@ -283,7 +328,8 @@ mod tests {
             assert_eq!(http(&db, user, "fin_list_pairs", json!({})).await.unwrap(), json!([]));
             assert_eq!(http(&db, user, "fin_list_rules", json!({})).await.unwrap(), json!([]));
             // A bulk resolve skips another user's pair; a re-score sees only the caller's.
-            let bulk = http(&db, user, "fin_resolve_pairs", json!({ "pairIds": [pair], "accept": false })).await.unwrap();
+            let bulk =
+                http(&db, user, "fin_resolve_pairs", json!({ "pairIds": [pair], "accept": false })).await.unwrap();
             assert_eq!((bulk["resolved"].as_i64(), bulk["skipped"].as_i64()), (Some(0), Some(1)));
             let re = http(&db, user, "fin_rescore_pairs", json!({})).await.unwrap();
             assert_eq!((re["confirmed"].as_i64(), re["review"].as_i64()), (Some(0), Some(0)));
@@ -298,8 +344,8 @@ mod tests {
         let mia = member(&db, 7, &[]).await;
         let ana = member(&db, 8, &[]).await;
         assert_eq!(http(&db, mia, "fin_import_status", json!({})).await.unwrap(), Value::Null);
-        let args = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
-            "accountMap": { "revolut:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } } } });
+        let args = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+            "accountMap": { "sample:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } } } });
         // The job answers at once; a second import waits for the first to finish.
         let job = http(&db, mia, "fin_import", args.clone()).await.unwrap();
         assert_eq!((job["state"].as_str(), job["file_name"].as_str()), (Some("running"), Some("s.csv")));
@@ -307,7 +353,10 @@ mod tests {
         assert!(err.to_string().contains("already running"), "{err}");
         // Another user can import alongside, and can't see Mia's job.
         assert_eq!(http(&db, ana, "fin_import_status", json!({})).await.unwrap(), Value::Null);
-        assert!(http(&db, ana, "fin_import_status", json!({ "jobId": job["job_id"] })).await.unwrap_err().is_not_found());
+        assert!(http(&db, ana, "fin_import_status", json!({ "jobId": job["job_id"] }))
+            .await
+            .unwrap_err()
+            .is_not_found());
         // Without an id, the status finds the latest job (a refreshed page).
         let mut st = http(&db, mia, "fin_import_status", json!({})).await.unwrap();
         while st["state"] == "running" {
@@ -315,19 +364,47 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             st = http(&db, mia, "fin_import_status", json!({})).await.unwrap();
         }
-        assert_eq!((st["state"].as_str(), st["stage"].as_str(), st["job_id"].as_u64()), (Some("done"), Some("done"), job["job_id"].as_u64()));
-        assert_eq!((st["result"]["created"].as_i64(), st["done"].as_i64(), st["total"].as_i64()), (Some(2), Some(2), Some(2)));
+        assert_eq!(
+            (st["state"].as_str(), st["stage"].as_str(), st["job_id"].as_u64()),
+            (Some("done"), Some("done"), job["job_id"].as_u64())
+        );
+        assert_eq!(
+            (st["result"]["created"].as_i64(), st["done"].as_i64(), st["total"].as_i64()),
+            (Some(2), Some(2), Some(2))
+        );
         assert!(st["finished_at"].is_string() && st["error"].is_null());
         // Done, the next import may start; a bad profile is refused before any job.
-        let err = http(&db, mia, "fin_import", json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "nope", "accountMap": {} }))
-            .await
-            .unwrap_err();
+        let err = http(
+            &db,
+            mia,
+            "fin_import",
+            json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "nope", "accountMap": {} }),
+        )
+        .await
+        .unwrap_err();
         assert!(err.is_not_found());
         let accounts = http(&db, mia, "fin_list_accounts", json!({})).await.unwrap();
-        let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "revolut",
-            "accountMap": { "revolut:current:EUR": id(&accounts[0]) } });
+        let again = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+            "accountMap": { "sample:current:EUR": id(&accounts[0]) } });
         let r = import(&db, mia, again).await;
         assert_eq!((r["created"].as_i64(), r["duplicates"].as_i64()), (Some(0), Some(2)));
+    }
+
+    #[tokio::test]
+    async fn an_import_cut_short_by_a_restart_is_listed_for_its_owner_only() {
+        let db = test_db("fin_import_cut").await;
+        let mia = member(&db, 7, &[]).await;
+        let ana = member(&db, 8, &[]).await;
+        let args = json!({ "fileName": "s.csv", "contentBase64": b64(FILE), "profileKey": "sample",
+            "accountMap": { "sample:current:EUR": { "create": { "kind": "current", "name": "Everyday", "currency": "EUR" } } } });
+        import(&db, mia, args).await;
+        assert_eq!(http(&db, mia, "fin_interrupted_imports", json!({})).await.unwrap(), json!([]));
+        // Stand for a host that restarted mid-import: the batch still says running.
+        sqlx::query("UPDATE fin_import_batches SET status = 'running'").execute(&db).await.unwrap();
+        assert_eq!(ganban_core::finance::import::jobs::mark_interrupted(&db).await.unwrap(), 1);
+        let cut = http(&db, mia, "fin_interrupted_imports", json!({})).await.unwrap();
+        assert_eq!((cut[0]["file_name"].as_str(), cut[0]["lines"].as_i64()), (Some("s.csv"), Some(2)));
+        assert_eq!(http(&db, ana, "fin_interrupted_imports", json!({})).await.unwrap(), json!([]));
     }
 
     #[tokio::test]
@@ -335,9 +412,13 @@ mod tests {
         let db = test_db("fin_import_size").await;
         let mia = member(&db, 7, &[]).await;
         let big = "a".repeat(ganban_core::finance::import::MAX_FILE_BYTES + 1);
-        let err = http(&db, mia, "fin_preview_import", json!({ "fileName": "x.csv", "contentBase64": b64(&big) })).await.unwrap_err();
+        let err = http(&db, mia, "fin_preview_import", json!({ "fileName": "x.csv", "contentBase64": b64(&big) }))
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), "Invalid input: file too large: export a shorter period");
-        let err = http(&db, mia, "fin_preview_import", json!({ "fileName": "x.csv", "contentBase64": "%%%" })).await.unwrap_err();
+        let err = http(&db, mia, "fin_preview_import", json!({ "fileName": "x.csv", "contentBase64": "%%%" }))
+            .await
+            .unwrap_err();
         assert!(err.is_invalid_input());
     }
 }

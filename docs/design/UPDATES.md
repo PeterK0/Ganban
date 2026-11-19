@@ -2,11 +2,14 @@
 
 ADR 0007 has the decision for host-built apps; ADR 0008 adds apps from GitHub Releases
 ([§ GitHub Releases](#github-releases-the-github-channel)); ADR 0011 lets each device choose between the two
-([§ The update source](#the-update-source-github-releases-or-this-server)). The choices (2026-11-02):
+([§ The update source](#the-update-source-github-releases-or-this-server)); ADR 0012 makes every update wait for the
+user and show its patch notes ([§ Patch notes](#patch-notes)). The choices (2026-11-02, 2026-11-11):
 - the host (a Mac) builds the clients during each host update, with the Android toolchain and Xcode tools installed;
-- an "Update the server" button for the owner;
-- the phone downloads in the app, then Android's install prompt;
-- the desktop downloads in the background, then "Restart to update".
+- an "Update the server" button for the owner, whose confirm shows what the update brings;
+- **nothing downloads or installs without the user's say-so, on any client** (ADR 0012). Checking is allowed;
+- the phone downloads in the app on **Update**, then Android's install prompt;
+- the desktop offers a newer version with its patch notes, downloads it on **Download and install**, then
+  **Restart to finish**.
 
 ## The interface (fixed, so the three lanes can run in parallel)
 
@@ -33,21 +36,29 @@ ADR 0007 has the decision for host-built apps; ADR 0008 adds apps from GitHub Re
   - `android/`: the APK and a `manifest.json`.
 - **`get_client_builds`** (any member) returns:
   ```
-  { desktop: { version, target, arch, pubDate, size, pubkey } | null,
-    android: { version, versionCode, pubDate, size, sha256, certSha256 } | null }
+  { desktop: { version, target, arch, pubDate, size, pubkey, notes, releasedVersion } | null,
+    android: { version, versionCode, pubDate, size, sha256, certSha256, notes, releasedVersion } | null }
   ```
+  `notes` is the build's patch notes (markdown: `CHANGELOG.md`'s `## [Unreleased]` and last release's sections) and
+  `releasedVersion` the release it follows; both `null` on a build made without them (§ Patch notes).
   `pubkey` is the updater public key the desktop build is signed for (its manifest's, else
   `<APP_DIR>/keys/updater.key.pub`); `certSha256` is the APK's signing certificate, 64 lowercase hex digits. Either
   is `null` when the host doesn't know it. They make the host an update source a device can choose (§ The update
   source). Paired devices only: it's a command in the command table, behind the device token.
 - **`GET /updates/desktop/:target/:arch/:current_version`** answers the Tauri updater:
-  - with `200 {version, notes, pub_date, url, signature}` when the build is newer, otherwise `204`;
+  - with `200 {version, notes, pub_date, url, signature}` when the build is newer, otherwise `204`; `notes` is the
+    manifest's patch notes, else "Ganban <version>, built on the host.";
   - `url` is absolute, pointing at `/updates/desktop/:target/:arch/bundle` on the same host.
 - **`GET /updates/desktop/:target/:arch/bundle`** and **`GET /updates/android/apk`** stream from disk with Range.
 - **Auth:** all three routes accept a device token in `Authorization: Bearer`, or `?token=` (as the existing
   download routes do). Loopback is the owner.
 - **`start_host_update`** (owner only) starts `ops/update.sh` as its own launchd job (`com.ganban.updater`, installed
   by `ops/install.sh`), so the server's restart doesn't kill it. It refuses while one is running.
+- **`preview_host_update`** (owner only) says what an update would bring, for the confirm: it runs `git fetch`
+  (15 s at most, never a pull) in the host's checkout (`GANBAN_REPO`, else the server's working directory) and
+  returns `{ known, why, behind, changelog: { current, incoming } }`: the commits the checkout is behind its upstream,
+  and both `CHANGELOG.md`s, which the client diffs by entry. `known: false` with a one-line `why` when it can't tell
+  (offline, not a git checkout, no upstream, an update running). Its git arguments are fixed: no input reaches git.
 - **`get_host_update_status`** (owner only) returns:
   ```
   { state: "idle" | "running" | "succeeded" | "failed", step, startedAt, finishedAt, fromBuild, toBuild,
@@ -74,9 +85,17 @@ the updater key, and the Android APK with the release keystore.
   `--config` override). Every build also carries the project's (`src-tauri/updater/github.pub`, compiled in), for
   GitHub Releases. The check picks the key per source (§ The update source). A dev build (no channel, no key) has no
   updater, and says so in Settings.
-- **When it checks:** at launch, every 6 hours, and when Settings → Updates opens. It downloads in the background,
-  then a quiet notice in the top bar says "Update ready: Restart". Settings → Updates shows the version, the host's
-  build and the state.
+- **When it checks:** at launch, every 6 hours, and when Settings → Updates opens. A check never downloads.
+- **The offer** (ADR 0012): a newer version becomes the `available` state, and a quiet notice in the top bar says
+  "Ganban 1.0.12 is available" (`src/components/UpdateNotice.tsx`). It opens a dialog titled with the version, with
+  its patch notes (the entries this build doesn't carry) and **Download and install**, **Later** (hidden until the
+  next launch, in memory) and **Skip this version** (`ganban.updates.skip` in `localStorage`: hidden until a newer
+  version; Settings → Updates still shows it, with **Update to 1.0.12…**). Only **Download and install** calls
+  `update_download`. Downloaded and verified: **Restart to finish** or **Later**. The driver is `createUpdateFlow` in
+  `src/lib/update.pure.ts` (`check` and `download`), wired to Tauri in `src/lib/update.ts`; `npm run test:update`
+  fails if a check alone downloads. The webview has no permission for the updater plugin's own commands, and the
+  plugin's configuration (`prepare_config`) sets only the key and plain http.
+- Settings → Updates shows the version, the host's build, the state and the patch notes.
 - **Settings → Updates** also gets the owner's **Update the server** button: a confirm, then a live log (polling
   `get_host_update_status` every 2 s), the step, the result, and each client's line. It survives the host's
   restart: it keeps polling through connection errors for up to 3 minutes. The status also says which clients the
@@ -136,8 +155,8 @@ channel counts as `host` (host builds from before channels). Host builds also ge
 ### The desktop app
 
 On GitHub Releases, `update_check` ignores the host and token and asks
-`https://github.com/<repo>/releases/latest/download/latest.json`, with the project key. The 6-hourly check, the
-background download and **Update ready · Restart** are unchanged.
+`https://github.com/<repo>/releases/latest/download/latest.json`, with the project key. Its `notes` are the
+version's patch notes. The checks and the offer are the host channel's.
 
 A build a distribution package installed doesn't update itself: its package manager does. The package writes the
 manager's name into `<prefix>/share/ganban/package-manager` beside `<prefix>/bin/gansty` (the Arch `ganban-bin`
@@ -165,8 +184,8 @@ timer.
 ADR 0011 has the decision. **Updates from** in Settings → Updates (desktop) and Settings → App update (Android) is a
 dropdown: **GitHub Releases** (`owner/name`) and **This server** (the paired host). Under it, each source's latest
 version when known, the server key's id (desktop), and the reason when a source can't be chosen; such a source's
-option is disabled. Switching checks that source at once and offers its update: the desktop downloads it and shows
-**Restart to update**; the phone shows **Update**, then Android's prompt. The browser shows no dropdown: it doesn't
+option is disabled. Switching checks that source at once and offers its update: the desktop shows its offer
+(**Download and install**, then **Restart to finish**); the phone shows **Update**, then Android's prompt. The browser shows no dropdown: it doesn't
 update itself.
 
 - **Stored on the device:** `ganban.updates.source` (`github` or `host`) in `localStorage`. Unset, it's the build's
@@ -207,3 +226,32 @@ update itself.
   an unknown one names what's missing.
 - Both sources compare **version codes** (§ Versions). A smaller one says the source's build is older and that
   Android can't go back; its next build installs over this one.
+
+## Patch notes
+
+ADR 0012 has the decision. **Patch notes** are what each version fixed and added, read from `CHANGELOG.md` (Keep a
+Changelog: `## [version] - date`, `### Added / Changed / Fixed / Security`, bullets with a bold lead) by one parser,
+`src/lib/patchNotes.pure.ts` (`npm run test:patchnotes`). An entry's id is a hash of its text, so the same bullet
+under Unreleased and, later, under its release is the same entry.
+
+| Where | What it carries | Made by |
+|---|---|---|
+| Every build | the whole `CHANGELOG.md`, bundled (`src/lib/patchNotes.ts`), offline | Vite (`?raw` import) |
+| `dist/patch-notes.json` | the same, parsed; served `no-cache` beside `build.json` | `vite.config.ts` |
+| A GitHub release | the version's section: the release body (before the install text) and `latest.json`'s `notes` | `release.yml`, `scripts/patch-notes.mjs release <version>` |
+| A host build | `## [Unreleased]` and the last release's section, in each `manifest.json` (`notes`, `releasedVersion`) | `ops/build-clients.sh`, `scripts/patch-notes.mjs host` |
+
+- **The release workflow** fails in `prepare`, before any build, when `CHANGELOG.md` has no section for the tag's
+  version or an empty one. `scripts/updater-json.mjs --notes-file` puts the notes into `latest.json`.
+- **`ops/build-clients.sh`** runs on the owner's production host, so the notes never fail or slow a build: the script
+  prints nothing on any problem, and the manifest is written without them (`npm run test:ops`).
+- **In the offer**, before the user accepts: the desktop dialog (`latest.json`'s or the host endpoint's `notes`),
+  Android's banner (**See what changed**: the release body or the host manifest's `notes`) and the browser's "A newer
+  Ganban is on the host" (**See what changed**: the new build's `/patch-notes.json`). Each shows the entries the
+  running build doesn't carry, else all of the offered notes.
+- **Once after updating:** a quiet **What's new** (the desktop's top bar; above a phone's tab bar) opens the releases
+  with new entries, those marked **New**, and is dismissed for good either way. "New" is by entry: the device keeps
+  the ids it has seen (`ganban.patchNotes.seen`, `localStorage`). With no record, it's a first install, which records
+  them all and shows nothing.
+- **Always:** Settings → Updates → Patch notes (a phone: Settings → Patch notes), the whole history with this build's
+  release (its first with entries: Unreleased on a host build) marked **This version**.

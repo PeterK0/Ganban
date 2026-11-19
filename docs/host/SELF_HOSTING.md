@@ -442,10 +442,12 @@ that the host's checkout pulls from the right remote (`git remote -v`).
 ### Client builds
 
 Once the new server is healthy, `ops/update.sh` builds the client apps from the same commit
-(`ops/build-clients.sh`), and the apps update themselves from your host:
+(`ops/build-clients.sh`), and the apps offer the update from your host, with its patch notes (each manifest carries
+`CHANGELOG.md`'s Unreleased section and the last release's):
 
 - **The desktop app** for this Mac, signed with the updater key. Desktop apps check the host at launch, every 6 hours
-  and from Settings → Updates, download in the background, and offer "Restart to update". `GANBAN_CLIENT_FULL=1` adds
+  and from Settings → Updates, and offer the new version; it downloads on "Download and install", then "Restart to
+  finish". `GANBAN_CLIENT_FULL=1` adds
   the engine bundle.
 - **The Android APK** (arm64), signed with your release keystore. The phone offers "Update available", then Android's
   install prompt.

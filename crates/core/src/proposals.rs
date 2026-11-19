@@ -213,9 +213,7 @@ pub async fn reinsert(db: &Db, p: &PendingProposal) -> Result<()> {
 /// Per-project approval policy (prerequisite 3). Rejects unknown values.
 pub async fn set_approval_policy(db: &Db, project_id: i64, policy: &str) -> Result<()> {
     if !matches!(policy, "proposer" | "owner") {
-        return Err(AppError::InvalidInput(format!(
-            "unknown approval policy '{policy}' (proposer|owner)"
-        )));
+        return Err(AppError::InvalidInput(format!("unknown approval policy '{policy}' (proposer|owner)")));
     }
     sqlx::query("UPDATE projects SET approval_policy = ? WHERE id = ?")
         .bind(policy)
@@ -247,7 +245,10 @@ mod tests {
     }
 
     async fn project(db: &Db, name: &str) -> i64 {
-        ops::create_project(db, crate::models::CreateProjectInput { name: name.into(), description: None }).await.unwrap().id
+        ops::create_project(db, crate::models::CreateProjectInput { name: name.into(), description: None })
+            .await
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
@@ -277,7 +278,9 @@ mod tests {
     async fn approval_policy_gates_who_resolves() {
         let db = test_db("policy").await;
         let pid = project(&db, "P").await;
-        let id = register(&db, pid, 2, None, 1, "create_task", &Value::Null, "s", &Value::Null, Some("agent")).await.unwrap();
+        let id = register(&db, pid, 2, None, 1, "create_task", &Value::Null, "s", &Value::Null, Some("agent"))
+            .await
+            .unwrap();
 
         // Default 'proposer': the proposer resolves; the owner does NOT.
         assert!(may_resolve(&db, id, 2, false).await.unwrap());

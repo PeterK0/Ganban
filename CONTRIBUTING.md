@@ -28,6 +28,7 @@ Run what covers your change ([docs/dev/TESTING.md](docs/dev/TESTING.md) lists ev
 ```bash
 npx tsc --noEmit -p .
 npx vite build
+cargo fmt --all                               # when you touched Rust (CI checks it)
 cargo test -p ganban-core -p ganban-server    # when you touched Rust
 npm run test:<suite>                          # for the code you touched
 npm run test:doclinks                         # when you touched docs

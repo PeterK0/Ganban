@@ -44,18 +44,29 @@ impl RagConfig {
     /// Staging/out/poll are filesystem/operational defaults (env-overridable, not
     /// user-facing) — shared by both the env and DB connection sources.
     fn build(base_url: String, token: Option<String>) -> RagConfig {
-        let home = dirs::data_dir().map(|d| d.join("com.scs.gansty").join("rag")).unwrap_or_else(|| PathBuf::from("ganban-rag"));
+        let home = dirs::data_dir()
+            .map(|d| d.join("com.scs.gansty").join("rag"))
+            .unwrap_or_else(|| PathBuf::from("ganban-rag"));
         RagConfig {
             base_url,
             token,
             staging: std::env::var("GANBAN_RAGRAT_STAGING").map(PathBuf::from).unwrap_or_else(|_| home.join("staging")),
-            out_root: std::env::var("GANBAN_RAGRAT_OUT").map(PathBuf::from).unwrap_or_else(|_| home.join("collections")),
-            poll_secs: std::env::var("GANBAN_RAGRAT_POLL_SECS").ok().and_then(|s| s.parse().ok()).filter(|n| *n >= 30).unwrap_or(900),
+            out_root: std::env::var("GANBAN_RAGRAT_OUT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home.join("collections")),
+            poll_secs: std::env::var("GANBAN_RAGRAT_POLL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n >= 30)
+                .unwrap_or(900),
         }
     }
 
     pub fn from_env() -> Option<RagConfig> {
-        let base_url = std::env::var("GANBAN_RAGRAT_URL").ok().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())?;
+        let base_url = std::env::var("GANBAN_RAGRAT_URL")
+            .ok()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())?;
         let token = std::env::var("GANBAN_RAGRAT_TOKEN").ok().filter(|s| !s.is_empty());
         Some(Self::build(base_url, token))
     }
@@ -101,7 +112,8 @@ fn sse_json(body: &str) -> Option<Value> {
 const MCP_TOOLS_TTL: Duration = Duration::from_secs(60);
 
 /// MCP tool lists by mount URL, with when they were fetched.
-type McpToolsCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<Value>)>>>;
+type McpToolsCache =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<Value>)>>>;
 
 /// HTTP client for the ragrat control plane (search + ingest).
 #[derive(Clone)]
@@ -115,10 +127,7 @@ pub struct RagClient {
 
 impl RagClient {
     pub fn new(cfg: RagConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap_or_default();
         Self { http, cfg, mcp_tools_cache: Default::default() }
     }
 
@@ -149,10 +158,7 @@ impl RagClient {
     /// read from the shared disk like facets. `{}` when never ingested.
     pub fn read_manifest(&self, collection: &str) -> Value {
         let path = self.cfg.out_root.join(collection).join("manifest.json");
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| json!({}))
+        std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
     }
 
     /// The last run's human-readable audit report, if any.
@@ -165,14 +171,7 @@ impl RagClient {
     /// engine" section — so the MCP surface ragrat creates is visible, not a
     /// black box. None when unreachable.
     pub async fn status(&self) -> Option<Value> {
-        self.req(reqwest::Method::GET, "/status")
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await
-            .ok()?
-            .json()
-            .await
-            .ok()
+        self.req(reqwest::Method::GET, "/status").timeout(Duration::from_secs(3)).send().await.ok()?.json().await.ok()
     }
 
     /// The tools ragrat publishes on an MCP mount (e.g. "/mcp/"), via a minimal
@@ -206,7 +205,8 @@ impl RagClient {
     pub async fn mcp_call(&self, mount: &str, tool: &str, args: &Value) -> Result<String, String> {
         let url = format!("{}{}", self.cfg.base_url, mount);
         let sid = self.mcp_session(&url).await.ok_or("could not open an MCP session with the engine")?;
-        let call = json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": tool, "arguments": args } });
+        let call =
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": tool, "arguments": args } });
         let body = self
             .mcp_post(&url, &call, Some(&sid))
             .await
@@ -316,10 +316,7 @@ impl RagClient {
     /// read, not an HTTP call. Missing/unreadable (e.g. never ingested) = `{}`.
     pub fn read_facets(&self, collection: &str) -> Value {
         let path = self.cfg.out_root.join(collection).join("facets.json");
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| json!({}))
+        std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
     }
 
     /// Enqueue an ingest of a staged folder into a collection (async on ragrat;
@@ -385,11 +382,8 @@ impl RagClient {
 
     /// One job WITH its live log trail (`GET /jobs/:id`; the list stays light).
     pub async fn get_job(&self, job_id: &str) -> Result<Value, String> {
-        let resp = self
-            .req(reqwest::Method::GET, &format!("/jobs/{job_id}"))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let resp =
+            self.req(reqwest::Method::GET, &format!("/jobs/{job_id}")).send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("ragrat {}: job not found", resp.status()));
         }
@@ -447,11 +441,8 @@ impl RagClient {
 /// (stamped by reindex_project) or the `ganban-<id>` collection name.
 pub fn job_project_id(job: &Value) -> Option<i64> {
     let params = job.get("params")?;
-    if let Some(p) = params
-        .get("tags")
-        .and_then(|t| t.get("project"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<i64>().ok())
+    if let Some(p) =
+        params.get("tags").and_then(|t| t.get("project")).and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok())
     {
         return Some(p);
     }
@@ -529,7 +520,8 @@ pub async fn retain_visible_hits(
         .fetch_all(db)
         .await
         .map_err(|e| e.to_string())?;
-    let seen_uuids: HashSet<String> = tasks.into_iter().filter(|(id, _)| seen.contains(id)).filter_map(|(_, u)| u).collect();
+    let seen_uuids: HashSet<String> =
+        tasks.into_iter().filter(|(id, _)| seen.contains(id)).filter_map(|(_, u)| u).collect();
     let attachments: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT fa.id, fa.task_id FROM file_attachments fa JOIN tasks t ON t.id = fa.task_id WHERE t.project_id = ?",
     )
@@ -537,7 +529,8 @@ pub async fn retain_visible_hits(
     .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
-    let seen_attachments: HashSet<i64> = attachments.into_iter().filter(|(_, t)| seen.contains(t)).map(|(a, _)| a).collect();
+    let seen_attachments: HashSet<i64> =
+        attachments.into_iter().filter(|(_, t)| seen.contains(t)).map(|(a, _)| a).collect();
     let areas: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM areas WHERE project_id = ?")
         .bind(project_id)
         .fetch_all(db)
@@ -549,8 +542,10 @@ pub async fn retain_visible_hits(
         .filter(|(id, _)| !shown_areas.contains(id))
         .map(|(_, name)| format!("area-{}.md", staged_blob_name(0, &name)))
         .collect();
-    let mut seen_events: HashSet<i64> = ganban_core::auth::accessible_event_ids(db, viewer.user_id).await.map_err(err)?.into_iter().collect();
-    let task_events: Vec<(i64, i64)> = sqlx::query_as("SELECT event_id, task_id FROM event_tasks").fetch_all(db).await.map_err(|e| e.to_string())?;
+    let mut seen_events: HashSet<i64> =
+        ganban_core::auth::accessible_event_ids(db, viewer.user_id).await.map_err(err)?.into_iter().collect();
+    let task_events: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT event_id, task_id FROM event_tasks").fetch_all(db).await.map_err(|e| e.to_string())?;
     seen_events.extend(task_events.into_iter().filter(|(_, t)| seen.contains(t)).map(|(e, _)| e));
 
     hits.retain(|h| {
@@ -578,7 +573,12 @@ pub async fn retain_visible_hits(
 /// Rebuild a project's staging folder from current rows + shared blobs. The
 /// folder is recreated from scratch, so deleted entities drop out of the corpus
 /// on the next ingest.
-pub async fn materialize_project(db: &Db, cfg: &RagConfig, storage_root: &Path, project_id: i64) -> Result<PathBuf, String> {
+pub async fn materialize_project(
+    db: &Db,
+    cfg: &RagConfig,
+    storage_root: &Path,
+    project_id: i64,
+) -> Result<PathBuf, String> {
     materialize_with_guard(db, cfg, storage_root, project_id, ganban_core::storage::ai_max_file_bytes()).await
 }
 
@@ -626,10 +626,11 @@ async fn materialize_with_guard(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     // Project overview.
-    if let Ok(Some((name, desc))) = sqlx::query_as::<_, (String, Option<String>)>("SELECT name, description FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
+    if let Ok(Some((name, desc))) =
+        sqlx::query_as::<_, (String, Option<String>)>("SELECT name, description FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_optional(db)
+            .await
     {
         let mut md = format!("# Project: {name}\n\n");
         if let Some(d) = desc.filter(|s| !s.trim().is_empty()) {
@@ -654,7 +655,9 @@ async fn materialize_with_guard(
         }
         let _ = std::fs::write(dir.join(format!("area-{}.md", staged_blob_name(0, name))), md);
     }
-    let area_name = |id: Option<i64>| -> Option<String> { id.and_then(|i| areas.iter().find(|(aid, _, _)| *aid == i).map(|(_, n, _)| n.clone())) };
+    let area_name = |id: Option<i64>| -> Option<String> {
+        id.and_then(|i| areas.iter().find(|(aid, _, _)| *aid == i).map(|(_, n, _)| n.clone()))
+    };
 
     // Tasks (skip binned: tasks soft-delete via `archived`, not deleted_at) + comments.
     let tasks: Vec<(i64, String, String, Option<String>, String, String, Option<i64>)> = sqlx::query_as(
@@ -798,9 +801,8 @@ pub async fn write_embedding_toml(db: &Db, dir: &Path) -> Result<bool, String> {
     ) else {
         return Ok(false);
     };
-    let mut toml = format!(
-        "[embedding]\nenabled = true\nendpoint = \"{endpoint}\"\nmodel = \"{model}\"\ndimensions = {dims}\n"
-    );
+    let mut toml =
+        format!("[embedding]\nenabled = true\nendpoint = \"{endpoint}\"\nmodel = \"{model}\"\ndimensions = {dims}\n");
     // Figure description ([enrichment]): when the owner configured a vision
     // model, every ingest describes in-document charts/maps/diagrams so they
     // index as text instead of `<!-- image -->` dead zones. The endpoint is an
@@ -897,11 +899,7 @@ pub async fn reembed_all(db: &Db, client: &RagClient, storage_root: &Path) -> Re
 /// project's collection from ragrat (quantified — the route reports freed bytes),
 /// so "off" means off on disk too.
 pub async fn ai_files_enabled(db: &Db, project_id: i64) -> bool {
-    ganban_core::ops::get_app_setting(db, &format!("rag_files_enabled_{project_id}"))
-        .await
-        .ok()
-        .flatten()
-        .as_deref()
+    ganban_core::ops::get_app_setting(db, &format!("rag_files_enabled_{project_id}")).await.ok().flatten().as_deref()
         == Some("1")
 }
 
@@ -923,7 +921,12 @@ pub async fn embedding_configured(db: &Db) -> bool {
     endpoint.is_some() && model.is_some() && dims.is_some()
 }
 
-pub async fn reindex_project(db: &Db, client: &RagClient, storage_root: &Path, project_id: i64) -> Result<String, String> {
+pub async fn reindex_project(
+    db: &Db,
+    client: &RagClient,
+    storage_root: &Path,
+    project_id: i64,
+) -> Result<String, String> {
     if !ai_files_enabled(db, project_id).await {
         return Err("AI access to files is disabled for this project (Project Settings)".into());
     }
@@ -1083,19 +1086,42 @@ mod tests {
         let db = ganban_core::init_db(&path).await.unwrap();
         auth::ensure_owner(&db).await.unwrap();
         sqlx::query("INSERT INTO users (id, username, full_name) VALUES (7, 'bo', 'Bo')").execute(&db).await.unwrap();
-        let pid = ops::create_project(&db, models::CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
+        let pid = ops::create_project(&db, models::CreateProjectInput { name: "P".into(), description: None })
+            .await
+            .unwrap()
+            .id;
         auth::add_project_member(&db, pid, 7, auth::ROLE_MEMBER).await.unwrap();
-        let finance = ops::create_area(&db, models::CreateAreaInput { project_id: pid, name: "Finance plan".into(), description: None }).await.unwrap().id;
+        let finance = ops::create_area(
+            &db,
+            models::CreateAreaInput { project_id: pid, name: "Finance plan".into(), description: None },
+        )
+        .await
+        .unwrap()
+        .id;
         visibility::set_area_restricted(&db, finance, true).await.unwrap();
         let task = |title: &str, area: Option<i64>| models::CreateTaskInput {
-            project_id: pid, area_id: area, title: title.into(), description: None, status: "To Do".into(),
-            priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
+            project_id: pid,
+            area_id: area,
+            title: title.into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
         };
         let open = ops::create_task(&db, task("Open", None)).await.unwrap().id;
         let budget = ops::create_task(&db, task("Budget", Some(finance))).await.unwrap().id;
         let uuid = |t: i64| {
             let db = db.clone();
-            async move { sqlx::query_scalar::<_, String>("SELECT sync_uuid FROM tasks WHERE id = ?").bind(t).fetch_one(&db).await.unwrap() }
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT sync_uuid FROM tasks WHERE id = ?")
+                    .bind(t)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
         };
         let (open_uuid, budget_uuid) = (uuid(open).await, uuid(budget).await);
         let att = |t: i64| {
@@ -1147,12 +1173,23 @@ mod tests {
             out_root: base.join("out"),
             poll_secs: 900,
         };
-        let pid = ops::create_project(&db, models::CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
+        let pid = ops::create_project(&db, models::CreateProjectInput { name: "P".into(), description: None })
+            .await
+            .unwrap()
+            .id;
         let tid = ops::create_task(
             &db,
             models::CreateTaskInput {
-                project_id: pid, area_id: None, title: "t".into(), description: None, status: "To Do".into(),
-                priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
+                project_id: pid,
+                area_id: None,
+                title: "t".into(),
+                description: None,
+                status: "To Do".into(),
+                priority: "Low".into(),
+                prefix: None,
+                cost: None,
+                currency: None,
+                deadline: None,
             },
         )
         .await
@@ -1162,9 +1199,15 @@ mod tests {
             let (db, root) = (db.clone(), root.clone());
             async move { storage::store_project_file(&db, &root, pid, name, None, None, None, bytes).await.unwrap().id }
         };
-        let (left_out, notes, book, forced) = (pf("left-out.md", b"x").await, pf("notes.md", b"notes").await, pf("book.pdf", b"0123456789").await, pf("atlas.pdf", b"0123456789").await);
+        let (left_out, notes, book, forced) = (
+            pf("left-out.md", b"x").await,
+            pf("notes.md", b"notes").await,
+            pf("book.pdf", b"0123456789").await,
+            pf("atlas.pdf", b"0123456789").await,
+        );
         let att = storage::store_shared_bytes(&db, &root, tid, "brief.md", None, None, b"brief").await.unwrap().id;
-        let left_out_att = storage::store_shared_bytes(&db, &root, tid, "left-out.md", None, None, b"x").await.unwrap().id;
+        let left_out_att =
+            storage::store_shared_bytes(&db, &root, tid, "left-out.md", None, None, b"x").await.unwrap().id;
 
         let stamp_before = project_stamp(&db, pid).await.unwrap();
         storage::set_project_file_ai_included(&db, notes, true, false).await.unwrap();
@@ -1188,7 +1231,10 @@ mod tests {
             format!("pf-{}", staged_blob_name(forced, "atlas.pdf")),
         ];
         want.sort();
-        assert_eq!(staged, want, "left-out files ({left_out}, {left_out_att}) and the unforced big one ({book}) stay out");
+        assert_eq!(
+            staged, want,
+            "left-out files ({left_out}, {left_out_att}) and the unforced big one ({book}) stay out"
+        );
         assert_eq!(std::fs::read(dir.join(staged_blob_name(att, "brief.md"))).unwrap(), b"brief");
 
         // Leaving a file out again moves the stamp back toward the poller.
@@ -1202,9 +1248,13 @@ mod tests {
         let path = std::env::temp_dir().join(format!("ganban_ragcfg_{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let db = ganban_core::init_db(&path).await.unwrap();
-        ganban_core::ops::set_app_setting(&db, "ragrat_connection", r#"{"url":"http://127.0.0.1:8780/","token":"abc"}"#)
-            .await
-            .unwrap();
+        ganban_core::ops::set_app_setting(
+            &db,
+            "ragrat_connection",
+            r#"{"url":"http://127.0.0.1:8780/","token":"abc"}"#,
+        )
+        .await
+        .unwrap();
         let cfg = RagConfig::from_db(&db).await.expect("RAG enabled by the setting");
         assert_eq!(cfg.base_url, "http://127.0.0.1:8780", "url read + trimmed");
         assert_eq!(cfg.token.as_deref(), Some("abc"));
@@ -1238,9 +1288,7 @@ mod tests {
         assert!(!embedding_configured(&db).await);
 
         // Missing model → not usable.
-        ganban_core::ops::set_app_setting(&db, "rag_embedding", r#"{"endpoint":"x","dimensions":8}"#)
-            .await
-            .unwrap();
+        ganban_core::ops::set_app_setting(&db, "rag_embedding", r#"{"endpoint":"x","dimensions":8}"#).await.unwrap();
         assert!(!embedding_configured(&db).await);
 
         // Malformed JSON → not usable (never panics).

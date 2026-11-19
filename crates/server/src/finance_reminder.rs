@@ -67,13 +67,20 @@ mod tests {
         let mia = crate::commands::testkit::member(&db, 7, &[]).await;
         let ana = crate::commands::testkit::member(&db, 8, &[]).await;
         let _nobody = crate::commands::testkit::member(&db, 9, &[]).await;
-        let (e_mia, e_ana) = (finance::entity_for_user(&db, mia.id).await.unwrap(), finance::entity_for_user(&db, ana.id).await.unwrap());
+        let (e_mia, e_ana) = (
+            finance::entity_for_user(&db, mia.id).await.unwrap(),
+            finance::entity_for_user(&db, ana.id).await.unwrap(),
+        );
         // Both started Finance well before the week in question.
         sqlx::query("UPDATE fin_entities SET created_at = '2026-01-01T00:00:00+00:00'").execute(&db).await.unwrap();
-        finance::reminder::update_settings(&db, &e_ana, finance::reminder::SettingsPatch {
-            reminder: Some(finance::reminder::ReminderPatch { weekday: Some("Thu".into()), ..Default::default() }),
-            ..Default::default()
-        })
+        finance::reminder::update_settings(
+            &db,
+            &e_ana,
+            finance::reminder::SettingsPatch {
+                reminder: Some(finance::reminder::ReminderPatch { weekday: Some("Thu".into()), ..Default::default() }),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
         // The change counts from the real clock; this test's week is its own.
@@ -95,14 +102,21 @@ mod tests {
         assert_eq!((count(&db, mia.id).await, count(&db, ana.id).await), (2, 2));
         // Users without Finance get none; a user who turned it off gets none.
         assert_eq!(count(&db, 9).await, 0);
-        finance::reminder::update_settings(&db, &e_ana, finance::reminder::SettingsPatch {
-            reminder: Some(finance::reminder::ReminderPatch { enabled: Some(false), ..Default::default() }),
-            ..Default::default()
-        })
+        finance::reminder::update_settings(
+            &db,
+            &e_ana,
+            finance::reminder::SettingsPatch {
+                reminder: Some(finance::reminder::ReminderPatch { enabled: Some(false), ..Default::default() }),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
         assert_eq!(check(&db, at(16, 10)).await.unwrap(), 0);
-        let title: String = sqlx::query_scalar("SELECT title FROM notifications WHERE category = 'finance' LIMIT 1").fetch_one(&db).await.unwrap();
+        let title: String = sqlx::query_scalar("SELECT title FROM notifications WHERE category = 'finance' LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(title, finance::reminder::REMINDER_TITLE);
     }
 }

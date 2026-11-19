@@ -95,9 +95,17 @@ async fn run_librarian_tool(db: &Db, rag: &RagClient, name: &str, args: &Value) 
             Ok(cols.iter().map(|c| format!("- {} — {}\n", c.slug, c.name)).collect())
         }
         "search_atlas" => {
-            let slug = args.get("slug").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            let slug = args
+                .get("slug")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .ok_or_else(|| "slug (string) is required".to_string())?;
-            let query = args.get("query").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .ok_or_else(|| "query (string) is required".to_string())?;
             // Resolve through the registry — the librarian can never name a
             // project corpus, same rule as the member HTTP routes.
@@ -123,9 +131,17 @@ async fn run_librarian_tool(db: &Db, rag: &RagClient, name: &str, args: &Value) 
             Ok(cap(text, RESULT_CAP))
         }
         "read_atlas_document" => {
-            let slug = args.get("slug").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            let slug = args
+                .get("slug")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .ok_or_else(|| "slug (string) is required".to_string())?;
-            let source = args.get("source").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            let source = args
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .ok_or_else(|| "source (string) is required".to_string())?;
             let col = ops::get_atlas_collection_by_slug(db, slug)
                 .await
@@ -145,7 +161,9 @@ async fn fallback_message(db: &Db) -> String {
         Some(pid) => ops::get_model_profile(db, pid).await.ok().flatten().and_then(|p| p.fallback_note),
         None => None,
     };
-    note.unwrap_or_else(|| "the librarian's engine is unreachable right now — answering from the project corpus only".into())
+    note.unwrap_or_else(|| {
+        "the librarian's engine is unreachable right now — answering from the project corpus only".into()
+    })
 }
 
 /// Research `question` over the Atlas and return a cited digest. Errors are
@@ -161,10 +179,8 @@ pub async fn ask_atlas(
     let params = crate::resolve_task_params(db, "librarian", fallback_params).await;
     let client = OllamaClient::for_params(base_client, &params);
     let tools = librarian_tools();
-    let mut messages: Vec<Value> = vec![
-        json!({ "role": "system", "content": LIBRARIAN_SYSTEM }),
-        json!({ "role": "user", "content": question }),
-    ];
+    let mut messages: Vec<Value> =
+        vec![json!({ "role": "system", "content": LIBRARIAN_SYSTEM }), json!({ "role": "user", "content": question })];
 
     let timeout = std::time::Duration::from_secs(ROUND_TIMEOUT_SECS);
     let mut last_content = String::new();
@@ -173,7 +189,10 @@ pub async fn ask_atlas(
             Ok(Ok(t)) => t,
             Ok(Err(e)) if e.contains("unreachable") => {
                 // The remote box is asleep — an expected state, not an error.
-                return LibrarianAnswer { digest: format!("(librarian unavailable: {})", fallback_message(db).await), usage };
+                return LibrarianAnswer {
+                    digest: format!("(librarian unavailable: {})", fallback_message(db).await),
+                    usage,
+                };
             }
             _ => break, // timeout / other transport error → answer with what we have
         };

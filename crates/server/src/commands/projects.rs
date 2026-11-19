@@ -7,7 +7,9 @@ use super::{command, reply, Access, Author, Command, ResultFilter, Sees, Target,
 
 /// The area named by `areaId`; a restricted area is only its members' (and admins').
 pub(super) const AREA: Target = Target::arg("areaId", |db, id| {
-    Box::pin(async move { Ok(Some(auth::area_project_id(db, id).await?.ok_or_else(|| AppError::NotFound("area".into()))?)) })
+    Box::pin(
+        async move { Ok(Some(auth::area_project_id(db, id).await?.ok_or_else(|| AppError::NotFound("area".into()))?)) },
+    )
 })
 .seen_by(SEES_AREA);
 
@@ -23,23 +25,20 @@ pub(super) const COMMANDS: &[Command] = &[
     // A top-level project is a workspace-level action: members are invited to existing
     // projects, or they could spawn projects in the owner's workspace. Its creator becomes
     // the owner-member, so they can never lose sight of it.
-    command("create_project")
-        .access(Access::Owner)
-        .author(Author::Arg("createdBy"))
-        .run(|cx, a| {
-            Box::pin(async move {
-                // The owner is owner-member of every project. Over HTTP the owner is the
-                // stamped creator; in-process (the desktop in local mode) nobody is stamped,
-                // and a project without the owner would offer no one to assign.
-                let owner = auth::ensure_owner(cx.db).await?;
-                let project = ops::create_project(cx.db, a.input()?).await?;
-                auth::add_project_member(cx.db, project.id, owner, auth::ROLE_OWNER).await?;
-                if let Some(creator) = a.opt_author().filter(|&c| c != owner) {
-                    auth::add_project_member(cx.db, project.id, creator, auth::ROLE_OWNER).await?;
-                }
-                reply(project)
-            })
-        }),
+    command("create_project").access(Access::Owner).author(Author::Arg("createdBy")).run(|cx, a| {
+        Box::pin(async move {
+            // The owner is owner-member of every project. Over HTTP the owner is the
+            // stamped creator; in-process (the desktop in local mode) nobody is stamped,
+            // and a project without the owner would offer no one to assign.
+            let owner = auth::ensure_owner(cx.db).await?;
+            let project = ops::create_project(cx.db, a.input()?).await?;
+            auth::add_project_member(cx.db, project.id, owner, auth::ROLE_OWNER).await?;
+            if let Some(creator) = a.opt_author().filter(|&c| c != owner) {
+                auth::add_project_member(cx.db, project.id, creator, auth::ROLE_OWNER).await?;
+            }
+            reply(project)
+        })
+    }),
     command("update_project")
         .access(Access::Admin(PROJECT))
         .run(|cx, a| Box::pin(async move { reply(ops::update_project(cx.db, a.id(PROJECT)?, a.input()?).await?) })),
@@ -52,9 +51,9 @@ pub(super) const COMMANDS: &[Command] = &[
         .access(Access::Admin(PROJECT))
         .run(|cx, a| Box::pin(async move { reply(ops::delete_project(cx.db, a.id(PROJECT)?).await?) })),
     command("set_project_model_profile").access(Access::Admin(PROJECT)).run(|cx, a| {
-        Box::pin(async move {
-            reply(ops::set_project_model_profile(cx.db, a.id(PROJECT)?, a.opt_i64("profileId")).await?)
-        })
+        Box::pin(
+            async move { reply(ops::set_project_model_profile(cx.db, a.id(PROJECT)?, a.opt_i64("profileId")).await?) },
+        )
     }),
     // Counted over the tasks the caller can see (task visibility).
     command("get_project_stats").access(Access::Member(PROJECT)).run(|cx, a| {
@@ -66,7 +65,9 @@ pub(super) const COMMANDS: &[Command] = &[
     command("get_project_member_overview").access(Access::Member(PROJECT)).run(|cx, a| {
         Box::pin(async move {
             let pid = a.id(PROJECT)?;
-            reply(ops::get_project_member_overview_among(cx.db, pid, cx.visible_tasks(Some(pid)).await?.as_ref()).await?)
+            reply(
+                ops::get_project_member_overview_among(cx.db, pid, cx.visible_tasks(Some(pid)).await?.as_ref()).await?,
+            )
         })
     }),
     // ----- Areas -----
@@ -135,7 +136,10 @@ mod tests {
 
         let rename = json!({ "projectId": a, "input": { "name": "A2" } });
         assert!(http(&db, mia, "update_project", rename.clone()).await.unwrap_err().is_forbidden());
-        assert!(http(&db, mia, "archive_project", json!({ "projectId": a, "archived": true })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, mia, "archive_project", json!({ "projectId": a, "archived": true }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
         assert!(http(&db, mia, "delete_project", json!({ "projectId": a })).await.unwrap_err().is_forbidden());
         assert_eq!(http(&db, ana, "update_project", rename).await.unwrap()["name"], "A2");
         assert!(http(&db, ana, "delete_project", json!({ "projectId": b })).await.unwrap_err().is_not_found());
@@ -181,7 +185,10 @@ mod tests {
             .await
             .unwrap();
         let ana = member(&db, 8, &[(pid, "admin")]).await;
-        assert_eq!(member_ids(&seed(&db, "get_project_member_overview", json!({ "projectId": pid })).await), vec![ana.id]);
+        assert_eq!(
+            member_ids(&seed(&db, "get_project_member_overview", json!({ "projectId": pid })).await),
+            vec![ana.id]
+        );
 
         // Someone else's personal container stays theirs alone.
         let personal = ganban_core::ops::ensure_personal_project(&db, ana.id).await.unwrap();

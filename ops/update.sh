@@ -19,6 +19,8 @@
 # at a time: a "running" status whose process is gone (a crash) is cleared. The status is its very
 # first write, in plain shell, so a run that dies early (no install.env, node missing from the PATH)
 # still says where it stopped.
+# When `git pull` changes this script, the run re-executes the pulled copy (same pid, same status and log), so a
+# fix to the update itself applies to the update that pulled it; bash would otherwise go on running the old file.
 # Environment overrides, for tests: LAUNCHCTL, LSOF, GANBAN_APP_DIR, GANBAN_LOGS, GANBAN_HEALTH_WAIT.
 set -Eeuo pipefail
 
@@ -31,6 +33,12 @@ WAIT="${GANBAN_HEALTH_WAIT:-30}"
 DOMAIN="gui/$(id -u)"
 LABEL="com.ganban.server"
 DRY=0
+# Set by the run that re-executes the pulled copy: "STARTED|LOG_OFFSET|LAUNCHD_OFFSET|FROM".
+REEXEC="${GANBAN_UPDATE_REEXEC-}"
+unset GANBAN_UPDATE_REEXEC
+# Malformed (an empty field): run as a fresh update.
+case "$REEXEC" in "" | "|"* | *"||"* | *"|") REEXEC="" ;; esac
+SELF_SUM="$(cksum < "$REPO/ops/update.sh")"
 case "${1:-}" in
   "") ;;
   --dry-run) DRY=1 ;;
@@ -60,7 +68,7 @@ fail_early() {
 
 # One update at a time. A "running" status whose process is gone was left by a crash: clear it.
 # Plain shell: this runs before node is known to be on the PATH.
-if [ "$DRY" = 0 ] && [ -f "$STATUS" ]; then
+if [ "$DRY" = 0 ] && [ -z "$REEXEC" ] && [ -f "$STATUS" ]; then
   if [ "$(sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATUS" | head -n 1)" = running ]; then
     PID="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$STATUS" | head -n 1)"
     if [ -n "$PID" ] && [ "$PID" != "$$" ] && kill -0 "$PID" 2>/dev/null \
@@ -75,7 +83,13 @@ fi
 # The status first, before anything that needs node, the network or install.env, so every
 # failure from here on is attributed to a step. Then everything printed also goes to the log
 # (stderr stays stderr on the terminal; launchd keeps its own copy in updater.out.log).
-if [ "$DRY" = 0 ]; then
+if [ "$DRY" = 0 ] && [ -n "$REEXEC" ]; then
+  # The pulled copy, re-executed: the status and the log are already this run's, and stdout already goes to the log.
+  IFS='|' read -r STARTED LOG_OFFSET LAUNCHD_OFFSET REEXEC_FROM <<< "$REEXEC"
+  OWN=1
+  early_status running "starting the pulled update.sh" || { echo "update: can't write $STATUS" >&2; exit 1; }
+  echo "update: ops/update.sh changed in the pull; running the new copy"
+elif [ "$DRY" = 0 ]; then
   mkdir -p "$APP_DIR" "$LOGS"
   # A long log starts over (the last one kept as .prev); launchd's copy too.
   for f in "$LOG" "$LOGS/updater.out.log"; do
@@ -159,11 +173,17 @@ fi
 OLD="$(trap - ERR; curl -fsS --max-time 2 "$HEALTH" 2>/dev/null | build_of || true)"
 
 cd "$REPO"
-FROM="$(git rev-parse --short HEAD)"
+FROM="${REEXEC_FROM:-$(git rev-parse --short HEAD)}"
 status "fromBuild=${OLD:-$FROM}"
 
 step "git pull --ff-only"
 RUN git pull --ff-only
+# The pull changed this script: run the new copy from the start (it pulls again, a no-op). exec keeps the pid, so
+# the status's pid and the "one update at a time" check still hold; no EXIT trap fires. Once only.
+if [ "$DRY" = 0 ] && [ -z "$REEXEC" ] && [ "$(cksum < "$REPO/ops/update.sh")" != "$SELF_SUM" ]; then
+  export GANBAN_UPDATE_REEXEC="$STARTED|$LOG_OFFSET|$LAUNCHD_OFFSET|$FROM"
+  exec "$BASH" "$REPO/ops/update.sh" ${1+"$@"}
+fi
 TO="$(git rev-parse --short HEAD)"
 status "toBuild=$TO"
 

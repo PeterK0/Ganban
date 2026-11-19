@@ -181,7 +181,9 @@ These hold for every tab. Most come from the desktop app's webview (WKWebView on
 6. **Popovers:** portal them to `document.body`, or an ancestor with `overflow: hidden` clips them.
 7. **Freshness:** `useDataPulse(refetch, kinds)` with the kinds you care about, not a polling loop.
 8. **Storage:** `localStorage` is only for cosmetic, per-device preferences (a pane width, a collapsed section).
-   Anything a user expects to follow them goes to tab state or project config.
+   Anything a user expects to follow them goes to tab state or project config. The one exception is an unsaved
+   task edit the host refused or never answered (`src/lib/taskConflict.ts`): it stays on the device until it's saved
+   or the user picks a version, because it has to outlive a reload.
 9. **Secrets:** API keys and passwords stay on the host. A tab never puts one in its code, its config blob or the
    frontend.
 10. **Maps:** load imagery through the host's tile proxy (`/tiles/…`). The host holds the provider's key and caches

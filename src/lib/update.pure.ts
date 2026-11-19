@@ -19,22 +19,35 @@ export function cmpVersions(a: string, b: string): number {
 }
 
 // ---- The desktop updater's state machine (src/lib/update.ts drives it) -------
-// check → (up to date | downloading n% → ready | failed). A build without an
-// updater key is "unsupported" for good; switching the update source starts over
-// ('reset'). The browser and phone never use it.
+// check → (up to date | available) and, only on the user's "Download and install",
+// available → downloading n% → ready → (the user's "Restart to finish"). A check never
+// downloads (ADR 0012). A build without an updater key is "unsupported" for good;
+// switching the update source starts over ('reset'). The browser and phone never use it.
 
 export type UpdateState =
   | { kind: 'idle' }
-  | { kind: 'checking' }
+  /** `offer`: the offer a re-check started over, kept on show until the answer, and kept if the re-check fails. */
+  | { kind: 'checking'; offer?: UpdateOffer }
   | { kind: 'unsupported'; why: string }
   | { kind: 'up-to-date'; checkedAt: number }
-  | { kind: 'downloading'; version: string; received: number; total: number | null }
-  | { kind: 'ready'; version: string }
-  | { kind: 'failed'; why: string; version: string | null };
+  /** The source offers `version`; nothing is downloaded until the user says so. `notes`: its patch notes (markdown). */
+  | { kind: 'available'; version: string; notes: string | null }
+  | { kind: 'downloading'; version: string; notes: string | null; received: number; total: number | null }
+  | { kind: 'ready'; version: string; notes: string | null }
+  | { kind: 'failed'; why: string; version: string | null; notes?: string | null };
+
+export type UpdateOffer = Extract<UpdateState, { kind: 'available' }>;
+
+/** The state as the screen shows it: a re-check over an offer still shows the offer. */
+export function shownUpdateState(s: UpdateState): UpdateState {
+  return s.kind === 'checking' && s.offer ? s.offer : s;
+}
 
 export type UpdateEvent =
   | { type: 'check' }
-  | { type: 'checked'; version: string | null; canUpdate: boolean; at: number; why?: string }
+  | { type: 'checked'; version: string | null; notes?: string | null; canUpdate: boolean; at: number; why?: string }
+  /** The user chose "Download and install". */
+  | { type: 'download' }
   | { type: 'progress'; received: number; total: number | null }
   | { type: 'downloaded'; version: string }
   | { type: 'error'; why: string }
@@ -44,9 +57,15 @@ export type UpdateEvent =
 export const initialUpdateState: UpdateState = { kind: 'idle' };
 
 /** Whether a check may start now: never twice at once, never over a download in
- * flight or a build waiting to restart, never on a build that can't update. */
+ * flight or a build waiting to restart, never on a build that can't update. An offer
+ * may be checked over (a newer version may have come out since). */
 export function canStartCheck(s: UpdateState): boolean {
-  return s.kind === 'idle' || s.kind === 'up-to-date' || s.kind === 'failed';
+  return s.kind === 'idle' || s.kind === 'up-to-date' || s.kind === 'failed' || s.kind === 'available';
+}
+
+/** Whether "Download and install" may start: on an offer, or to retry a failed download. */
+export function canStartDownload(s: UpdateState): boolean {
+  return s.kind === 'available' || (s.kind === 'failed' && !!s.version);
 }
 
 export function updateReducer(s: UpdateState, e: UpdateEvent): UpdateState {
@@ -54,20 +73,28 @@ export function updateReducer(s: UpdateState, e: UpdateEvent): UpdateState {
     case 'reset':
       return s.kind === 'downloading' || s.kind === 'checking' || s.kind === 'idle' ? s : initialUpdateState;
     case 'check':
-      return canStartCheck(s) ? { kind: 'checking' } : s;
+      if (!canStartCheck(s)) return s;
+      return s.kind === 'available' ? { kind: 'checking', offer: s } : { kind: 'checking' };
     case 'checked':
       if (s.kind !== 'checking') return s;
       if (!e.canUpdate) return { kind: 'unsupported', why: e.why ?? "This build can't update itself." };
       if (!e.version) return { kind: 'up-to-date', checkedAt: e.at };
-      return { kind: 'downloading', version: e.version, received: 0, total: null };
+      // An offer, never a download: that waits for the user's 'download'.
+      return { kind: 'available', version: e.version, notes: e.notes ?? null };
+    case 'download':
+      if (s.kind === 'available' || (s.kind === 'failed' && s.version)) {
+        return { kind: 'downloading', version: s.version as string, notes: s.notes ?? null, received: 0, total: null };
+      }
+      return s;
     case 'progress':
       if (s.kind !== 'downloading') return s;
       return { ...s, received: e.received, total: e.total };
     case 'downloaded':
-      return s.kind === 'downloading' ? { kind: 'ready', version: e.version } : s;
+      return s.kind === 'downloading' ? { kind: 'ready', version: e.version, notes: s.notes } : s;
     case 'error':
-      if (s.kind === 'checking') return { kind: 'failed', why: e.why, version: null };
-      if (s.kind === 'downloading') return { kind: 'failed', why: e.why, version: s.version };
+      // A re-check that fails keeps the offer it started over: it was offline, not withdrawn.
+      if (s.kind === 'checking') return s.offer ?? { kind: 'failed', why: e.why, version: null };
+      if (s.kind === 'downloading') return { kind: 'failed', why: e.why, version: s.version, notes: s.notes };
       // A failed install keeps the downloaded build: the restart can be retried.
       return s;
   }
@@ -90,15 +117,92 @@ export function describeUpdateState(s: UpdateState, source = 'the host'): string
       return s.why;
     case 'up-to-date':
       return 'Up to date.';
+    case 'available':
+      return `Ganban ${s.version} is available.`;
     case 'downloading': {
       const pct = downloadPercent(s);
       return `Downloading ${s.version}${pct == null ? '…' : ` ${pct}%`}`;
     }
     case 'ready':
-      return `${s.version} is ready. Restart to update.`;
+      return `Ganban ${s.version} is downloaded. Restart to finish.`;
     case 'failed':
       return `Update failed${s.version ? ` (${s.version})` : ''}: ${s.why}`;
   }
+}
+
+// ---- The driver: checks and downloads, over injected I/O ---------------------
+// src/lib/update.ts wires it to Tauri; scripts/test-update.mjs to fakes, to prove that a
+// check alone never downloads.
+
+/** What a check found (`update_check`). */
+export interface CheckFound {
+  canUpdate: boolean;
+  version: string | null;
+  notes: string | null;
+  reason: string | null;
+}
+
+export interface UpdaterIO {
+  /** Whether to check at all now (GitHub with its switch off: no request, no state change). */
+  mayCheck(): boolean;
+  /** Ask the device's source. Throws with the reason a check failed. */
+  check(): Promise<CheckFound>;
+  /** Download what the last check found; resolves to its version. Throws with the reason. */
+  download(onProgress: (received: number, total: number | null) => void): Promise<string>;
+}
+
+export interface UpdateStore {
+  get(): UpdateState;
+  dispatch(e: UpdateEvent): void;
+}
+
+const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export function createUpdateFlow(io: UpdaterIO, store: UpdateStore) {
+  /** Check the source. A newer version becomes an offer ('available'); nothing downloads. */
+  async function check(): Promise<void> {
+    if (!canStartCheck(store.get()) || !io.mayCheck()) return;
+    store.dispatch({ type: 'check' });
+    let found: CheckFound;
+    try {
+      found = await io.check();
+    } catch (e) {
+      store.dispatch({ type: 'error', why: reason(e) });
+      return;
+    }
+    store.dispatch({ type: 'checked', version: found.version, notes: found.notes, canUpdate: found.canUpdate, at: Date.now(), why: found.reason ?? undefined });
+  }
+
+  /** The user's "Download and install": the only way a download starts. */
+  async function download(): Promise<void> {
+    if (!canStartDownload(store.get())) return;
+    store.dispatch({ type: 'download' });
+    try {
+      const version = await io.download((received, total) => store.dispatch({ type: 'progress', received, total }));
+      store.dispatch({ type: 'downloaded', version });
+    } catch (e) {
+      store.dispatch({ type: 'error', why: reason(e) });
+    }
+  }
+
+  return { check, download };
+}
+
+/** What the user said about an offer: "Later" (until the next launch, kept in memory) and
+ * "Skip this version" (kept on the device). */
+export interface OfferAnswers {
+  later: string | null;
+  skipped: string | null;
+}
+
+/** Whether the top bar shows the update: an offer the user hasn't put off or skipped, and
+ * everything after "Download and install" (its progress, "Restart to finish", a failure).
+ * Settings → Updates shows the state whatever the answers. */
+export function offerNoticeVisible(state: UpdateState, a: OfferAnswers): boolean {
+  const s = shownUpdateState(state);
+  if (s.kind === 'available') return s.version !== a.later && s.version !== a.skipped;
+  if (s.kind === 'failed') return !!s.version && s.version !== a.later && s.version !== a.skipped;
+  return s.kind === 'downloading' || s.kind === 'ready';
 }
 
 // ---- The host update's live log (Settings → Updates, owner only) -------------
@@ -134,6 +238,30 @@ export function hostClientApps(clientBuilds: string | null | undefined): Array<'
   if (clientBuilds == null) return ['desktop', 'android'];
   const parts = clientBuilds.split(',').map((p) => p.trim());
   return (['desktop', 'android'] as const).filter((k) => parts.includes(k));
+}
+
+/** What "Desktop app built X" on the "Update the server" card means for this device. The host builds
+ * the desktop app as an update bundle, so only a desktop app that updates from this server picks it up.
+ * Null when there's nothing to say (not a desktop app, no build yet). `offerSwitch`: show the button that
+ * switches "Updates from" to This server. */
+export function hostDesktopBuildNote(o: {
+  desktop: boolean;
+  source: 'github' | 'host' | null;
+  /** This app's version. */
+  version: string;
+  /** The card's desktop line, e.g. "built 1.0.1229". */
+  line: string | null | undefined;
+  /** This app has downloaded an update and waits for its restart. */
+  ready: boolean;
+}): { text: string; offerSwitch: boolean } | null {
+  const built = /^built (\S+)/.exec(o.line ?? '')?.[1];
+  if (!o.desktop || !built || !o.source) return null;
+  if (o.source === 'github') {
+    return { text: "This app updates from GitHub Releases, so it won't pick this build up.", offerSwitch: true };
+  }
+  if (o.version === built) return { text: 'This app runs this build.', offerSwitch: false };
+  if (o.ready) return { text: 'This app has downloaded an update: restart it to finish (This app, above).', offerSwitch: false };
+  return { text: 'This app updates from this server and offers this build at its next check.', offerSwitch: false };
 }
 
 // ---- The update channel (ADR 0008) -------------------------------------------

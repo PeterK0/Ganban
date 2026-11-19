@@ -5,10 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::revolut::unreadable_warning;
 use super::{
-    amount_of, cell, column_date_format, column_style, data_rows, date_of, find_header, norm, push_guess,
-    raw_map, Header, HEADER_SCAN_ROWS,
+    amount_of, cell, column_date_format, column_style, data_rows, date_of, find_header, kind_from_words, norm,
+    push_guess, raw_map, unreadable_warning, Header, HEADER_SCAN_ROWS,
 };
 use crate::error::{AppError, Result};
 use crate::finance::import::decode::{currency_exponent, is_currency_code, DecimalStyle, AUTO_DATE_FORMATS};
@@ -98,6 +97,25 @@ impl Mapping {
         singles.into_iter().flatten().chain(self.description.iter()).collect()
     }
 
+    /// How well a file fits this saved layout: the number of named columns it maps, when one
+    /// header row holds every one of them. `None` when it doesn't fit, or the layout names no
+    /// column (an index-only layout fits any file).
+    pub fn fits(&self, rows: &[Vec<Cell>]) -> Option<usize> {
+        let names: Vec<&str> = self
+            .refs()
+            .into_iter()
+            .filter_map(|r| match r {
+                ColRef::Name(n) => Some(n.as_str()),
+                ColRef::Index(_) => None,
+            })
+            .collect();
+        if names.is_empty() {
+            return None;
+        }
+        let h = self.header(rows)?;
+        names.iter().all(|n| h.col(n).is_some()).then_some(names.len())
+    }
+
     fn header(&self, rows: &[Vec<Cell>]) -> Option<Header> {
         if let Some(r) = self.header_row {
             return Header::at(rows, r);
@@ -117,6 +135,78 @@ impl Mapping {
     }
 }
 
+/// Header words for each field the wizard maps, in English (a bank's own wording belongs to
+/// its built-in format). A cell matches a word when it equals it or holds it as a word.
+const GUESS: &[(&str, &[&str])] = &[
+    ("booked_date", &["booking date", "booked on", "date", "transaction date", "posting date", "completed date"]),
+    ("value_date", &["value date"]),
+    ("debit", &["debit", "money out", "paid out", "withdrawal", "withdrawals", "outgoing"]),
+    ("credit", &["credit", "money in", "paid in", "deposit", "deposits", "incoming"]),
+    ("amount", &["amount", "value", "sum"]),
+    ("fee", &["fee", "fees", "commission", "charge"]),
+    ("currency", &["currency", "ccy", "curr"]),
+    ("balance", &["balance", "running balance"]),
+    ("payee", &["payee", "counterparty", "merchant", "beneficiary", "recipient", "name", "counter party"]),
+    (
+        "description",
+        &["description", "text", "details", "narrative", "memo", "reference", "transaction", "particulars"],
+    ),
+];
+
+/// The wizard's first guess from a file's header names: the row with the most recognised
+/// names, and in it the date, description, amount (or debit and credit), currency, balance,
+/// payee and fee. `None` when no row has a date and an amount. The user confirms it.
+pub fn guess(rows: &[Vec<Cell>]) -> Option<Mapping> {
+    let mut best: Option<(usize, Mapping)> = None;
+    for i in 0..rows.len().min(HEADER_SCAN_ROWS) {
+        let Some(h) = Header::at(rows, i) else { continue };
+        let mut m = Mapping::default();
+        let mut taken: Vec<usize> = Vec::new();
+        let mut found = 0;
+        for (field, words) in GUESS {
+            // An exact name first, then a name holding the word.
+            let pick = words
+                .iter()
+                .find_map(|w| h.names.iter().position(|n| norm(n) == *w).filter(|c| !taken.contains(c)))
+                .or_else(|| {
+                    words.iter().find_map(|w| {
+                        h.names.iter().enumerate().position(|(c, n)| {
+                            !taken.contains(&c) && norm(n).split(|ch: char| !ch.is_alphanumeric()).any(|x| x == *w)
+                        })
+                    })
+                });
+            let Some(c) = pick else { continue };
+            taken.push(c);
+            found += 1;
+            let col = Some(ColRef::Name(h.names[c].clone()));
+            match *field {
+                "booked_date" => m.booked_date = col,
+                "value_date" => m.value_date = col,
+                "debit" => m.debit = col,
+                "credit" => m.credit = col,
+                "amount" => m.amount = col,
+                "fee" => m.fee = col,
+                "currency" => m.currency = col,
+                "balance" => m.balance = col,
+                "payee" => m.payee = col,
+                _ => m.description = col.into_iter().collect(),
+            }
+        }
+        // A signed amount wins over a debit/credit pair only when the pair isn't complete.
+        if m.debit.is_some() && m.credit.is_some() {
+            m.amount = None;
+        } else {
+            m.debit = None;
+            m.credit = None;
+        }
+        let usable = m.booked_date.is_some() && (m.amount.is_some() || m.debit.is_some());
+        if usable && best.as_ref().is_none_or(|(n, _)| found > *n) {
+            best = Some((found, m));
+        }
+    }
+    best.map(|(_, m)| m)
+}
+
 fn resolve(h: &Header, r: &Option<ColRef>) -> Option<usize> {
     r.as_ref().and_then(|r| resolve_one(h, r))
 }
@@ -130,9 +220,7 @@ fn resolve_one(h: &Header, r: &ColRef) -> Option<usize> {
 
 pub fn parse(key: &str, m: &Mapping, rows: &[Vec<Cell>]) -> Result<ProfileOutput> {
     m.validate()?;
-    let h = m
-        .header(rows)
-        .ok_or_else(|| AppError::InvalidInput("the mapped columns aren't in this file".into()))?;
+    let h = m.header(rows).ok_or_else(|| AppError::InvalidInput("the mapped columns aren't in this file".into()))?;
     let c_date = resolve(&h, &m.booked_date);
     let c_value = resolve(&h, &m.value_date);
     let c_desc: Vec<usize> = m.description.iter().filter_map(|r| resolve_one(&h, r)).collect();
@@ -150,21 +238,13 @@ pub fn parse(key: &str, m: &Mapping, rows: &[Vec<Cell>]) -> Result<ProfileOutput
     let style_of = |c| column_style(&slices, c, m.decimal);
     let (s_amount, s_debit, s_credit, s_fee, s_balance) =
         (style_of(c_amount), style_of(c_debit), style_of(c_credit), style_of(c_fee), style_of(c_balance));
-    let date_fmt: Option<String> = m
-        .date_format
-        .clone()
-        .or_else(|| column_date_format(&slices, c_date, AUTO_DATE_FORMATS).map(String::from));
-    let value_fmt: Option<String> = m
-        .date_format
-        .clone()
-        .or_else(|| column_date_format(&slices, c_value, AUTO_DATE_FORMATS).map(String::from));
+    let date_fmt: Option<String> =
+        m.date_format.clone().or_else(|| column_date_format(&slices, c_date, AUTO_DATE_FORMATS).map(String::from));
+    let value_fmt: Option<String> =
+        m.date_format.clone().or_else(|| column_date_format(&slices, c_value, AUTO_DATE_FORMATS).map(String::from));
 
     let default_currency = m.currency_default.clone().unwrap_or_else(|| "EUR".into());
-    let name = m
-        .account_name
-        .clone()
-        .or_else(|| m.institution.clone())
-        .unwrap_or_else(|| "Imported account".into());
+    let name = m.account_name.clone().or_else(|| m.institution.clone()).unwrap_or_else(|| "Imported account".into());
     let kind = m.account_kind.clone().unwrap_or_else(|| "current".into());
 
     let mut out = ProfileOutput { header: h.names.clone(), ..Default::default() };
@@ -207,7 +287,7 @@ pub fn parse(key: &str, m: &Mapping, rows: &[Vec<Cell>]) -> Result<ProfileOutput
                 matched_account_id: None,
             },
         );
-        let kind_hint = category.as_deref().and_then(|c| super::piraeus::kind_of(c, "")).or(Some(KindHint::Other));
+        let kind_hint = category.as_deref().and_then(|c| kind_from_words(c, "")).or(Some(KindHint::Other));
         out.rows.push(ParsedRow {
             line,
             booked_date: booked.date(),

@@ -11,7 +11,8 @@
 # GitHub Releases and this host's builds.
 # Published atomically into <APP_DIR>/client-builds/{desktop/<target>-<arch>,android}/ with a
 # manifest.json: the new file goes in first, then the manifest, then the old file goes. A client
-# whose tool or key is missing is skipped, and a failed build keeps the previous one.
+# whose tool or key is missing is skipped, and a failed build keeps the previous one. The manifest
+# carries the build's patch notes (scripts/patch-notes.mjs host) when they can be read.
 # It prints one line per client ("desktop: built 1.0.975", "android: skipped: <why>",
 # "android: failed: <why>"), and writes the same into <APP_DIR>/update-status.json (clients.*).
 # The builds run with nice; their output goes to <LOGS>/update.log only. It exits 0 unless misused:
@@ -93,6 +94,15 @@ CODE="$(node "$REPO/ops/version-code.mjs" host "$APP_VERSION" "$SINCE")" && [ -n
   exit 1
 }
 COMMIT="$(git rev-parse --short HEAD)"
+# The build's patch notes (CHANGELOG.md's Unreleased section and the last release's) and the release
+# it follows, for the devices' update offers. Best effort: without them a build goes on, unchanged.
+# At most 10 s each (perl's alarm: macOS has no timeout(1)).
+capped() { local s="$1"; shift; if command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$s" "$@"; else "$@"; fi; }
+NOTES="$(capped 10 node "$REPO/scripts/patch-notes.mjs" host "$REPO/CHANGELOG.md" 2>/dev/null || true)"
+RELEASED="$(capped 10 node "$REPO/scripts/patch-notes.mjs" last-release "$REPO/CHANGELOG.md" 2>/dev/null || true)"
+NOTE_FIELDS=()
+if [ -n "$NOTES" ]; then NOTE_FIELDS+=("notes=$NOTES"); fi
+if [ -n "$RELEASED" ]; then NOTE_FIELDS+=("releasedVersion=$RELEASED"); fi
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$REPO/$TARGET_DIR" ;; esac
 
@@ -203,7 +213,8 @@ desktop() {
   fi
   publish "$OUT/desktop/darwin-$arch" "$tarball" "Ganban_${VERSION}.app.tar.gz" \
     "version=$VERSION" "target=darwin" "arch=$arch" "pubDate=$(now)" "commit=$COMMIT" \
-    "signature=$(cat "$tarball.sig")" "size:=$(wc -c < "$tarball" | tr -d ' ')" "pubkey=$(cat "$key.pub")"
+    "signature=$(cat "$tarball.sig")" "size:=$(wc -c < "$tarball" | tr -d ' ')" "pubkey=$(cat "$key.pub")" \
+    ${NOTE_FIELDS[@]+"${NOTE_FIELDS[@]}"}
   result desktop "built $VERSION"
 }
 
@@ -278,7 +289,8 @@ android() {
   fi
   publish "$OUT/android" "$apk" "Ganban_${VERSION}.apk" \
     "version=$VERSION" "versionCode:=$CODE" "pubDate=$(now)" "commit=$COMMIT" \
-    "sha256=$(shasum -a 256 "$apk" | cut -d' ' -f1)" "size:=$(wc -c < "$apk" | tr -d ' ')" "certSha256=$cert"
+    "sha256=$(shasum -a 256 "$apk" | cut -d' ' -f1)" "size:=$(wc -c < "$apk" | tr -d ' ')" "certSha256=$cert" \
+    ${NOTE_FIELDS[@]+"${NOTE_FIELDS[@]}"}
   result android "built $VERSION"
 }
 

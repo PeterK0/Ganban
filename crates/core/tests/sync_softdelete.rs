@@ -50,32 +50,23 @@ async fn binned_event_survives_nonconflicting_host_upsert() {
 
     // Host creates an event; the replica ingests it (archived=0 on both).
     let h_eid = ops::create_event(&host, event_in("Lecture 02")).await.unwrap().id;
-    let uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM events WHERE id=?")
-        .bind(h_eid)
-        .fetch_one(&host)
-        .await
-        .unwrap();
+    let uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM events WHERE id=?").bind(h_eid).fetch_one(&host).await.unwrap();
     ingest_all(&host, &replica).await;
 
     // The replica bins the event, then we clear its dirty flag to model the bin
     // having ALREADY been synced. That's the no-synthesizable-base case, so the
     // host's next upsert arrives as conflict==0 — the resurrection window.
-    let r_eid: i64 = sqlx::query_scalar("SELECT id FROM events WHERE sync_uuid=?")
-        .bind(&uuid)
-        .fetch_one(&replica)
-        .await
-        .unwrap();
+    let r_eid: i64 =
+        sqlx::query_scalar("SELECT id FROM events WHERE sync_uuid=?").bind(&uuid).fetch_one(&replica).await.unwrap();
     ops::delete_event(&replica, r_eid).await.unwrap();
     sqlx::query("UPDATE sync_state SET dirty=0 WHERE entity_type='events' AND row_id=?")
         .bind(r_eid)
         .execute(&replica)
         .await
         .unwrap();
-    let before: i64 = sqlx::query_scalar("SELECT archived FROM events WHERE id=?")
-        .bind(r_eid)
-        .fetch_one(&replica)
-        .await
-        .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT archived FROM events WHERE id=?").bind(r_eid).fetch_one(&replica).await.unwrap();
     assert_eq!(before, 1, "precondition: the event is binned on the replica");
 
     // The host edits the still-live event (archived stays 0); replica re-ingests.

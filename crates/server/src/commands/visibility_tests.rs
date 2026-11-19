@@ -43,7 +43,9 @@ async fn world(tag: &str) -> World {
     let budget = seed(&db, "create_task", task_input(project, "Budget", Some(finance))).await["id"].as_i64().unwrap();
     let offer = seed(&db, "create_task", task_input(project, "Offer letter", None)).await["id"].as_i64().unwrap();
     let secret = seed(&db, "create_task", task_input(project, "Reorg", None)).await["id"].as_i64().unwrap();
-    http(&db, ana, "set_task_visibility", json!({ "taskId": offer, "visibility": "members", "memberIds": [BO] })).await.unwrap();
+    http(&db, ana, "set_task_visibility", json!({ "taskId": offer, "visibility": "members", "memberIds": [BO] }))
+        .await
+        .unwrap();
     http(&db, ana, "set_task_visibility", json!({ "taskId": secret, "visibility": "admins" })).await.unwrap();
     World { db, project, finance, ops_area, open, budget, offer, secret, ana, mia, bo }
 }
@@ -72,7 +74,8 @@ async fn each_member_lists_only_the_tasks_in_their_audience() {
 #[tokio::test]
 async fn a_hidden_task_and_everything_on_it_is_not_found() {
     let w = world("vis_rows").await;
-    let entry = seed(&w.db, "start_time_entry", json!({ "taskId": w.budget, "userId": MIA })).await["id"].as_i64().unwrap();
+    let entry =
+        seed(&w.db, "start_time_entry", json!({ "taskId": w.budget, "userId": MIA })).await["id"].as_i64().unwrap();
     let local = std::env::temp_dir().join("ganban_vis_attachment.txt");
     std::fs::write(&local, b"x").unwrap();
     let file = json!({ "input": { "task_id": w.budget, "file_path": local.to_string_lossy(), "file_name": "f.txt" } });
@@ -103,7 +106,8 @@ async fn a_hidden_task_and_everything_on_it_is_not_found() {
 #[tokio::test]
 async fn the_board_trims_updates_to_the_tasks_a_member_sees() {
     let w = world("vis_board").await;
-    let both = json!({ "input": { "task_id": w.budget, "task_ids": [w.open], "user_id": MIA, "content": "Budget + open" } });
+    let both =
+        json!({ "input": { "task_id": w.budget, "task_ids": [w.open], "user_id": MIA, "content": "Budget + open" } });
     let shared = seed(&w.db, "create_comment", both).await["id"].as_i64().unwrap();
     let only_budget = json!({ "input": { "task_id": w.budget, "user_id": MIA, "content": "Budget only" } });
     let hidden = seed(&w.db, "create_comment", only_budget).await["id"].as_i64().unwrap();
@@ -128,10 +132,16 @@ async fn the_board_trims_updates_to_the_tasks_a_member_sees() {
     assert_eq!(sorted(ids(&mia_board["comments"])), sorted(vec![shared, hidden, reply]));
 
     let into_hidden = json!({ "input": { "task_id": w.open, "parent_id": hidden, "content": "sneaky" } });
-    assert!(http(&w.db, w.bo, "create_comment", into_hidden).await.unwrap_err().is_not_found(), "no replying into a hidden thread");
+    assert!(
+        http(&w.db, w.bo, "create_comment", into_hidden).await.unwrap_err().is_not_found(),
+        "no replying into a hidden thread"
+    );
 
     let retag = json!({ "commentId": shared, "taskIds": [w.open, w.secret] });
-    assert!(http(&w.db, w.mia, "set_comment_tags", retag).await.unwrap_err().is_not_found(), "no tagging a task you can't see");
+    assert!(
+        http(&w.db, w.mia, "set_comment_tags", retag).await.unwrap_err().is_not_found(),
+        "no tagging a task you can't see"
+    );
     let tagged_hidden = json!({ "input": { "task_id": w.open, "task_ids": [w.secret], "content": "x" } });
     assert!(http(&w.db, w.mia, "create_comment", tagged_hidden).await.unwrap_err().is_not_found());
 }

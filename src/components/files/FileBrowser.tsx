@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { openPathHere } from '../../lib/systemOpen';
 import {
   createFileFolder,
   deleteFileFolder,
@@ -9,6 +9,7 @@ import {
   renameFile,
   renameFileFolder,
   setFileAiIncluded,
+  excludeProjectFilesFromAi,
   type FolderScope,
   type StorageLocation,
 } from '../../lib/api';
@@ -599,6 +600,13 @@ export default function FileBrowser({
       }
     });
 
+  /** Every file of the project out of the AI overview at once (project admins): the files that
+   * were in before new ones started out stay in otherwise. */
+  const allOutOfAi = async () => {
+    if (!(await confirmDialog('Take every file in this project, its tasks’ files included, out of the AI overview? The assistant stops reading them until you put a file back in.'))) return;
+    await run(() => excludeProjectFilesFromAi(projectId));
+  };
+
   // ── selection and keys ────────────────────────────────────────────────────
 
   const select = (key: string, ev: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
@@ -1104,6 +1112,11 @@ export default function FileBrowser({
         <option value="in">In the AI overview</option>
         <option value="out">Left out of it</option>
       </select>
+      {!taskMode && canManage && (
+        <button onClick={() => void allOutOfAi()} disabled={busy} className="g-lnk !text-xs shrink-0">
+          Take every file out of the AI overview
+        </button>
+      )}
       <select
         value={filters.uploader}
         onChange={(e) => setFilters({ ...filters, uploader: e.target.value ? Number(e.target.value) : '' })}
@@ -1358,7 +1371,7 @@ function DetailsBody({
               {row('Folder', folderOf(one), folderOf(one))}
               {row('Size', fmtSize(one.size))}
               {row('Type', one.type || extOf(one.name).toUpperCase() || '—', one.type ?? undefined)}
-              {row('Added', new Date(one.createdAt).toLocaleString())}
+              {row('Added', fmtDate(one.createdAt))}
               {row('Uploader', uploaderName(one.uploadedBy))}
               {one.kind === 'attachment' &&
                 !taskMode &&
@@ -1445,10 +1458,10 @@ function StorageFolderModal({ projectId, onClose }: { projectId: number; onClose
   const here = !!loc && (loc.isThisMachine || servingFromThisMachine()) && isTauri() && !isMobilePlatform();
   const reveal = async (path: string) => {
     try {
-      await openPath(path);
+      await openPathHere(path);
     } catch {
       // pf/ appears with the first project file; fall back to the root.
-      if (loc && path !== loc.root) await openPath(loc.root).catch((e) => setError(errText(e)));
+      if (loc && path !== loc.root) await openPathHere(loc.root).catch((e) => setError(errText(e)));
       else setError('That folder doesn’t exist yet.');
     }
   };

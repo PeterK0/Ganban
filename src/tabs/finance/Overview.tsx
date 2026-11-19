@@ -7,6 +7,7 @@ import { todayIso } from './money.pure';
 import { BudgetBar, ForecastBand } from './reportParts';
 import { elapsedFraction, formatMonth, monthOf, netWorth } from './reports.pure';
 import { MUTED, Money, Empty, useFinance } from './shared';
+import { UNCONFIRMED_NOTE } from './sorting.pure';
 
 const KIND_LABEL: Record<string, string> = { current: 'Current', savings: 'Savings', card: 'Card', cash: 'Cash', loan: 'Loan' };
 
@@ -30,9 +31,9 @@ export default function Overview() {
     <div className="space-y-6">
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
         <button className="g-card g-corners p-5 text-left hover:bg-surface-0 transition-colors" onClick={() => goto('transactions')}>
-          <div className="g-flbl">Inbox</div>
+          <div className="g-flbl">To sort</div>
           <div className="text-3xl text-text tabular-nums">{inboxCount}</div>
-          <div className={`text-sm ${MUTED}`}>{inboxCount === 1 ? 'transaction to sort and post' : 'transactions to sort and post'}</div>
+          <div className={`text-sm ${MUTED}`}>{inboxCount === 1 ? 'line needs a category' : 'lines need a category'}</div>
         </button>
         <button className="g-card p-5 text-left hover:bg-surface-0 transition-colors" onClick={() => goto('import')}>
           <div className="g-flbl">To review</div>
@@ -127,13 +128,19 @@ export default function Overview() {
                       <span className={`block text-xs ${MUTED} truncate`}>
                         {[KIND_LABEL[a.kind] ?? a.kind, a.institution, a.iban_mask, a.archived ? 'archived' : null].filter(Boolean).join(' · ')}
                       </span>
+                      {a.unconfirmed && (
+                        <span className="block text-xs text-subtext-1" title={UNCONFIRMED_NOTE}>
+                          <span className="g-tag g-tag-warn !min-h-[18px] mr-1.5">No statement yet</span>
+                          its balance is only what your other accounts sent
+                        </span>
+                      )}
                     </span>
                     <span className="text-right">
                       <Money minor={a.balance_minor} currency={a.currency} className="block text-text" />
                       {a.currency !== fun && <Money minor={a.balance_functional_minor} currency={fun} className={`block text-xs ${MUTED}`} />}
                       {!!a.draft_balance_minor && (
                         <span className={`block text-xs ${MUTED}`}>
-                          <Money minor={a.draft_balance_minor} currency={a.currency} signed /> in the inbox
+                          <Money minor={a.draft_balance_minor} currency={a.currency} signed /> still to sort
                         </span>
                       )}
                     </span>

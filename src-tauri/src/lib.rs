@@ -20,6 +20,8 @@ mod members;
 mod storage_cmds;
 #[cfg(desktop)]
 mod sync_cmds;
+#[cfg(desktop)]
+mod system_open;
 mod text_substitution;
 #[cfg(desktop)]
 mod window_close;
@@ -29,12 +31,24 @@ pub fn run() {
     // Before any webview exists: no smart dashes, quotes or text replacement in
     // the app's fields, so markdown stays as typed (macOS only).
     text_substitution::disable();
+    // Before GTK and WebKit start: KDE's own file pickers on KDE, and no DMA-BUF renderer on
+    // NVIDIA's driver (Linux only).
+    #[cfg(desktop)]
+    system_open::prepare_linux_session();
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
+    // On Linux, links the page opens go through Ganban's own opener (system_open.rs), so the
+    // plugin's link handler is off there.
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(!cfg!(all(desktop, target_os = "linux")))
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init());
+    #[cfg(desktop)]
+    let builder = if system_open::USE_SYSTEM_OPENERS { builder.plugin(system_open::links_plugin()) } else { builder };
 
     // Native camera scanning is mobile-only (the plugin exposes `init` only on
     // mobile); the desktop displays the QR instead.
@@ -57,7 +71,8 @@ pub fn run() {
     #[cfg(desktop)]
     let update_managed_by = app_update::package_manager();
     #[cfg(desktop)]
-    let builder = if app_update::can_update(&update_channel, update_build_key.as_deref()) && update_managed_by.is_none() {
+    let builder = if app_update::can_update(&update_channel, update_build_key.as_deref()) && update_managed_by.is_none()
+    {
         app_update::prepare_config(context.config_mut());
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     } else {
@@ -70,7 +85,11 @@ pub fn run() {
         use tauri::Manager;
         builder
             .setup(move |app| {
-                app.manage(app_update::AppUpdate::new(update_channel.clone(), update_build_key.clone(), update_managed_by.clone()));
+                app.manage(app_update::AppUpdate::new(
+                    update_channel.clone(),
+                    update_build_key.clone(),
+                    update_managed_by.clone(),
+                ));
                 // Logging first, so the embedded server's tracing events (and any
                 // panic) land in a rolling file under the app's log dir — a
                 // bundled .app has no console, so without this they're lost.
@@ -81,10 +100,8 @@ pub fn run() {
                     }
                 }
                 // Initialize database (local desktop copy at app_data_dir/gansty.db)
-                let pool = tauri::async_runtime::block_on(async {
-                    commands::init_desktop_db(&app.handle()).await
-                })
-                .expect("Failed to initialize database");
+                let pool = tauri::async_runtime::block_on(async { commands::init_desktop_db(&app.handle()).await })
+                    .expect("Failed to initialize database");
 
                 // Store pool in app state
                 app.manage(pool);
@@ -151,6 +168,8 @@ pub fn run() {
                 file_sync::daemon_upload_from_disk_cancel,
                 file_sync::reveal_local_path,
                 file_sync::reveal_file,
+                system_open::system_open_path,
+                system_open::system_open_url,
                 commands::set_user_profile,
                 commands::read_local_file,
                 commands::export_database,
@@ -194,18 +213,15 @@ pub fn run() {
             ])
     };
 
-    builder
-        .build(context)
-        .expect("error while building tauri application")
-        .run(|app, event| {
-            // Quitting must not orphan the engines we spawned (a bundled
-            // ragrat / an `ollama serve` Ganban started).
-            #[cfg(desktop)]
-            if matches!(event, tauri::RunEvent::Exit) {
-                use tauri::Manager;
-                ai_engine::shutdown_sync(&app.state::<ai_engine::AiEngineState>());
-            }
-            #[cfg(mobile)]
-            let _ = (app, event);
-        });
+    builder.build(context).expect("error while building tauri application").run(|app, event| {
+        // Quitting must not orphan the engines we spawned (a bundled
+        // ragrat / an `ollama serve` Ganban started).
+        #[cfg(desktop)]
+        if matches!(event, tauri::RunEvent::Exit) {
+            use tauri::Manager;
+            ai_engine::shutdown_sync(&app.state::<ai_engine::AiEngineState>());
+        }
+        #[cfg(mobile)]
+        let _ = (app, event);
+    });
 }

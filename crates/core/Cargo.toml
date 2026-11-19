@@ -1,12 +1,17 @@
 [package]
 name = "ganban-core"
-version = "1.0.11"
+version = "1.0.13"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Shared data layer and business logic for Ganban (desktop app + daemon)"
 
 [lib]
 name = "ganban_core"
+
+[features]
+# A made-up built-in import format, for tests of the import engine in other crates. Enable it only from
+# [dev-dependencies]: a normal build must never list it.
+sample-format = []
 
 [dev-dependencies]
 rust_xlsxwriter = { version = "0.102", default-features = false }

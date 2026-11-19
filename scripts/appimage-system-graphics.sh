@@ -9,6 +9,10 @@
 # desktop with a GPU driver has them) and the forced backend, so GTK picks the backend itself.
 # WebKitGTK and everything else stay bundled.
 #
+# It also removes the build machine's xdg-open and xdg-mime that Tauri's bundler (CLI before 2.12)
+# copies into usr/bin, first on the AppImage's PATH: xdg-utils 1.1.3 opens nothing on Plasma 6.
+# The app runs the system's own opener (src-tauri/src/system_open.rs).
+#
 #   appimage-system-graphics.sh fix <file.AppImage> <appimagetool>   extract, strip, verify, repack in place
 #   appimage-system-graphics.sh strip <AppDir>                        remove the libraries and the forced backend
 #   appimage-system-graphics.sh verify <AppDir>                       assert they're gone; ldd shows where they resolve
@@ -16,6 +20,9 @@
 # `fix` repacks with the AppImage's own runtime (--runtime-file), so the type-2 runtime stays the
 # one Tauri shipped and nothing unpinned is downloaded.
 set -euo pipefail
+
+# The desktop's own tools, which must come from the system.
+TOOLS=(xdg-open xdg-mime)
 
 # The libraries that belong to the system's graphics driver stack.
 PATTERNS=('libwayland-*' 'libEGL*' 'libGL.so*' 'libGLX*' 'libGLdispatch*' 'libOpenGL*' 'libgbm*' 'libdrm*' 'libglapi*')
@@ -38,6 +45,12 @@ strip_appdir() {
     echo "removed ${f#"$dir"/}"
     rm -f "$f"
   done < <(find_graphics "$dir")
+  for f in "${TOOLS[@]}"; do
+    if [ -e "$dir/usr/bin/$f" ] || [ -L "$dir/usr/bin/$f" ]; then
+      rm -f "$dir/usr/bin/$f"
+      echo "removed usr/bin/$f"
+    fi
+  done
   # linuxdeploy-plugin-gtk's hook exports GDK_BACKEND=x11; GTK chooses on its own without it.
   while IFS= read -r h; do
     if grep -q '^[[:space:]]*export GDK_BACKEND=' "$h"; then
@@ -51,6 +64,9 @@ verify_appdir() {
   local dir="$1" left h bin out bad=0
   left="$(find_graphics "$dir")"
   [ -z "$left" ] || die "graphics libraries still bundled: $left"
+  for f in "${TOOLS[@]}"; do
+    if [ -e "$dir/usr/bin/$f" ] || [ -L "$dir/usr/bin/$f" ]; then die "usr/bin/$f is still bundled"; fi
+  done
   while IFS= read -r h; do
     if grep -q 'GDK_BACKEND' "$h"; then die "${h#"$dir"/} still sets GDK_BACKEND"; fi
   done < <(hooks "$dir")

@@ -1,6 +1,8 @@
-import { useState } from "react";
-import type { Area, Task, TaskPriority, TaskStatus } from "../../types";
+import { useEffect, useRef, useState } from "react";
+import type { Area, Task, TaskPriority, TaskStatus, UpdateTaskInput } from "../../types";
 import { attachPastedImage, createTask, updateTask } from "../../lib/api";
+import { formFromTask, type TaskForm as Form } from "../../lib/taskForm";
+import { FIELD_LABELS, saveFormChecked, takeFields, TaskConflict, type FormField } from "../../lib/taskConflict";
 import {
   Button,
   Field,
@@ -38,27 +40,56 @@ export default function TaskForm({
   const [deadline, setDeadline] = useState(existing?.deadline ? existing.deadline.slice(0, 10) : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The version the edit is based on: `existing`, or the newer one a conflict brought.
+  const [base, setBase] = useState(existing);
+  // The fields both this edit and a save elsewhere changed (lib/taskConflict.ts).
+  const [conflict, setConflict] = useState<FormField[] | null>(null);
+  const noticeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (conflict) noticeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [conflict]);
+
+  const form = (): Form => ({
+    title, description, status, priority, prefix, cost, currency, deadline, areaId: areaId || undefined,
+  });
+  const setForm = (f: Form) => {
+    setTitle(f.title);
+    setDescription(f.description);
+    setStatus(f.status as TaskStatus);
+    setPriority(f.priority as TaskPriority);
+    setPrefix(f.prefix);
+    setCost(f.cost);
+    setCurrency(f.currency);
+    setDeadline(f.deadline);
+    setAreaId(f.areaId ?? 0);
+  };
+  const toUpdate = (f: Form): UpdateTaskInput => {
+    const costNum = f.cost.trim() && !Number.isNaN(Number(f.cost)) ? Number(f.cost) : undefined;
+    return {
+      title: f.title.trim(),
+      description: f.description,
+      status: f.status as TaskStatus,
+      priority: f.priority as TaskPriority,
+      // A cleared field saves as cleared (null); a cost that isn't a number keeps the old one.
+      area_id: f.areaId || null,
+      prefix: f.prefix,
+      cost: f.cost.trim() ? costNum : null,
+      currency: f.currency,
+      deadline: f.deadline ? new Date(f.deadline + "T00:00:00Z").toISOString() : null,
+    };
+  };
 
   const save = async () => {
     if (!title.trim()) return;
     setBusy(true);
     setError(null);
+    setConflict(null);
     const costNum = cost.trim() && !Number.isNaN(Number(cost)) ? Number(cost) : undefined;
     const deadlineIso = deadline ? new Date(deadline + "T00:00:00Z").toISOString() : undefined;
+    const sent = form();
     try {
-      const saved = existing
-        ? await updateTask(existing.id, {
-            title: title.trim(),
-            description,
-            status,
-            priority,
-            // A cleared field saves as cleared (null); a cost that isn't a number keeps the old one.
-            area_id: areaId || null,
-            prefix,
-            cost: cost.trim() ? costNum : null,
-            currency,
-            deadline: deadlineIso ?? null,
-          })
+      const saved = base
+        ? await saveFormChecked(base, sent, (input, stamp) => updateTask(base.id, input, stamp), toUpdate)
         : await createTask({
             project_id: projectId,
             title: title.trim(),
@@ -73,9 +104,20 @@ export default function TaskForm({
           });
       onSaved(saved);
     } catch (e) {
-      setError(errMsg(e));
+      if (e instanceof TaskConflict) {
+        // Saved elsewhere meanwhile, in a field this edit changed too: show mine on
+        // the new version and ask. Save again keeps mine.
+        setBase(e.fresh);
+        setForm(e.form);
+        setConflict(e.fields);
+      } else setError(errMsg(e));
       setBusy(false);
     }
+  };
+  const takeOther = () => {
+    if (!base || !conflict) return;
+    setForm(takeFields(form(), formFromTask(base), conflict));
+    setConflict(null);
   };
 
   // Paste an image into the description (existing tasks only — a new task has no
@@ -105,6 +147,18 @@ export default function TaskForm({
         </Button>
       }
     >
+      {conflict && (
+        <div role="alert" className="flex flex-col gap-2" ref={noticeRef}>
+          <p className="text-sm text-warning">
+            This task was changed somewhere else. Both versions changed{" "}
+            {conflict.map((k) => FIELD_LABELS[k]).join(", ")}. You're seeing yours.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={save} disabled={busy}>Keep mine</Button>
+            <Button variant="ghost" onClick={takeOther} disabled={busy}>Take the other</Button>
+          </div>
+        </div>
+      )}
       <Field label="Title">
         <TextInput value={title} onChange={setTitle} autoFocus />
       </Field>

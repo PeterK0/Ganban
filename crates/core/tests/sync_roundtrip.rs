@@ -88,7 +88,8 @@ async fn paired(tag: &str) -> (Db, Db, String, String) {
     .await
     .unwrap()
     .id;
-    let t_uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
+    let t_uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?").bind(tid).fetch_one(&host).await.unwrap();
 
     // Bootstrap the replica from a full snapshot.
     let replica = init_db_role(&temp_db(&format!("{tag}_replica")), Role::Replica).await.unwrap();
@@ -241,14 +242,19 @@ async fn host_delete_vs_local_edit_converges_edit_wins() {
     assert_eq!(status_of(&replica, "tasks", &t_uuid).await.0, "In Progress", "local edit preserved");
     // ...and the next run re-creates it on the host.
     assert_eq!(count(&host, "SELECT COUNT(*) FROM tasks WHERE sync_uuid=?", &t_uuid).await, 1, "row restored on host");
-    assert_eq!(count(&host, "SELECT COUNT(*) FROM tombstones WHERE sync_uuid=?", &t_uuid).await, 0, "host tombstone cleared on re-insert");
+    assert_eq!(
+        count(&host, "SELECT COUNT(*) FROM tombstones WHERE sync_uuid=?", &t_uuid).await,
+        0,
+        "host tombstone cleared on re-insert"
+    );
 }
 
 #[tokio::test]
 async fn adopting_a_host_user_keeps_local_user_settings() {
     // Regression: INSERT OR REPLACE would CASCADE-delete user_settings.
     let host = init_db_role(&temp_db("usercasc_host"), Role::Server).await.unwrap();
-    let host_uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM users WHERE id=1").fetch_one(&host).await.unwrap();
+    let host_uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM users WHERE id=1").fetch_one(&host).await.unwrap();
 
     let replica = init_db_role(&temp_db("usercasc_replica"), Role::Replica).await.unwrap();
     // A local preference attached to the bootstrapped user 1.
@@ -259,18 +265,24 @@ async fn adopting_a_host_user_keeps_local_user_settings() {
 
     // Ingest the host's user 1 (different sync_uuid, same id).
     let full = sync::pull(&host, "").await.unwrap();
-    let users: Vec<sync::IncomingChange> = serde_json::from_value(
-        json!(full["changes"].as_array().unwrap().iter().filter(|c| c["entity"] == "users").cloned().collect::<Vec<_>>()),
-    )
+    let users: Vec<sync::IncomingChange> = serde_json::from_value(json!(full["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["entity"] == "users")
+        .cloned()
+        .collect::<Vec<_>>()))
     .unwrap();
     sync::ingest(&replica, users).await.unwrap();
 
-    let settings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_settings WHERE user_id=1 AND setting_key='theme'")
-        .fetch_one(&replica)
-        .await
-        .unwrap();
+    let settings: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_settings WHERE user_id=1 AND setting_key='theme'")
+            .fetch_one(&replica)
+            .await
+            .unwrap();
     assert_eq!(settings, 1, "adopting the host user must NOT cascade-delete local user_settings");
-    let adopted: String = sqlx::query_scalar("SELECT sync_uuid FROM users WHERE id=1").fetch_one(&replica).await.unwrap();
+    let adopted: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM users WHERE id=1").fetch_one(&replica).await.unwrap();
     assert_eq!(adopted, host_uuid, "host user adopted in place at id 1");
 }
 

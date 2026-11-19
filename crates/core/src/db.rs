@@ -14,6 +14,17 @@ pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15)
 /// store/pass `core::Db` without depending on sqlx directly.
 pub type Db = SqlitePool;
 
+/// Starts a transaction that writes. It takes the write lock at its start (`BEGIN IMMEDIATE`),
+/// so it queues behind other writers for up to [`BUSY_TIMEOUT`].
+///
+/// A deferred transaction (`db.begin()`) that reads first and writes later fails outright
+/// under WAL when another connection commits in between: its snapshot is stale
+/// (`SQLITE_BUSY_SNAPSHOT`), and the busy timeout doesn't apply. Use this for every
+/// transaction that writes; keep `begin()` for one that only reads.
+pub async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+    Ok(db.begin_with("BEGIN IMMEDIATE").await?)
+}
+
 /// How this process relates to the canonical data.
 ///
 /// - `Server`: this DB *is* the authoritative copy (the always-on host running
@@ -152,17 +163,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     // Create indexes for better performance
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)").execute(pool).await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)").execute(pool).await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived)").execute(pool).await?;
 
     // Create time_entries table
     sqlx::query(
@@ -182,18 +187,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_time_entries_task_id ON time_entries(task_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_time_entries_task_id ON time_entries(task_id)").execute(pool).await?;
 
     // Attribute tracked time to the user who logged it (plain nullable INTEGER,
     // sync-safe). NULL for entries created before this column existed.
-    let _ = sqlx::query("ALTER TABLE time_entries ADD COLUMN user_id INTEGER")
-        .execute(pool)
-        .await; // ignore if already added
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id)")
-        .execute(pool)
-        .await?;
+    let _ = sqlx::query("ALTER TABLE time_entries ADD COLUMN user_id INTEGER").execute(pool).await; // ignore if already added
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id)").execute(pool).await?;
 
     // Create file_attachments table
     sqlx::query(
@@ -221,34 +220,22 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     // Add deadline column if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN deadline TEXT")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN deadline TEXT").execute(pool).await; // Ignore error if column already exists
 
     // Add archived column to projects if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Create index for better performance on archived projects
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_projects_archived ON projects(archived)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_projects_archived ON projects(archived)").execute(pool).await?;
 
     // Add currency column if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN currency TEXT")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN currency TEXT").execute(pool).await; // Ignore error if column already exists
 
     // Add pinned column to projects if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Add pinned column to tasks if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Create comments table
     sqlx::query(
@@ -267,9 +254,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_comments_task_id ON comments(task_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_comments_task_id ON comments(task_id)").execute(pool).await?;
 
     // Emoji reactions on comments. Host-served collaborative data (reviewed over
     // the daemon) — not in the synced table set. One row per (comment, user,
@@ -338,9 +323,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)").execute(pool).await;
 
     // Create events table
     sqlx::query(
@@ -366,9 +349,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date)").execute(pool).await?;
 
     // Create event_tasks junction table for linking events to tasks
     sqlx::query(
@@ -387,13 +368,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_tasks_event_id ON event_tasks(event_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_tasks_event_id ON event_tasks(event_id)").execute(pool).await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_tasks_task_id ON event_tasks(task_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_tasks_task_id ON event_tasks(task_id)").execute(pool).await?;
 
     // Create event_projects junction table for linking events to projects
     sqlx::query(
@@ -421,14 +398,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     // Add archived column to events if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE events ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE events ADD COLUMN archived INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Create index for better performance on archived events
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_archived ON events(archived)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_archived ON events(archived)").execute(pool).await?;
 
     // Imported calendars (owner-managed external ICS/webcal feeds). Host-only:
     // deliberately NOT registered for sync — the owner manages feeds on the host,
@@ -457,18 +430,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // FK would break when an imported event syncs to a replica that has no such
     // row. `external_uid` is the feed's VEVENT UID, used to upsert on re-sync.
     // Both columns ride the normal column-dynamic sync (PRAGMA table_info).
-    let _ = sqlx::query("ALTER TABLE events ADD COLUMN calendar_id INTEGER")
-        .execute(pool)
-        .await; // ignore if already added
-    let _ = sqlx::query("ALTER TABLE events ADD COLUMN external_uid TEXT")
-        .execute(pool)
-        .await; // ignore if already added
-    // Recurrence rule (RFC 5545 RRULE) on the master event; occurrences are
-    // expanded on read, never stored — so it stays one synced row. Added 2026-06-15.
+    let _ = sqlx::query("ALTER TABLE events ADD COLUMN calendar_id INTEGER").execute(pool).await; // ignore if already added
+    let _ = sqlx::query("ALTER TABLE events ADD COLUMN external_uid TEXT").execute(pool).await; // ignore if already added
+                                                                                                // Recurrence rule (RFC 5545 RRULE) on the master event; occurrences are
+                                                                                                // expanded on read, never stored — so it stays one synced row. Added 2026-06-15.
     let _ = sqlx::query("ALTER TABLE events ADD COLUMN rrule TEXT").execute(pool).await;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_calendar ON events(calendar_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_calendar ON events(calendar_id)").execute(pool).await?;
     // Dedup key for re-sync. NULLs are distinct in SQLite UNIQUE indexes, so the
     // many native events (calendar_id/external_uid both NULL) never collide.
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_external_uid ON events(calendar_id, external_uid)")
@@ -495,30 +462,20 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(full_name)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(full_name)").execute(pool).await?;
 
     // Add archived column to contacts if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE contacts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE contacts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Link a contact to a user account (nullable, plain INTEGER — not a hard FK,
     // mirroring calendar_id, so it rides column-dynamic sync without referencing
     // a row a replica may not have yet). Lets the same person be reused as a
     // member across projects instead of re-registering.
-    let _ = sqlx::query("ALTER TABLE contacts ADD COLUMN user_id INTEGER")
-        .execute(pool)
-        .await; // ignore if already added
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id)")
-        .execute(pool)
-        .await?;
+    let _ = sqlx::query("ALTER TABLE contacts ADD COLUMN user_id INTEGER").execute(pool).await; // ignore if already added
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id)").execute(pool).await?;
 
     // Create index for better performance on archived contacts
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_archived ON contacts(archived)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_contacts_archived ON contacts(archived)").execute(pool).await?;
 
     // Create task_contacts junction table for linking contacts to tasks
     sqlx::query(
@@ -537,9 +494,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_contacts_task_id ON task_contacts(task_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_contacts_task_id ON task_contacts(task_id)").execute(pool).await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_contacts_contact_id ON task_contacts(contact_id)")
         .execute(pool)
@@ -562,13 +517,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)").execute(pool).await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)").execute(pool).await?;
 
     // Create user_settings table for per-user preferences
     sqlx::query(
@@ -588,14 +539,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id)").execute(pool).await?;
 
     // Create default user if no users exist
-    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-        .fetch_one(pool)
-        .await?;
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users").fetch_one(pool).await?;
 
     if user_count.0 == 0 {
         println!("Creating default user...");
@@ -612,16 +559,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // ============== Auth / roles / per-user scoping ==============
 
     // Mark whether a user is the global owner (bootstrapped on the server).
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
 
     // Optional profile PIN, stored as "salt$sha256(salt||pin)" — never raw.
     // Gates profile switching on shared machines (a speed bump against casual
     // impersonation, not cryptographic protection: local DB access bypasses it).
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN pin_hash TEXT")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN pin_hash TEXT").execute(pool).await; // Ignore error if column already exists
 
     // Device tokens: one per enrolled device, stored as a HASH (never raw).
     // No expiry column: a paired device stays trusted until revoked (auth.rs).
@@ -652,12 +595,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         sqlx::query("ALTER TABLE device_tokens DROP COLUMN expires_at").execute(pool).await?;
     }
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_device_tokens_hash ON device_tokens(token_hash)")
-        .execute(pool)
-        .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_device_tokens_hash ON device_tokens(token_hash)").execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)").execute(pool).await?;
 
     // Project membership + role (owner | admin | member), scoping data access.
     sqlx::query(
@@ -711,9 +650,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     // Attribution: who wrote a comment / uploaded a file (nullable for legacy rows).
-    let _ = sqlx::query("ALTER TABLE comments ADD COLUMN user_id INTEGER")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE comments ADD COLUMN user_id INTEGER").execute(pool).await; // Ignore error if column already exists
 
     // Threaded replies (added 2026-06-14): a comment may reply to another in the
     // same task. Self-referencing FK so sync's generic FK remap carries it across
@@ -722,9 +659,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE SET NULL")
         .execute(pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE file_attachments ADD COLUMN uploaded_by INTEGER")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE file_attachments ADD COLUMN uploaded_by INTEGER").execute(pool).await; // Ignore error if column already exists
 
     // Shared-file storage: a per-project allocation (default 256 MB) and, on each
     // attachment, whether a server-side copy exists and how many bytes it uses.
@@ -734,12 +669,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // The project's default assistant personality (a model_profiles row). Plain
     // nullable INTEGER (model_profiles is host-only, so no FK across sync). NULL
     // = fall back to the globally-active profile.
-    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN model_profile_id INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE file_attachments ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN model_profile_id INTEGER").execute(pool).await;
+    let _ =
+        sqlx::query("ALTER TABLE file_attachments ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE file_attachments ADD COLUMN storage_size INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
@@ -749,9 +681,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     // User profile: a JSON blob (theme, avatar data-URL, vCard fields, flavor
     // fields). The frontend owns the shape; the DB just stores/returns it.
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN profile_json TEXT")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN profile_json TEXT").execute(pool).await;
 
     // Global key/value settings (e.g. the default per-project storage quota).
     let _ = sqlx::query("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -861,13 +791,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await;
     // Chat bin: two-stage deletion (bin → restore / purge). NULL = live.
-    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN deleted_at TEXT")
-        .execute(pool)
-        .await; // Ignore error if column already exists
-    // Pinned chats float to the top of their project's list.
-    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // Ignore error if column already exists
+    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN deleted_at TEXT").execute(pool).await; // Ignore error if column already exists
+                                                                                             // Pinned chats float to the top of their project's list.
+    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await; // Ignore error if column already exists
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS chat_messages (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -879,13 +805,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id)")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id)").execute(pool).await;
     // Published chats: a member can share a thread so the whole team can read it.
-    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await; // ignore if the column already exists
+    let _ = sqlx::query("ALTER TABLE chats ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0").execute(pool).await; // ignore if the column already exists
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_chats_project_public ON chats(project_id, is_public)")
         .execute(pool)
         .await;
@@ -926,8 +849,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         if has > 0 {
             continue;
         }
-        let mut tx = pool.begin().await?;
-        sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN ai_included INTEGER NOT NULL DEFAULT 0")).execute(&mut *tx).await?;
+        let mut tx = crate::db::begin_write(pool).await?;
+        sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN ai_included INTEGER NOT NULL DEFAULT 0"))
+            .execute(&mut *tx)
+            .await?;
         let _ = sqlx::query("UPDATE _sync_ctl SET value='1' WHERE key='applying'").execute(&mut *tx).await;
         sqlx::query(&format!("UPDATE {table} SET ai_included = 1")).execute(&mut *tx).await?;
         let _ = sqlx::query("UPDATE _sync_ctl SET value='0' WHERE key='applying'").execute(&mut *tx).await;
@@ -960,18 +885,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // "vCard" extras for a model profile: a custom avatar (data-URL) and a cached
     // snapshot of the model's capabilities (context window, family, params, tools)
     // from Ollama /api/show. Both nullable — existing profiles keep working.
-    let _ = sqlx::query("ALTER TABLE model_profiles ADD COLUMN avatar TEXT")
-        .execute(pool)
-        .await; // ignore if the column already exists
-    let _ = sqlx::query("ALTER TABLE model_profiles ADD COLUMN model_meta TEXT")
-        .execute(pool)
-        .await; // ignore if the column already exists
+    let _ = sqlx::query("ALTER TABLE model_profiles ADD COLUMN avatar TEXT").execute(pool).await; // ignore if the column already exists
+    let _ = sqlx::query("ALTER TABLE model_profiles ADD COLUMN model_meta TEXT").execute(pool).await; // ignore if the column already exists
 
     // Read-tool breadcrumbs for an assistant turn (JSON array of tool names), so
     // the "what was looked up" trace survives a reload like sources_json does.
-    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN tools_json TEXT")
-        .execute(pool)
-        .await; // ignore if the column already exists
+    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN tools_json TEXT").execute(pool).await; // ignore if the column already exists
 
     // Capacity meter: per-assistant-turn model + token/latency totals (the tool
     // loop's rounds plus the final streamed answer). Capacity planning is
@@ -1062,15 +981,20 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_protocols_task_class ON protocols(task_class)")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_protocols_task_class ON protocols(task_class)").execute(pool).await;
     // Ledger provenance: which protocol version produced each run. Nullable —
     // interactive approvals and legacy-routed runs carry no protocol.
     // `parent_action_id` (DELEGATE.md §3): a delegation's row links to the
     // calling turn's row — the ledger becomes a tree and cost roll-up is a
     // query. Same migration family, same nullable discipline.
-    for col in ["protocol_slug TEXT", "protocol_version INTEGER", "content_hash TEXT", "parent_action_id INTEGER", "approver_id INTEGER"] {
+    for col in [
+        "protocol_slug TEXT",
+        "protocol_version INTEGER",
+        "content_hash TEXT",
+        "parent_action_id INTEGER",
+        "approver_id INTEGER",
+    ] {
         let _ = sqlx::query(&format!("ALTER TABLE agent_actions ADD COLUMN {col}")).execute(pool).await;
     }
 
@@ -1094,20 +1018,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_proposals_user ON proposals(user_id)")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_proposals_user ON proposals(user_id)").execute(pool).await;
     // Where a proposal came from (MEMBER_AGENTS §2): NULL = a host chat turn;
     // 'agent' = a member's own machine's agent, returned through the gate —
     // rendered as “Name (via agent)”. Attribution only, never authorization.
-    let _ = sqlx::query("ALTER TABLE proposals ADD COLUMN origin TEXT")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE proposals ADD COLUMN origin TEXT").execute(pool).await;
     // Which AGENT (model profile) authored a comment — applied comments from
     // approved proposals carry the personality's face, not just the approver's.
-    let _ = sqlx::query("ALTER TABLE comments ADD COLUMN profile_id INTEGER")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE comments ADD COLUMN profile_id INTEGER").execute(pool).await;
     // Task assignment (a MEMBER_AGENTS dependency):
     // many-to-many join, tasks unchanged. brief_json is the ADVISORY work
     // brief that rides the assignment across the machine boundary.
@@ -1135,20 +1053,18 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_contact_assignees_contact ON task_contact_assignees(contact_id)")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_task_contact_assignees_contact ON task_contact_assignees(contact_id)",
+    )
+    .execute(pool)
+    .await;
     // Task visibility (ADR 0002). A task follows its area ('area', the default:
     // existing tasks keep today's behaviour), or is seen by selected members
     // ('members', listed in task_selected_members), or by admins only ('admins'). An area
     // can be restricted to its area members. The two lists are host-side, like
     // task_assignees; the two columns ride the replica's row sync.
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'area'")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE areas ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'area'").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE areas ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0").execute(pool).await;
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS area_members (\
             area_id INTEGER NOT NULL REFERENCES areas(id) ON DELETE CASCADE, \
@@ -1189,19 +1105,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // Per-node status/preview of the LAST run (added 2026-07-03): the Bridge's
     // expandable run log — "1 node failed" must be inspectable next morning,
     // not only while a live progress stream happens to be attached.
-    let _ = sqlx::query("ALTER TABLE oracle_workflows ADD COLUMN last_results_json TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE oracle_workflows ADD COLUMN last_outputs_json TEXT")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE oracle_workflows ADD COLUMN last_results_json TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE oracle_workflows ADD COLUMN last_outputs_json TEXT").execute(pool).await;
     // Personal containers (Atlas Phase 2b): a hidden per-user project that
     // hosts personal tab data (Models first) — reusing every table, command
     // and scoping rule projects already have. Non-null = user X's container;
     // excluded from project listings, immune to any project's lifecycle.
-    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN personal_user_id INTEGER")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE projects ADD COLUMN personal_user_id INTEGER").execute(pool).await;
     // Owner-granted: members may copy this project's files into THEIR OWN
     // Atlas (their machine, their corpus) so their local agents can reference
     // the documents a work brief points at. Off by default.
@@ -1234,9 +1144,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // Per-run node log (added 2026-07-03): {node_id: {status, preview, note}}
     // stored at run end — the Bridge's Recent-runs forensics. Previews only,
     // never full outputs.
-    let _ = sqlx::query("ALTER TABLE workflow_runs ADD COLUMN results_json TEXT")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE workflow_runs ADD COLUMN results_json TEXT").execute(pool).await;
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS workflow_step_runs (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -1336,11 +1244,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_tab_scores_lookup ON tab_scores(project_id, tab_id, id)",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tab_scores_lookup ON tab_scores(project_id, tab_id, id)")
+        .execute(pool)
+        .await;
 
     // Pinned tabs (2026-10-15): a user's shortcuts in the global top bar, one
     // row per (user, project, tab), stored on the host that owns the project so
@@ -1419,9 +1325,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("ALTER TABLE atlas_collections ADD COLUMN auto_index INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE atlas_collections ADD COLUMN dirty_at TEXT")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE atlas_collections ADD COLUMN dirty_at TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE atlas_collections ADD COLUMN owner_only INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
@@ -1516,12 +1420,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .await;
     // Accounts belong to individual USERS (members hook up their own inboxes;
     // nobody reads anyone else's unlinked mail). Pre-existing rows -> the owner.
-    let _ = sqlx::query("ALTER TABLE email_accounts ADD COLUMN user_id INTEGER")
-        .execute(pool)
-        .await; // ignore if the column already exists
-    // OAuth (XOAUTH2) auth as an alternative to app passwords. auth_type
-    // 'password' (default) uses the `password` column; 'oauth' uses the
-    // owner's own Google client + a stored refresh token (no password).
+    let _ = sqlx::query("ALTER TABLE email_accounts ADD COLUMN user_id INTEGER").execute(pool).await; // ignore if the column already exists
+                                                                                                      // OAuth (XOAUTH2) auth as an alternative to app passwords. auth_type
+                                                                                                      // 'password' (default) uses the `password` column; 'oauth' uses the
+                                                                                                      // owner's own Google client + a stored refresh token (no password).
     for col in [
         "auth_type TEXT NOT NULL DEFAULT 'password'",
         "oauth_client_id TEXT",
@@ -1544,9 +1446,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     // Diagnostics: record who redeemed an enrollment token so the inviter can see
     // "joined as <name>" even when the token minted a fresh account.
-    let _ = sqlx::query("ALTER TABLE enrollment_tokens ADD COLUMN enrolled_user_id INTEGER")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE enrollment_tokens ADD COLUMN enrolled_user_id INTEGER").execute(pool).await;
 
     // ----------------------------------------------------------------------- //
     // Model Assembly domain (Gundam kits + Warhammer 40K / Age of Sigmar
@@ -1573,20 +1473,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_kits_project ON model_kits(project_id)")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_kits_project ON model_kits(project_id)").execute(pool).await;
     // Card cover focus (added 2026-07-02): vertical focal point 0..100 for the
     // cover crop — object-cover's center crop kept beheading the models.
-    let _ = sqlx::query("ALTER TABLE model_kits ADD COLUMN cover_focus INTEGER NOT NULL DEFAULT 50")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("ALTER TABLE model_kits ADD COLUMN cover_focus INTEGER NOT NULL DEFAULT 50").execute(pool).await;
     // Companion task for time tracking (added 2026-07-02): "set this kit
     // active" rides the existing task timer/time-entry machinery instead of
     // growing a parallel one.
-    let _ = sqlx::query("ALTER TABLE model_kits ADD COLUMN task_id INTEGER")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("ALTER TABLE model_kits ADD COLUMN task_id INTEGER").execute(pool).await;
 
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS model_boards (\
@@ -1598,7 +1494,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             sort_order INTEGER NOT NULL DEFAULT 0)",
     )
     .execute(pool)
-        .await;
+    .await;
 
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS model_parts (\
@@ -1608,10 +1504,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             is_used INTEGER NOT NULL DEFAULT 0)",
     )
     .execute(pool)
-        .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_parts_board ON model_parts(board_id)")
-        .execute(pool)
-        .await;
+    .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_parts_board ON model_parts(board_id)").execute(pool).await;
 
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS model_sections (\
@@ -1623,7 +1518,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             sort_order INTEGER NOT NULL DEFAULT 0)",
     )
     .execute(pool)
-        .await;
+    .await;
 
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS model_used_parts (\
@@ -1633,7 +1528,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             used_at TEXT NOT NULL DEFAULT (datetime('now')))",
     )
     .execute(pool)
-        .await;
+    .await;
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_used_section ON model_used_parts(section_id)")
         .execute(pool)
         .await;
@@ -1652,7 +1547,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             sort_order INTEGER NOT NULL DEFAULT 0)",
     )
     .execute(pool)
-        .await;
+    .await;
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_model_kit_files_kit ON model_kit_files(kit_id)")
         .execute(pool)
         .await;
@@ -1674,16 +1569,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_comment_tasks_task ON comment_tasks(task_id)")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_comment_tasks_task ON comment_tasks(task_id)").execute(pool).await;
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_comment_tasks_comment ON comment_tasks(comment_id)")
         .execute(pool)
         .await;
     // The board lists a project's top-level comments newest first.
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)").execute(pool).await;
 
     share_links(pool).await?;
 
@@ -1785,7 +1677,9 @@ async fn share_links(pool: &SqlitePool) -> Result<()> {
     // new link with an opaque SQL error. The next start tries again.
     share_links_from_projects(pool, LINKS, FILES).await?;
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_share_links_task ON share_links(task_id)").execute(pool).await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_share_links_project ON share_links(project_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_share_links_project ON share_links(project_id)")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -1916,8 +1810,7 @@ async fn sync_groundwork(pool: &SqlitePool) {
 
     run("ALTER TABLE device_tokens ADD COLUMN last_sync_at TEXT".to_string()).await;
 
-    run(
-        "CREATE TABLE IF NOT EXISTS sync_state (\
+    run("CREATE TABLE IF NOT EXISTS sync_state (\
             entity_type TEXT NOT NULL, \
             row_id INTEGER NOT NULL, \
             sync_uuid TEXT, \
@@ -1927,31 +1820,40 @@ async fn sync_groundwork(pool: &SqlitePool) {
             dirty INTEGER NOT NULL DEFAULT 1, \
             base_snapshot TEXT, \
             PRIMARY KEY (entity_type, row_id))"
-            .to_string(),
-    )
+        .to_string())
     .await;
 
-    run(
-        "CREATE TABLE IF NOT EXISTS tombstones (\
+    run("CREATE TABLE IF NOT EXISTS tombstones (\
             entity_type TEXT NOT NULL, \
             row_id INTEGER, \
             sync_uuid TEXT, \
             deleted_at TEXT, \
             base_updated_at TEXT, \
             PRIMARY KEY (entity_type, sync_uuid))"
-            .to_string(),
-    )
+        .to_string())
     .await;
     // (`base_updated_at` exists on both roles: the host needs it on its own
     //  tombstones so a delete carries an LWW reference when pulled to replicas.)
-    run("ALTER TABLE tombstones ADD COLUMN base_updated_at TEXT".to_string()).await; // upgrade older DBs
+    run("ALTER TABLE tombstones ADD COLUMN base_updated_at TEXT".to_string()).await;
+    // upgrade older DBs
 }
 
 /// The tables a replica can mutate locally and must push (== `sync::PUSH_TABLES`;
 /// `users` is host-authoritative and never push-synced).
 pub(crate) const CAPTURED_TABLES: &[&str] = &[
-    "projects", "areas", "tasks", "time_entries", "file_attachments", "comments", "comment_tasks",
-    "events", "event_tasks", "event_projects", "contacts", "task_contacts", "user_settings",
+    "projects",
+    "areas",
+    "tasks",
+    "time_entries",
+    "file_attachments",
+    "comments",
+    "comment_tasks",
+    "events",
+    "event_tasks",
+    "event_projects",
+    "contacts",
+    "task_contacts",
+    "user_settings",
 ];
 
 /// Server-role delete capture: an authoritative host records a tombstone for
@@ -1996,8 +1898,7 @@ async fn sync_capture_groundwork(pool: &SqlitePool) {
     run("INSERT OR IGNORE INTO _sync_ctl (key, value) VALUES ('applying', '0')".into()).await;
 
     // Field-level conflicts surfaced from either sync direction, for the review UI.
-    run(
-        "CREATE TABLE IF NOT EXISTS sync_conflicts (\
+    run("CREATE TABLE IF NOT EXISTS sync_conflicts (\
             sync_uuid TEXT PRIMARY KEY, \
             entity TEXT NOT NULL, \
             base_json TEXT, \
@@ -2005,8 +1906,7 @@ async fn sync_capture_groundwork(pool: &SqlitePool) {
             server_json TEXT, \
             clashing_cols TEXT, \
             created_at TEXT NOT NULL DEFAULT (datetime('now')))"
-            .into(),
-    )
+        .into())
     .await;
 
     for &t in CAPTURED_TABLES {

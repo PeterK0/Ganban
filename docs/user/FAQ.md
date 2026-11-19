@@ -168,15 +168,16 @@ Share links only work from outside your network once the host has a **share door
 
 That depends on where your app came from.
 
-- **Downloaded from GitHub's Releases page:** the app checks GitHub at launch and every 6 hours, downloads a new
-  version in the background and shows **Update ready · Restart** (Android: **Update available**). Your data stays
-  where it is. **Settings → Updates → Check GitHub for new versions** turns the checks off; then you download new
+- **Downloaded from GitHub's Releases page:** the app checks GitHub at launch and every 6 hours. A new version shows
+  as **Ganban 1.0.12 is available** in the top bar (Android: **Update available**), with its patch notes. Nothing
+  downloads until you choose **Download and install**; **Later** and **Skip this version** keep it quiet. Your data
+  stays where it is. **Settings → Updates → Check GitHub for new versions** turns the checks off; then you download new
   versions by hand. Version 1.0.1 and older need one manual install first.
-- **Built by your host:** the host builds the apps when it updates, and they never ask GitHub. Desktop apps download the new version in the background
-  and show **Update ready · Restart** in the top bar. Android phones show **Update available**. Browsers show
-  **A newer Ganban is on the host · Reload**.
+- **Built by your host:** the host builds the apps when it updates, and they never ask GitHub. Desktop apps offer
+  the new version in the top bar the same way, Android phones show **Update available**, and browsers show **A newer
+  Ganban is on the host** with **See what changed** and **Reload**.
 
-![The "Update ready · Restart" notice in the top bar](../img/faq/update-ready.png)
+After an update, **What's new** shows the changes once. **Settings → Updates → Patch notes** has them all.
 
 The host's owner can start an update from **Settings → Updates → Update the server**. More:
 [Updates and backups](UPDATES_AND_BACKUPS.md).

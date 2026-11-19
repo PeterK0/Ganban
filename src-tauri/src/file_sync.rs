@@ -28,10 +28,7 @@ struct RemoteFile {
 
 /// Sanitize one path component: strip separators/colons/nul, reject `.`/`..`.
 fn safe_component(s: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c })
-        .collect();
+    let cleaned: String = s.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c }).collect();
     let trimmed = cleaned.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         "_".to_string()
@@ -66,10 +63,7 @@ pub async fn sync_project_files(
     root: String,
 ) -> Result<FileSyncSummary, String> {
     let base = base_url.trim_end_matches('/').to_string();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().map_err(|e| e.to_string())?;
 
     let files: Vec<RemoteFile> = client
         .get(format!("{base}/projects/{project_id}/files"))
@@ -89,11 +83,7 @@ pub async fn sync_project_files(
     let (mut downloaded, mut skipped, mut failed) = (0u32, 0u32, 0u32);
 
     for f in files {
-        let rel = f
-            .rel_path
-            .as_deref()
-            .filter(|p| !p.trim().is_empty())
-            .unwrap_or(&f.file_name);
+        let rel = f.rel_path.as_deref().filter(|p| !p.trim().is_empty()).unwrap_or(&f.file_name);
         let Some(dest) = safe_join(root_path, &project_name, rel) else {
             failed += 1;
             continue;
@@ -105,11 +95,7 @@ pub async fn sync_project_files(
                 continue;
             }
         }
-        let resp = match client
-            .get(format!("{base}/projects/files/{}/download", f.id))
-            .bearer_auth(&token)
-            .send()
-            .await
+        let resp = match client.get(format!("{base}/projects/files/{}/download", f.id)).bearer_auth(&token).send().await
         {
             Ok(r) if r.status().is_success() => r,
             _ => {
@@ -137,13 +123,7 @@ pub async fn sync_project_files(
         }
     }
 
-    Ok(FileSyncSummary {
-        downloaded,
-        skipped,
-        failed,
-        total,
-        dest: proj_dir.to_string_lossy().into_owned(),
-    })
+    Ok(FileSyncSummary { downloaded, skipped, failed, total, dest: proj_dir.to_string_lossy().into_owned() })
 }
 
 /// Open one project file in the OS default app (the "Open" action in the Files
@@ -159,13 +139,9 @@ pub async fn open_remote_file(
     url_path: String,
     file_name: String,
 ) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let base = base_url.trim_end_matches('/');
     let path_part = if url_path.starts_with('/') { url_path.clone() } else { format!("/{url_path}") };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(120)).build().map_err(|e| e.to_string())?;
     let mut req = client.get(format!("{base}{path_part}"));
     if !token.trim().is_empty() {
         req = req.bearer_auth(&token);
@@ -203,10 +179,7 @@ pub async fn open_remote_file(
     }
     let path = dir.join(name);
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    app.opener()
-        .open_path(path.to_string_lossy().to_string(), None::<String>)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::system_open::blocking(move || crate::system_open::open_path(&app, &path)).await
 }
 
 /// A generic JSON/text request to the daemon, run in Rust (reqwest) instead of
@@ -296,16 +269,18 @@ fn expand_home(path: &str) -> PathBuf {
 /// and never told you anything you could act on.
 #[tauri::command]
 pub async fn reveal_local_path(app: tauri::AppHandle, path: String) -> Result<RevealResult, String> {
-    use tauri_plugin_opener::OpenerExt;
+    use crate::system_open::{blocking, open_path, reveal};
     let p = expand_home(path.trim());
     if p.is_file() {
-        app.opener().reveal_item_in_dir(&p).map_err(|e| e.to_string())?;
+        let file = p.clone();
+        blocking(move || reveal(&app, &file)).await?;
         return Ok(RevealResult { outcome: "file", opened: Some(p.display().to_string()) });
     }
     let dir = if p.is_dir() { Some(p.clone()) } else { nearest_useful_dir(&p) };
     match dir {
         Some(d) => {
-            app.opener().open_path(d.to_string_lossy().to_string(), None::<String>).map_err(|e| e.to_string())?;
+            let folder = d.clone();
+            blocking(move || open_path(&app, &folder)).await?;
             Ok(RevealResult { outcome: if d == p { "file" } else { "folder" }, opened: Some(d.display().to_string()) })
         }
         None => Ok(RevealResult { outcome: "none", opened: None }),
@@ -332,13 +307,13 @@ pub async fn reveal_file(
 ) -> Result<RevealResult, String> {
     use ganban_core::storage::{self, BlobKind, StorageRoot};
     use tauri::Manager;
-    use tauri_plugin_opener::OpenerExt;
     let kind = if kind == "project" { BlobKind::Project } else { BlobKind::Attachment };
     let saved = path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(expand_home);
     let root = if on_host { app.try_state::<StorageRoot>().map(|r| r.0.clone()) } else { None };
     match storage::locate_on_this_machine(root.as_deref(), kind, id, shared, saved.as_deref()) {
         storage::Location::Found(p) => {
-            app.opener().reveal_item_in_dir(&p).map_err(|e| e.to_string())?;
+            let file = p.clone();
+            crate::system_open::blocking(move || crate::system_open::reveal(&app, &file)).await?;
             Ok(RevealResult { outcome: "file", opened: Some(p.display().to_string()) })
         }
         storage::Location::SavedPathMissing(p) => reveal_local_path(app, p.to_string_lossy().into_owned()).await,
@@ -412,10 +387,7 @@ fn spawn_streaming_upload(
     let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(3);
     let body = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|chunk| (chunk, rx)) });
-    let mut rb = client
-        .post(url)
-        .header(reqwest::header::CONTENT_LENGTH, total)
-        .body(reqwest::Body::wrap_stream(body));
+    let mut rb = client.post(url).header(reqwest::header::CONTENT_LENGTH, total).body(reqwest::Body::wrap_stream(body));
     for (k, v) in headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
@@ -443,7 +415,10 @@ pub async fn daemon_upload_start(state: tauri::State<'_, UploadSessions>, req: D
 /// `x-upload-id` header. Resolves once the network side accepted the slice
 /// (backpressure), so the caller's progress is honest.
 #[tauri::command]
-pub async fn daemon_upload_chunk(state: tauri::State<'_, UploadSessions>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+pub async fn daemon_upload_chunk(
+    state: tauri::State<'_, UploadSessions>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
     let id: u64 = request
         .headers()
         .get("x-upload-id")
@@ -600,10 +575,7 @@ async fn upload_from_disk(
     });
 
     let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
-    let mut rb = client
-        .post(url)
-        .header(reqwest::header::CONTENT_LENGTH, total)
-        .body(reqwest::Body::wrap_stream(body));
+    let mut rb = client.post(url).header(reqwest::header::CONTENT_LENGTH, total).body(reqwest::Body::wrap_stream(body));
     for (k, v) in headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
@@ -707,10 +679,7 @@ pub enum StreamMsg {
 }
 
 #[tauri::command]
-pub async fn daemon_http_stream(
-    req: DaemonHttpReq,
-    on_event: tauri::ipc::Channel<StreamMsg>,
-) -> Result<(), String> {
+pub async fn daemon_http_stream(req: DaemonHttpReq, on_event: tauri::ipc::Channel<StreamMsg>) -> Result<(), String> {
     let method = reqwest::Method::from_bytes(req.method.to_ascii_uppercase().as_bytes())
         .map_err(|e| format!("bad method: {e}"))?;
     let mut builder = reqwest::Client::builder();
@@ -752,7 +721,6 @@ pub async fn daemon_http_stream(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod upload_stream_tests {
     use super::*;
@@ -783,7 +751,13 @@ mod upload_stream_tests {
             if len > refuse_over {
                 let body = r#"{"error":"file exceeds the project's remaining storage"}"#;
                 let _ = sock
-                    .write_all(format!("HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
                     .await;
                 return;
             }
@@ -795,7 +769,9 @@ mod upload_stream_tests {
             }
             let sum: u64 = body.iter().map(|b| *b as u64).sum();
             let reply = format!(r#"{{"size":{},"sum":{}}}"#, body.len(), sum);
-            sock.write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
+            sock.write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{reply}", reply.len()).as_bytes())
+                .await
+                .unwrap();
         });
         (url, h)
     }
@@ -877,7 +853,8 @@ mod disk_upload_tests {
 
         let mut got = expand_upload_paths(&[folder.clone(), loose.clone()]);
         got.sort_by(|a, b| a.path.cmp(&b.path));
-        let rows: Vec<(String, Option<String>, u64)> = got.iter().map(|e| (e.name.clone(), e.rel_path.clone(), e.size)).collect();
+        let rows: Vec<(String, Option<String>, u64)> =
+            got.iter().map(|e| (e.name.clone(), e.rel_path.clone(), e.size)).collect();
         assert_eq!(
             rows,
             vec![
@@ -915,7 +892,10 @@ mod disk_upload_tests {
                 body.extend_from_slice(&chunk[..n]);
             }
             let reply = format!("{{\"received\":{}}}", body.len());
-            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}", reply.len());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+                reply.len()
+            );
             sock.write_all(resp.as_bytes()).await.unwrap();
             body
         });
@@ -978,7 +958,11 @@ mod disk_upload_tests {
         use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
         let app = mock_builder()
             .manage(DiskUploads::default())
-            .invoke_handler(tauri::generate_handler![list_upload_files, daemon_upload_from_disk, daemon_upload_from_disk_cancel])
+            .invoke_handler(tauri::generate_handler![
+                list_upload_files,
+                daemon_upload_from_disk,
+                daemon_upload_from_disk_cancel
+            ])
             .build(mock_context(noop_assets()))
             .unwrap();
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
@@ -1013,14 +997,24 @@ mod disk_upload_tests {
         .unwrap();
         assert_eq!(resp, json!({ "status": 200, "body": "{\"received\":10}" }));
         assert_eq!(tauri::async_runtime::block_on(host).unwrap(), b"hello host");
-        assert_eq!(call("daemon_upload_from_disk_cancel", json!({ "key": "d1" })).unwrap(), Value::Null, "cancelling a finished upload is harmless");
+        assert_eq!(
+            call("daemon_upload_from_disk_cancel", json!({ "key": "d1" })).unwrap(),
+            Value::Null,
+            "cancelling a finished upload is harmless"
+        );
     }
 
     #[tokio::test]
     async fn a_missing_file_fails_before_any_request() {
-        let err = upload_from_disk("http://127.0.0.1:9/x", &Default::default(), Path::new("/no/such/file"), Duration::ZERO, |_| {})
-            .await
-            .unwrap_err();
+        let err = upload_from_disk(
+            "http://127.0.0.1:9/x",
+            &Default::default(),
+            Path::new("/no/such/file"),
+            Duration::ZERO,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("/no/such/file"), "{err}");
     }
 }

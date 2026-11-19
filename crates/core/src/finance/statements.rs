@@ -64,7 +64,8 @@ fn range(period: &str) -> Result<(Range, Range)> {
         let r = |y: i32| Range { period: y.to_string(), from: format!("{y:04}-01-01"), to: format!("{y:04}-12-31") };
         return Ok((r(y), r(y - 1)));
     }
-    let m = check_month(p).map_err(|_| AppError::InvalidInput("the period is a month (YYYY-MM) or a year (YYYY)".into()))?;
+    let m = check_month(p)
+        .map_err(|_| AppError::InvalidInput("the period is a month (YYYY-MM) or a year (YYYY)".into()))?;
     let r = |m: String| Range { from: format!("{m}-01"), to: month_end(&m), period: m };
     Ok((r(m.clone()), r(add_months(&m, -1))))
 }
@@ -85,8 +86,9 @@ impl Books {
     }
     /// The OCI reserve: its system key, or an older entity's default by code.
     fn oci(&self) -> Option<i64> {
-        self.key_id(system::OCI_RESERVE)
-            .or_else(|| self.chart.iter().find(|a| a.code == "3200" && a.class == "equity" && a.system_key.is_none()).map(|a| a.id))
+        self.key_id(system::OCI_RESERVE).or_else(|| {
+            self.chart.iter().find(|a| a.code == "3200" && a.class == "equity" && a.system_key.is_none()).map(|a| a.id)
+        })
     }
     fn class_of(&self, id: i64) -> &str {
         self.by_id.get(&id).map_or("", |a| a.class.as_str())
@@ -106,10 +108,11 @@ impl Books {
 }
 
 async fn books(conn: &mut Conn, ent: &Entity) -> Result<Books> {
-    let chart: Vec<LedgerAccount> = sqlx::query_as("SELECT * FROM fin_ledger_accounts WHERE entity_id = ? ORDER BY code, id")
-        .bind(ent.id)
-        .fetch_all(conn)
-        .await?;
+    let chart: Vec<LedgerAccount> =
+        sqlx::query_as("SELECT * FROM fin_ledger_accounts WHERE entity_id = ? ORDER BY code, id")
+            .bind(ent.id)
+            .fetch_all(conn)
+            .await?;
     let by_id = chart.iter().map(|a| (a.id, a.clone())).collect();
     Ok(Books { chart, by_id })
 }
@@ -228,10 +231,11 @@ async fn cash_flow(conn: &mut Conn, ent: &Entity, b: &Books, rg: &Range) -> Resu
     let clearing = b.key_id(system::TRANSFERS_CLEARING);
     let fx_keys = [b.key_id(system::FX_UNREALISED_GAIN), b.key_id(system::FX_UNREALISED_LOSS)];
     // A transfer's other side: the account on the paired entry.
-    let pairs: Vec<(i64, i64)> = sqlx::query_as("SELECT entry_a, entry_b FROM fin_pairs WHERE entity_id = ? AND status != 'rejected'")
-        .bind(ent.id)
-        .fetch_all(&mut *conn)
-        .await?;
+    let pairs: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT entry_a, entry_b FROM fin_pairs WHERE entity_id = ? AND status != 'rejected'")
+            .bind(ent.id)
+            .fetch_all(&mut *conn)
+            .await?;
     let mut other: HashMap<i64, i64> = HashMap::new();
     for (a, c) in pairs {
         other.insert(a, c);
@@ -256,17 +260,26 @@ async fn cash_flow(conn: &mut Conn, ent: &Entity, b: &Books, rg: &Range) -> Resu
             let mut through = account;
             if Some(account) == clearing {
                 if let Some(o) = other.get(entry) {
-                    let side: Vec<(i64, i64)> = sqlx::query_as("SELECT ledger_account_id, functional_minor FROM fin_lines WHERE entry_id = ? ORDER BY id")
-                        .bind(o)
-                        .fetch_all(&mut *conn)
-                        .await?;
-                    if let Some(&(x, _)) = side.iter().filter(|(x, _)| Some(*x) != clearing).max_by_key(|(_, f)| f.abs()) {
+                    let side: Vec<(i64, i64)> = sqlx::query_as(
+                        "SELECT ledger_account_id, functional_minor FROM fin_lines WHERE entry_id = ? ORDER BY id",
+                    )
+                    .bind(o)
+                    .fetch_all(&mut *conn)
+                    .await?;
+                    if let Some(&(x, _)) =
+                        side.iter().filter(|(x, _)| Some(*x) != clearing).max_by_key(|(_, f)| f.abs())
+                    {
                         through = x;
                     }
                 }
             }
             let (class, key, label, la) = if through != account && b.is_cash(through) {
-                ("operating".to_string(), "transfers_cash".to_string(), "Transfers between cash accounts".to_string(), None)
+                (
+                    "operating".to_string(),
+                    "transfers_cash".to_string(),
+                    "Transfers between cash accounts".to_string(),
+                    None,
+                )
             } else {
                 let name = b.by_id.get(&through).map_or(String::new(), |a| a.name.clone());
                 (b.cash_flow_class(through), format!("{}", through), name, Some(through))
@@ -350,10 +363,13 @@ fn merge(current: Vec<R>, comparative: Option<Vec<R>>) -> Vec<Row> {
     };
     let Some(comparative) = comparative else { return current.into_iter().map(|x| row(x, None)).collect() };
     let values: HashMap<String, i64> = comparative.iter().map(|c| (c.key.clone(), c.amount)).collect();
-    let mut out: Vec<Row> = current.into_iter().map(|x| {
-        let v = values.get(&x.key).copied().unwrap_or(0);
-        row(x, Some(v))
-    }).collect();
+    let mut out: Vec<Row> = current
+        .into_iter()
+        .map(|x| {
+            let v = values.get(&x.key).copied().unwrap_or(0);
+            row(x, Some(v))
+        })
+        .collect();
     let mut at = 0;
     for c in comparative {
         if let Some(i) = out.iter().position(|o| o.key == c.key) {
@@ -396,7 +412,12 @@ pub fn major(minor: i64, cur: &str) -> String {
     }
     let div = 10i64.pow(exp);
     let sign = if minor < 0 { "-" } else { "" };
-    format!("{sign}{}.{:0width$}", minor.unsigned_abs() / div as u64, minor.unsigned_abs() % div as u64, width = exp as usize)
+    format!(
+        "{sign}{}.{:0width$}",
+        minor.unsigned_abs() / div as u64,
+        minor.unsigned_abs() % div as u64,
+        width = exp as usize
+    )
 }
 
 fn csv_field(s: &str) -> String {
@@ -407,7 +428,13 @@ fn csv_field(s: &str) -> String {
     }
 }
 
-pub async fn statement_csv(db: &Db, ent: &Entity, kind: &str, period: &str, comparatives: bool) -> Result<StatementCsv> {
+pub async fn statement_csv(
+    db: &Db,
+    ent: &Entity,
+    kind: &str,
+    period: &str,
+    comparatives: bool,
+) -> Result<StatementCsv> {
     let s = statement(db, ent, kind, period, comparatives).await?;
     let mut content = format!("Line,{} ({})", csv_field(&s.period), s.currency);
     if let Some(c) = &s.comparative {
@@ -416,7 +443,11 @@ pub async fn statement_csv(db: &Db, ent: &Entity, kind: &str, period: &str, comp
     content.push_str("\r\n");
     for row in &s.rows {
         let amount = if row.style == "header" { String::new() } else { major(row.amount_minor, &s.currency) };
-        content.push_str(&format!("{},{}", csv_field(&format!("{}{}", "  ".repeat(row.level as usize), row.label)), amount));
+        content.push_str(&format!(
+            "{},{}",
+            csv_field(&format!("{}{}", "  ".repeat(row.level as usize), row.label)),
+            amount
+        ));
         if s.comparative.is_some() {
             let cmp = match (row.style.as_str(), row.comparative_minor) {
                 ("header", _) | (_, None) => String::new(),

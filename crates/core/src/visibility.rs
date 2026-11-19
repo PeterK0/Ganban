@@ -257,7 +257,7 @@ pub async fn set_task_visibility(db: &Db, task_id: i64, visibility: &str, member
         .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
     let listed: &[i64] = if visibility == SELECTED_MEMBERS { members } else { &[] };
     require_members(db, project, listed).await?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query("UPDATE tasks SET visibility = ?, updated_at = ? WHERE id = ?")
         .bind(visibility)
         .bind(Utc::now())
@@ -295,7 +295,7 @@ pub async fn set_area_restricted(db: &Db, area_id: i64, restricted: bool) -> Res
 pub async fn set_area_members(db: &Db, area_id: i64, users: &[i64]) -> Result<()> {
     let project = area_project(db, area_id).await?;
     require_members(db, project, users).await?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query("DELETE FROM area_members WHERE area_id = ?").bind(area_id).execute(&mut *tx).await?;
     for &u in users {
         sqlx::query("INSERT OR IGNORE INTO area_members (area_id, user_id) VALUES (?, ?)")
@@ -327,7 +327,7 @@ pub async fn keep_audience_of_area(db: &Db, area_id: i64) -> Result<()> {
     if restricted != Some(true) {
         return Ok(());
     }
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO task_selected_members (task_id, user_id) \
          SELECT t.id, am.user_id FROM tasks t JOIN area_members am ON am.area_id = t.area_id \
@@ -350,11 +350,13 @@ pub async fn keep_audience_of_area(db: &Db, area_id: i64) -> Result<()> {
 
 /// Someone left the project: drop them from its areas and its tasks' lists.
 pub async fn forget_project_member(db: &Db, project_id: i64, user_id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM area_members WHERE user_id = ? AND area_id IN (SELECT id FROM areas WHERE project_id = ?)")
-        .bind(user_id)
-        .bind(project_id)
-        .execute(db)
-        .await?;
+    sqlx::query(
+        "DELETE FROM area_members WHERE user_id = ? AND area_id IN (SELECT id FROM areas WHERE project_id = ?)",
+    )
+    .bind(user_id)
+    .bind(project_id)
+    .execute(db)
+    .await?;
     sqlx::query("DELETE FROM task_selected_members WHERE user_id = ? AND task_id IN (SELECT id FROM tasks WHERE project_id = ?)")
         .bind(user_id)
         .bind(project_id)
@@ -398,13 +400,24 @@ mod tests {
         let db = test_db(tag).await;
         auth::ensure_owner(&db).await.unwrap();
         for (id, name) in [(ADA, "ada"), (MIA, "mia"), (BO, "bo"), (ZED, "zed")] {
-            sqlx::query("INSERT INTO users (id, username, full_name) VALUES (?, ?, ?)").bind(id).bind(name).bind(name).execute(&db).await.unwrap();
+            sqlx::query("INSERT INTO users (id, username, full_name) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(name)
+                .bind(name)
+                .execute(&db)
+                .await
+                .unwrap();
         }
-        let project = ops::create_project(&db, crate::models::CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
+        let project =
+            ops::create_project(&db, crate::models::CreateProjectInput { name: "P".into(), description: None })
+                .await
+                .unwrap()
+                .id;
         auth::add_project_member(&db, project, ADA, auth::ROLE_ADMIN).await.unwrap();
         auth::add_project_member(&db, project, MIA, auth::ROLE_MEMBER).await.unwrap();
         auth::add_project_member(&db, project, BO, auth::ROLE_MEMBER).await.unwrap();
-        let area = |name: &str| crate::models::CreateAreaInput { project_id: project, name: name.into(), description: None };
+        let area =
+            |name: &str| crate::models::CreateAreaInput { project_id: project, name: name.into(), description: None };
         let finance = ops::create_area(&db, area("Finance")).await.unwrap().id;
         let open_area = ops::create_area(&db, area("Ops")).await.unwrap().id;
         set_area_restricted(&db, finance, true).await.unwrap();
@@ -489,8 +502,18 @@ mod tests {
 
         // Stale rows for someone outside the project (left behind when they
         // left) grant nothing.
-        sqlx::query("INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES (?, ?, 1)").bind(t).bind(ZED).execute(&w.db).await.unwrap();
-        sqlx::query("INSERT INTO task_selected_members (task_id, user_id) VALUES (?, ?)").bind(t).bind(ZED).execute(&w.db).await.unwrap();
+        sqlx::query("INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES (?, ?, 1)")
+            .bind(t)
+            .bind(ZED)
+            .execute(&w.db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO task_selected_members (task_id, user_id) VALUES (?, ?)")
+            .bind(t)
+            .bind(ZED)
+            .execute(&w.db)
+            .await
+            .unwrap();
         assert!(!sees(&w, ZED, t).await);
     }
 

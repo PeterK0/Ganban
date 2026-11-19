@@ -133,10 +133,8 @@ pub async fn resolve(host: &str, port: u16, scope: Scope) -> Result<Vec<SocketAd
     if let Ok(ip) = bare.parse::<IpAddr>() {
         return if scope.blocks(ip) { Err(BLOCKED.into()) } else { Ok(vec![SocketAddr::new(ip, port)]) };
     }
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((bare, port))
-        .await
-        .map_err(|e| format!("DNS lookup failed: {e}"))?
-        .collect();
+    let addrs: Vec<SocketAddr> =
+        tokio::net::lookup_host((bare, port)).await.map_err(|e| format!("DNS lookup failed: {e}"))?.collect();
     if addrs.is_empty() {
         return Err("host did not resolve".into());
     }
@@ -171,7 +169,12 @@ fn url_is_refused_literal(url: &reqwest::Url, scope: Scope) -> bool {
         return true;
     }
     match url.host_str() {
-        Some(h) => h.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().map(|ip| scope.blocks(ip)).unwrap_or(false),
+        Some(h) => h
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .map(|ip| scope.blocks(ip))
+            .unwrap_or(false),
         None => true,
     }
 }
@@ -185,7 +188,8 @@ impl reqwest::dns::Resolve for GuardedResolver {
         let host = name.as_str().to_string();
         let scope = self.0;
         Box::pin(async move {
-            let addrs = resolve(&host, 0, scope).await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            let addrs =
+                resolve(&host, 0, scope).await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
@@ -227,18 +231,49 @@ mod tests {
     #[test]
     fn blocks_internal_ranges_and_the_tailnet() {
         let blocked = [
-            "127.0.0.1", "10.0.0.5", "172.16.3.4", "192.168.1.1", "169.254.169.254", "0.0.0.0", "255.255.255.255",
-            "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.1", "240.0.0.1", "224.0.0.1",
-            "::1", "::", "fc00::1", "fd7a:115c:a1e0::1", "fe80::1", "fec0::1", "ff02::1",
-            "::ffff:127.0.0.1", "::ffff:100.64.0.1", "::ffff:10.0.0.1", "::10.0.0.1", "64:ff9b::a00:1",
-            "64:ff9b:1::1", "2002:c0a8:101::1", "::ffff:0:7f00:1", "2001:0:4136:e378::1", "2001:db8::1",
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.3.4",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "255.255.255.255",
+            "100.64.0.1",
+            "100.100.100.100",
+            "100.127.255.254",
+            "198.18.0.1",
+            "240.0.0.1",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd7a:115c:a1e0::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:100.64.0.1",
+            "::ffff:10.0.0.1",
+            "::10.0.0.1",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::1",
+            "2002:c0a8:101::1",
+            "::ffff:0:7f00:1",
+            "2001:0:4136:e378::1",
+            "2001:db8::1",
         ];
         for s in blocked {
             assert!(ip_is_blocked(s.parse::<IpAddr>().unwrap()), "{s} must be blocked (SSRF)");
         }
         let public = [
-            "1.1.1.1", "93.184.216.34", "100.63.255.255", "100.128.0.1", "2606:2800:220:1:248:1893:25c8:1946",
-            "::ffff:1.1.1.1", "64:ff9b::101:101", "2002:101:101::1",
+            "1.1.1.1",
+            "93.184.216.34",
+            "100.63.255.255",
+            "100.128.0.1",
+            "2606:2800:220:1:248:1893:25c8:1946",
+            "::ffff:1.1.1.1",
+            "64:ff9b::101:101",
+            "2002:101:101::1",
         ];
         for s in public {
             assert!(!ip_is_blocked(s.parse::<IpAddr>().unwrap()), "{s} is public");
@@ -258,8 +293,13 @@ mod tests {
     #[tokio::test]
     async fn check_url_refuses_internal_and_non_http() {
         for u in [
-            "http://127.0.0.1:8765/", "http://localhost/", "http://localhost./", "http://2130706433/", "http://[::1]/",
-            "http://100.64.1.2/", "file:///etc/passwd",
+            "http://127.0.0.1:8765/",
+            "http://localhost/",
+            "http://localhost./",
+            "http://2130706433/",
+            "http://[::1]/",
+            "http://100.64.1.2/",
+            "file:///etc/passwd",
         ] {
             assert!(check_url(&reqwest::Url::parse(u).unwrap()).await.is_err(), "{u} must be refused");
         }
@@ -311,7 +351,14 @@ mod tests {
         for ok in ["192.168.1.20", "10.0.0.5", "100.101.102.103", "fd7a:115c:a1e0::1", "127.0.0.1", "1.1.1.1"] {
             assert!(!own.blocks(ok.parse().unwrap()), "{ok} is the owner's network");
         }
-        for bad in ["169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254", "fe80::1", "::ffff:169.254.169.254"] {
+        for bad in [
+            "169.254.169.254",
+            "169.254.170.2",
+            "100.100.100.200",
+            "fd00:ec2::254",
+            "fe80::1",
+            "::ffff:169.254.169.254",
+        ] {
             assert!(own.blocks(bad.parse().unwrap()), "{bad} is a metadata endpoint");
         }
         assert!(resolve("localhost", 80, own).await.is_ok());

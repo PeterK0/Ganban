@@ -15,10 +15,7 @@ fn temp_db(tag: &str) -> PathBuf {
 }
 
 async fn project(db: &Db, name: &str) -> i64 {
-    ops::create_project(db, CreateProjectInput { name: name.into(), description: None })
-        .await
-        .unwrap()
-        .id
+    ops::create_project(db, CreateProjectInput { name: name.into(), description: None }).await.unwrap().id
 }
 
 #[tokio::test]
@@ -27,9 +24,17 @@ async fn list_scope_and_revoke() {
     let pid = project(&db, "Apollo").await;
     let other = project(&db, "Zephyr").await;
 
-    let raw = auth::create_enrollment_token(&db, "invite", None, Some(pid), Some("member"), Some("Alice"), auth::INVITE_TTL_SECS)
-        .await
-        .unwrap();
+    let raw = auth::create_enrollment_token(
+        &db,
+        "invite",
+        None,
+        Some(pid),
+        Some("member"),
+        Some("Alice"),
+        auth::INVITE_TTL_SECS,
+    )
+    .await
+    .unwrap();
 
     // Global list resolves the project name and shows the inviter's label, pending.
     let all = auth::list_invites(&db, None).await.unwrap();
@@ -58,9 +63,17 @@ async fn list_scope_and_revoke() {
 async fn joined_name_resolves_after_enroll() {
     let db = init_db_role(&temp_db("joined"), Role::Server).await.unwrap();
     let pid = project(&db, "Apollo").await;
-    let raw = auth::create_enrollment_token(&db, "invite", None, Some(pid), Some("member"), Some("Bequest"), auth::INVITE_TTL_SECS)
-        .await
-        .unwrap();
+    let raw = auth::create_enrollment_token(
+        &db,
+        "invite",
+        None,
+        Some(pid),
+        Some("member"),
+        Some("Bequest"),
+        auth::INVITE_TTL_SECS,
+    )
+    .await
+    .unwrap();
 
     // The joiner's chosen name wins and is recorded against the token.
     auth::enroll(&db, &raw, Some("phone"), Some("Real Name")).await.unwrap();

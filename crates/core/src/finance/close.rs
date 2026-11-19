@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::entries::{post_system_entry_in, SysLine};
-use super::{add_months, audit, check_month, is_locked, month_end, now, rates, schedules, system, system_account_in, Conn, Entity};
+use super::{
+    add_months, audit, check_month, is_locked, month_end, now, rates, schedules, system, system_account_in, Conn,
+    Entity,
+};
 use crate::error::{AppError, Result};
 use crate::Db;
 
@@ -143,7 +146,13 @@ async fn retranslate(conn: &mut Conn, ent: &Entity, month: &str) -> Result<Optio
         } else {
             loss -= diff;
         }
-        lines.push(SysLine { ledger_account_id: account, amount_minor: 0, currency: cur, functional_minor: diff, memo: Some("Retranslation".into()) });
+        lines.push(SysLine {
+            ledger_account_id: account,
+            amount_minor: 0,
+            currency: cur,
+            functional_minor: diff,
+            memo: Some("Retranslation".into()),
+        });
     }
     if lines.is_empty() {
         return Ok(None);
@@ -168,7 +177,7 @@ pub async fn close_period(db: &Db, ent: &Entity, month: &str, force: bool, today
     if to.as_str() >= today {
         return Err(AppError::InvalidInput("a month closes after it ends".into()));
     }
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     if is_locked(&mut tx, ent, &from).await? {
         return Err(AppError::InvalidInput("that month is already closed".into()));
     }
@@ -191,7 +200,13 @@ pub async fn close_period(db: &Db, ent: &Entity, month: &str, force: bool, today
     let blockers = blockers(&mut tx, ent, &from, &to).await?;
     // Drafts would be stuck in a locked month, so even a forced close waits for them.
     if !blockers.is_empty() && (!force || !blockers.drafts.is_empty()) {
-        return Ok(CloseResult { closed: false, month, blockers, retranslation_entry_id: None, release_entry_ids: vec![] });
+        return Ok(CloseResult {
+            closed: false,
+            month,
+            blockers,
+            retranslation_entry_id: None,
+            release_entry_ids: vec![],
+        });
     }
     let retranslation_entry_id = retranslate(&mut tx, ent, &month).await?;
     let release_entry_ids = schedules::post_releases_in(&mut tx, ent, &month).await?;

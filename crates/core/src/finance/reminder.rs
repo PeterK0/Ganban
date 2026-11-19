@@ -76,7 +76,7 @@ pub async fn get_settings(db: &Db, ent: &Entity) -> Result<Settings> {
     .bind(ent.id)
     .fetch_optional(db)
     .await?;
-    let (enabled, weekday, time, post_older, days) = row.unwrap_or((true, "Mon".into(), "09:00".into(), false, 30));
+    let (enabled, weekday, time, post_older, days) = row.unwrap_or((true, "Mon".into(), "09:00".into(), true, 90));
     Ok(Settings {
         reminder: Reminder { enabled, weekday, time },
         import: ImportSettings { post_older, post_older_days: days.clamp(1, MAX_POST_OLDER_DAYS as i64) as u32 },
@@ -127,7 +127,7 @@ pub async fn update_settings(db: &Db, ent: &Entity, patch: SettingsPatch) -> Res
             next.import.post_older_days = days;
         }
     }
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query(
         "INSERT INTO fin_settings (entity_id, reminder_enabled, reminder_weekday, reminder_time, import_post_older, import_post_older_days) \
          VALUES (?, ?, ?, ?, ?, ?) \
@@ -145,11 +145,25 @@ pub async fn update_settings(db: &Db, ent: &Entity, patch: SettingsPatch) -> Res
     .await?;
     // A new day or time counts from now: moving it to an hour already past this week
     // doesn't fire at once.
-    if (next.reminder.weekday != before.reminder.weekday || next.reminder.time != before.reminder.time) || (next.reminder.enabled && !before.reminder.enabled) {
-        sqlx::query("UPDATE fin_settings SET reminder_last_at = ? WHERE entity_id = ?").bind(super::now()).bind(ent.id).execute(&mut *tx).await?;
+    if (next.reminder.weekday != before.reminder.weekday || next.reminder.time != before.reminder.time)
+        || (next.reminder.enabled && !before.reminder.enabled)
+    {
+        sqlx::query("UPDATE fin_settings SET reminder_last_at = ? WHERE entity_id = ?")
+            .bind(super::now())
+            .bind(ent.id)
+            .execute(&mut *tx)
+            .await?;
     }
-    audit(&mut tx, ent, "update", "settings", Some(ent.id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&next)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "settings",
+        Some(ent.id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&next)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(next)
 }

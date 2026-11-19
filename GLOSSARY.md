@@ -81,6 +81,16 @@ Where a device's app updates from, chosen per device in Settings → Updates: Gi
 host's builds). The build's update channel is only the default (ADR 0011).
 _Avoid_: update channel (that's the build's), update server
 
+**Update offer**:
+A newer version a check found, shown to the user with its patch notes; it downloads only on **Download and install**,
+and **Later** or **Skip this version** keep it quiet (ADR 0012). A check never downloads.
+_Avoid_: auto-update, update ready (that's after the download)
+
+**Patch notes**:
+What a version fixed and added, as the user reads it: the entries of its section in `CHANGELOG.md`, shown in the
+update offer, once as "What's new" after an update, and in Settings → Updates → Patch notes (ADR 0012).
+_Avoid_: changelog, release notes (in the UI; `CHANGELOG.md` is the file they come from)
+
 **Side pane**:
 The resizable panel on the right of Home, the calendar and a project's tasks that shows the selected task or event
 in an editor. Its width is shared by every view and remembered per device.
@@ -145,14 +155,41 @@ re-import knows the row is already in.
 _Avoid_: transaction, statement row (in code), import row
 
 **Journal entry**:
-A dated set of lines, debits and credits, that balances in the functional currency. An imported one starts as a
-draft in the inbox and is posted once the user has checked it.
-_Avoid_: transaction, booking, posting (posting is the step from draft to posted)
+A dated set of lines, debits and credits, that balances in the functional currency. An imported one is posted as
+soon as it has a category (categorised means done); one that needs the user waits in the inbox as a draft.
+_Avoid_: transaction, booking, posting (posting is the step from draft to posted, which the app takes)
 
 **Transfer pair**:
 Two journal entries that are the two sides of one move between the user's own financial accounts (or one currency
 exchange), matched so the move nets to zero instead of counting as income and spending.
 _Avoid_: match, link, internal transaction
+
+**Payee**:
+Who a bank line was paid to or came from, as one row with a name, a default category and the spellings it goes
+by. The raw text stays on the source line; the payee is what the screens show and what files the line.
+_Avoid_: merchant (in code), vendor, counterparty
+
+**Alias**:
+One spelling key of a payee: the certain key of a raw payee or description ("WOΛT", "Wolt" and "WOLT*ORDER 128" are
+one key, `wolt`). An import resolves raw text through the aliases; an unknown key makes a new payee. Merging moves
+aliases and remembers where each came from, so a split gives them back.
+_Avoid_: synonym, variant, spelling (in code)
+
+**Default category**:
+The category a payee's lines are filed under without asking. Set the first time the user categorises one of its
+lines, unless the payee asks every time; filing a later line differently changes it only when the user says so.
+_Avoid_: rule (a rule is a condition on any line), auto-category
+
+**Unsorted history**:
+Old lines (before the import's history cut-off, 90 days by default) that no rule, default or suggestion filed:
+posted to Uncategorised so they leave the inbox, and listed by payee, the largest first, to sort when the user
+likes.
+_Avoid_: backlog, archive, old inbox
+
+**Unconfirmed account**:
+A financial account the import made for the other side of a move (a pocket, a balance in another currency) whose
+own statement has never been imported, so its balance is only what the other side sent.
+_Avoid_: estimated account, virtual account
 
 **Payee group**:
 The inbox's drafts from one merchant in one direction (money spent, or money received), as the host groups them

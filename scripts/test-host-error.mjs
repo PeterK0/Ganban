@@ -35,6 +35,10 @@ eq(H.hostErrorCode({ error: msg, code: H.AI_FILE_TOO_LARGE }), H.AI_FILE_TOO_LAR
 
 eq(H.localErrorParts('Not found: task'), { message: 'Not found: task' }, 'local: a plain message');
 eq(H.localErrorParts({ error: msg, code: 'AI_FILE_TOO_LARGE' }), { message: msg, code: 'AI_FILE_TOO_LARGE' }, 'local: a coded refusal');
+eq(H.localErrorParts({ error: 'Conflict: changed', code: H.TASK_CHANGED, current: { id: 7 } }),
+  { message: 'Conflict: changed', code: 'TASK_CHANGED', current: { id: 7 } }, 'local: a conflict keeps the current row');
+eq(H.hostErrorCurrent({ code: H.TASK_CHANGED, current: { id: 7 } }), { id: 7 }, 'the current row of a conflict');
+eq(H.hostErrorCurrent(new Error('x')), undefined, 'a plain error has none');
 eq(H.localErrorParts(new Error('x')), null, 'an Error is left alone');
 eq(H.localErrorParts(42), null, 'anything else is left alone');
 

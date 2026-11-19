@@ -112,7 +112,12 @@ async fn released(conn: &mut Conn, ent: &Entity) -> Result<HashSet<(i64, String)
 }
 
 /// The releases from `from` to `to` (months, inclusive) that haven't posted yet.
-pub(crate) async fn pending_releases(conn: &mut Conn, ent: &Entity, from: &str, to: &str) -> Result<Vec<PendingRelease>> {
+pub(crate) async fn pending_releases(
+    conn: &mut Conn,
+    ent: &Entity,
+    from: &str,
+    to: &str,
+) -> Result<Vec<PendingRelease>> {
     let done = released(conn, ent).await?;
     let mut out = Vec::new();
     for s in records(conn, ent).await? {
@@ -142,7 +147,8 @@ pub(crate) async fn post_releases_in(conn: &mut Conn, ent: &Entity, month: &str)
             SysLine::functional(ent, r.ledger_account_id, r.amount_minor, Some("Release")),
             SysLine::functional(ent, r.balance_account_id, -r.amount_minor, Some("Release")),
         ];
-        let entry = post_system_entry_in(conn, ent, &month_end(month), format!("Recognition release {month}"), lines).await?;
+        let entry =
+            post_system_entry_in(conn, ent, &month_end(month), format!("Recognition release {month}"), lines).await?;
         sqlx::query("INSERT INTO fin_schedule_releases (schedule_id, month, entry_id) VALUES (?, ?, ?)")
             .bind(r.schedule_id)
             .bind(month)
@@ -158,7 +164,11 @@ fn view(s: ScheduleRec, done: &HashSet<(i64, String)>) -> Schedule {
     let rows = s
         .shares()
         .into_iter()
-        .map(|(month, amount_minor)| ScheduleRow { released: done.contains(&(s.id, month.clone())), month, amount_minor })
+        .map(|(month, amount_minor)| ScheduleRow {
+            released: done.contains(&(s.id, month.clone())),
+            month,
+            amount_minor,
+        })
         .collect();
     Schedule {
         id: s.id,
@@ -188,7 +198,12 @@ pub async fn list_schedules(db: &Db, ent: &Entity, entry_id: Option<i64>) -> Res
 
 async fn get_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<Schedule> {
     let done = released(conn, ent).await?;
-    records(conn, ent).await?.into_iter().find(|s| s.id == id).map(|s| view(s, &done)).ok_or_else(|| not_found("schedule"))
+    records(conn, ent)
+        .await?
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| view(s, &done))
+        .ok_or_else(|| not_found("schedule"))
 }
 
 /// Whether an entry carries a schedule, or is one's deferral or release (its lines are then
@@ -205,7 +220,7 @@ pub(crate) async fn has_schedule(conn: &mut Conn, entry_id: i64) -> Result<bool>
 }
 
 pub async fn create_schedule(db: &Db, ent: &Entity, input: ScheduleInput) -> Result<Schedule> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let entry = get_entry_in(&mut tx, ent, input.entry_id).await?;
     if entry.status != "posted" || entry.reverses_id.is_some() {
         return Err(AppError::InvalidInput("only a posted entry can be spread".into()));
@@ -255,7 +270,8 @@ pub async fn create_schedule(db: &Db, ent: &Entity, input: ScheduleInput) -> Res
         SysLine::functional(ent, account, -amount, Some("Deferral")),
         SysLine::functional(ent, balance.id, amount, Some("Deferral")),
     ];
-    let deferral = post_system_entry_in(&mut tx, ent, &entry.date, format!("Deferral: {}", entry.description), lines).await?;
+    let deferral =
+        post_system_entry_in(&mut tx, ent, &entry.date, format!("Deferral: {}", entry.description), lines).await?;
     let id = sqlx::query(
         "INSERT INTO fin_schedules (entity_id, entry_id, ledger_account_id, balance_account_id, kind, start_month, months, \
          amount_minor, deferral_entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -281,7 +297,7 @@ pub async fn create_schedule(db: &Db, ent: &Entity, input: ScheduleInput) -> Res
 
 /// Delete a schedule while none of its releases has posted; its deferral goes with it.
 pub async fn delete_schedule(db: &Db, ent: &Entity, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let schedule = get_in(&mut tx, ent, id).await?;
     if schedule.rows.iter().any(|r| r.released) {
         return Err(AppError::InvalidInput("some of its months are closed: reverse its entries instead".into()));
@@ -301,14 +317,18 @@ pub async fn delete_schedule(db: &Db, ent: &Entity, id: i64) -> Result<()> {
 /// The schedule an entry carries, with its deferral and posted release entries.
 pub(crate) async fn schedule_entries(conn: &mut Conn, entry_id: i64) -> Result<Option<(i64, Vec<i64>)>> {
     let Some((id, deferral)): Option<(i64, Option<i64>)> =
-        sqlx::query_as("SELECT id, deferral_entry_id FROM fin_schedules WHERE entry_id = ?").bind(entry_id).fetch_optional(&mut *conn).await?
+        sqlx::query_as("SELECT id, deferral_entry_id FROM fin_schedules WHERE entry_id = ?")
+            .bind(entry_id)
+            .fetch_optional(&mut *conn)
+            .await?
     else {
         return Ok(None);
     };
-    let releases: Vec<i64> =
-        sqlx::query_scalar("SELECT entry_id FROM fin_schedule_releases WHERE schedule_id = ? AND entry_id IS NOT NULL ORDER BY month")
-            .bind(id)
-            .fetch_all(conn)
-            .await?;
+    let releases: Vec<i64> = sqlx::query_scalar(
+        "SELECT entry_id FROM fin_schedule_releases WHERE schedule_id = ? AND entry_id IS NOT NULL ORDER BY month",
+    )
+    .bind(id)
+    .fetch_all(conn)
+    .await?;
     Ok(Some((id, deferral.into_iter().chain(releases).collect())))
 }

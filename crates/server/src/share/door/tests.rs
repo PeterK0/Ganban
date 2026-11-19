@@ -33,8 +33,12 @@ fn bytes(n: usize, seed: u8) -> Vec<u8> {
 async fn world(db: &Db, root: &Path) -> (i64, Vec<(String, Vec<u8>)>) {
     owner(db).await;
     let a = seed(db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
-    let t = seed(db, "create_task", json!({ "input": { "project_id": a, "title": "Roof", "status": "To Do", "priority": "Low" } }))
-        .await["id"]
+    let t = seed(
+        db,
+        "create_task",
+        json!({ "input": { "project_id": a, "title": "Roof", "status": "To Do", "priority": "Low" } }),
+    )
+    .await["id"]
         .as_i64()
         .unwrap();
     sqlx::query("UPDATE projects SET storage_quota_bytes = 100000000 WHERE id = ?").bind(a).execute(db).await.unwrap();
@@ -65,7 +69,14 @@ async fn link(db: &Db, root: &Path, t: i64, extra: serde_json::Value) -> (i64, S
 
 const CLIENT: [u8; 4] = [203, 0, 113, 9];
 
-async fn send(app: &Router, method: &str, path: &str, from: [u8; 4], headers: &[(&str, &str)], body: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+async fn send(
+    app: &Router,
+    method: &str,
+    path: &str,
+    from: [u8; 4],
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let mut req = Request::builder().method(method).uri(path);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -184,11 +195,13 @@ async fn a_password_guards_the_page_and_the_files() {
     }
 
     let form = [("content-type", "application/x-www-form-urlencoded")];
-    let (status, headers, body) = send(&app, "POST", &format!("/s/{token}/unlock"), CLIENT, &form, "password=nope").await;
+    let (status, headers, body) =
+        send(&app, "POST", &format!("/s/{token}/unlock"), CLIENT, &form, "password=nope").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(text(&body).contains("isn't right") && headers.get(header::SET_COOKIE).is_none());
 
-    let (status, headers, _) = send(&app, "POST", &format!("/s/{token}/unlock"), CLIENT, &form, "password=open+sesame").await;
+    let (status, headers, _) =
+        send(&app, "POST", &format!("/s/{token}/unlock"), CLIENT, &form, "password=open+sesame").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(h(&headers, "location"), format!("/s/{token}"));
     let cookie = h(&headers, "set-cookie").to_string();
@@ -250,7 +263,10 @@ async fn files_serve_ranges() {
 
     // The non-ASCII name goes in filename*.
     let (_, headers, _) = get(&app, &format!("/s/{token}/f/2"), &[("range", "bytes=0-0")]).await;
-    assert_eq!(h(&headers, "content-disposition"), "attachment; filename=\"roof _.jpg\"; filename*=UTF-8''roof%20%C3%A9.jpg");
+    assert_eq!(
+        h(&headers, "content-disposition"),
+        "attachment; filename=\"roof _.jpg\"; filename*=UTF-8''roof%20%C3%A9.jpg"
+    );
     assert_eq!(get(&app, &format!("/s/{token}/f/9"), &[]).await.0, StatusCode::NOT_FOUND);
     assert_eq!(get(&app, &format!("/s/{token}/f/x"), &[]).await.0, StatusCode::NOT_FOUND);
 }
@@ -315,7 +331,10 @@ async fn the_zip_reads_back_and_its_ranges_match() {
     assert_eq!((status, tail.as_slice()), (StatusCode::PARTIAL_CONTENT, &full[full.len() - 30..]));
     let (status, _, rest) = get(&app, &url, &[("range", &format!("bytes={}-", full.len() - 100))]).await;
     assert_eq!((status, rest.as_slice()), (StatusCode::PARTIAL_CONTENT, &full[full.len() - 100..]));
-    assert_eq!(get(&app, &url, &[("range", &format!("bytes={}-", full.len()))]).await.0, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        get(&app, &url, &[("range", &format!("bytes={}-", full.len()))]).await.0,
+        StatusCode::RANGE_NOT_SATISFIABLE
+    );
 }
 
 #[tokio::test]
@@ -416,17 +435,21 @@ async fn bad_tokens_and_wrong_passwords_are_rate_limited() {
     // address with the right password; another link's form still works.
     let app = router(db.clone(), root.clone(), Limiter::new(100, 3, min, 1000, min));
     for i in 1..=3 {
-        let (status, _, _) = send(&app, "POST", &format!("/s/{locked}/unlock"), [198, 51, 100, i], &form, "password=x").await;
+        let (status, _, _) =
+            send(&app, "POST", &format!("/s/{locked}/unlock"), [198, 51, 100, i], &form, "password=x").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
-    let (status, headers, _) = send(&app, "POST", &format!("/s/{locked}/unlock"), [198, 51, 100, 9], &form, "password=pw").await;
+    let (status, headers, _) =
+        send(&app, "POST", &format!("/s/{locked}/unlock"), [198, 51, 100, 9], &form, "password=pw").await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the password isn't even checked");
     assert!(headers.get(header::SET_COOKIE).is_none());
-    let (status, _, _) = send(&app, "POST", &format!("/s/{locked2}/unlock"), [198, 51, 100, 9], &form, "password=pw").await;
+    let (status, _, _) =
+        send(&app, "POST", &format!("/s/{locked2}/unlock"), [198, 51, 100, 9], &form, "password=pw").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     // A right password is refunded: it doesn't use up the address's tries.
     for _ in 0..5 {
-        let (status, _, _) = send(&app, "POST", &format!("/s/{locked2}/unlock"), [198, 51, 100, 10], &form, "password=pw").await;
+        let (status, _, _) =
+            send(&app, "POST", &format!("/s/{locked2}/unlock"), [198, 51, 100, 10], &form, "password=pw").await;
         assert_eq!(status, StatusCode::SEE_OTHER);
     }
 

@@ -39,7 +39,7 @@ import ContactsScreen from "./screens/ContactsScreen";
 import ActivityScreen from "./screens/ActivityScreen";
 import MoreScreen from "./screens/MoreScreen";
 import UploadTray from "../components/UploadTray";
-import { UpdateBanner } from "./AppUpdate";
+import { UpdateBanner, WhatsNewBanner } from "./AppUpdate";
 import { watchApkUpdates } from "../lib/apkUpdate";
 
 type TabKey = "projects" | "calendar" | "contacts" | "activity" | "more";
@@ -595,6 +595,7 @@ function Shell({ onDisconnect }: { onDisconnect: () => void }) {
         </div>
 
         <UpdateBanner />
+        <WhatsNewBanner />
         <ActiveTimerBar />
         <UploadTray mobile />
 

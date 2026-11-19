@@ -138,7 +138,13 @@ pub async fn run_delegate(
     caller_run: &crate::agent_work::Run,
 ) -> DelegateOutcome {
     let mut usage = Usage::default();
-    let fail = |msg: String| DelegateOutcome { digest: json!({ "error": msg }).to_string(), proposals: Vec::new(), usage: Usage::default(), agent_name: String::new(), action_id: None };
+    let fail = |msg: String| DelegateOutcome {
+        digest: json!({ "error": msg }).to_string(),
+        proposals: Vec::new(),
+        usage: Usage::default(),
+        agent_name: String::new(),
+        action_id: None,
+    };
 
     let Some(agent) = args.get("agent").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
         return fail("agent (string) is required".into());
@@ -204,10 +210,8 @@ pub async fn run_delegate(
          Then reply with a compact digest of at most ~{digest_words} words: findings first, cite sources \
          as [source] where you used tools, and state clearly what you could NOT determine. Never invent sources."
     );
-    let mut messages: Vec<Value> = vec![
-        json!({ "role": "system", "content": system }),
-        json!({ "role": "user", "content": task }),
-    ];
+    let mut messages: Vec<Value> =
+        vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task })];
 
     // The tasks this delegate's tools touch show under its own name while it works.
     let agent_run = caller_run.child(&profile.name);
@@ -219,8 +223,17 @@ pub async fn run_delegate(
         let turn = match tokio::time::timeout(timeout, client.chat_once(&params, &messages, &defs)).await {
             Ok(Ok(t)) => t,
             Ok(Err(e)) if e.contains("unreachable") => {
-                let note = profile.fallback_note.clone().unwrap_or_else(|| format!("{}'s engine is unreachable right now", profile.name));
-                return DelegateOutcome { digest: format!("(delegation unavailable: {note})"), proposals, usage, agent_name: profile.name, action_id: None };
+                let note = profile
+                    .fallback_note
+                    .clone()
+                    .unwrap_or_else(|| format!("{}'s engine is unreachable right now", profile.name));
+                return DelegateOutcome {
+                    digest: format!("(delegation unavailable: {note})"),
+                    proposals,
+                    usage,
+                    agent_name: profile.name,
+                    action_id: None,
+                };
             }
             _ => break, // timeout / transport error → digest what we have
         };
@@ -256,9 +269,16 @@ pub async fn run_delegate(
                     Err(e) => json!({ "error": e }).to_string(),
                 }
             } else {
-                tools::execute_tool(db, rag, project_id, &tc.name, &tc.arguments, ganban_core::visibility::Viewer { user_id, is_owner })
-                    .await
-                    .unwrap_or_else(|e| json!({ "error": e }).to_string())
+                tools::execute_tool(
+                    db,
+                    rag,
+                    project_id,
+                    &tc.name,
+                    &tc.arguments,
+                    ganban_core::visibility::Viewer { user_id, is_owner },
+                )
+                .await
+                .unwrap_or_else(|e| json!({ "error": e }).to_string())
             };
             messages.push(json!({ "role": "tool", "content": note, "name": tc.name }));
         }
@@ -273,27 +293,30 @@ pub async fn run_delegate(
     // Every delegation is its own ledger row, linked to the caller's row
     // where one exists (conformance: `tree_ledgered`). Cost roll-up = a
     // query over parent_action_id + the capacity-meter columns.
-    let action_id = match ops::record_agent_action(db, ops::NewAgentAction {
-        status: "applied",
-        user_id,
-        profile_id: Some(profile.id),
-        project_id: Some(project_id),
-        chat_id: None,
-        routine_id: None,
-        tool: "delegate",
-        summary: &format!("Delegated to {}: {}", profile.name, task.chars().take(120).collect::<String>()),
-        args_json: &json!({ "agent": agent, "task": task }).to_string(),
-        result_json: Some(&json!({ "digest_chars": digest.len(), "proposals": proposals.len() }).to_string()),
-        model: Some(&params.model),
-        prompt_tokens: Some(usage.prompt_tokens),
-        completion_tokens: Some(usage.completion_tokens),
-        duration_ms: Some(started.elapsed().as_millis() as i64),
-        protocol_slug: None,
-        protocol_version: None,
-        content_hash: None,
-        parent_action_id,
-        approver_id: None,
-    })
+    let action_id = match ops::record_agent_action(
+        db,
+        ops::NewAgentAction {
+            status: "applied",
+            user_id,
+            profile_id: Some(profile.id),
+            project_id: Some(project_id),
+            chat_id: None,
+            routine_id: None,
+            tool: "delegate",
+            summary: &format!("Delegated to {}: {}", profile.name, task.chars().take(120).collect::<String>()),
+            args_json: &json!({ "agent": agent, "task": task }).to_string(),
+            result_json: Some(&json!({ "digest_chars": digest.len(), "proposals": proposals.len() }).to_string()),
+            model: Some(&params.model),
+            prompt_tokens: Some(usage.prompt_tokens),
+            completion_tokens: Some(usage.completion_tokens),
+            duration_ms: Some(started.elapsed().as_millis() as i64),
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id,
+            approver_id: None,
+        },
+    )
     .await
     {
         Ok(id) => Some(id),
@@ -325,32 +348,40 @@ pub async fn ledger_delegating_turn(
         return None;
     }
     let summary = format!("Chat turn delegated to {}", agents.join(", "));
-    let parent = ops::record_agent_action(db, ops::NewAgentAction {
-        status: "applied",
-        user_id,
-        profile_id: None,
-        project_id: Some(project_id),
-        chat_id: None,
-        routine_id: None,
-        tool: "chat_turn",
-        summary: &summary,
-        args_json: &json!({ "delegations": children.len() }).to_string(),
-        result_json: None,
-        model: Some(model),
-        prompt_tokens: Some(own.prompt_tokens),
-        completion_tokens: Some(own.completion_tokens),
-        duration_ms: Some(own.duration_ms),
-        protocol_slug: None,
-        protocol_version: None,
-        content_hash: None,
-        parent_action_id: None,
-        approver_id: None,
-    })
+    let parent = ops::record_agent_action(
+        db,
+        ops::NewAgentAction {
+            status: "applied",
+            user_id,
+            profile_id: None,
+            project_id: Some(project_id),
+            chat_id: None,
+            routine_id: None,
+            tool: "chat_turn",
+            summary: &summary,
+            args_json: &json!({ "delegations": children.len() }).to_string(),
+            result_json: None,
+            model: Some(model),
+            prompt_tokens: Some(own.prompt_tokens),
+            completion_tokens: Some(own.completion_tokens),
+            duration_ms: Some(own.duration_ms),
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: None,
+            approver_id: None,
+        },
+    )
     .await
     .map_err(|e| tracing::warn!("could not ledger a delegating turn: {e}"))
     .ok()?;
     for child in children {
-        if let Err(e) = sqlx::query("UPDATE agent_actions SET parent_action_id = ? WHERE id = ?").bind(parent).bind(child).execute(db).await {
+        if let Err(e) = sqlx::query("UPDATE agent_actions SET parent_action_id = ? WHERE id = ?")
+            .bind(parent)
+            .bind(child)
+            .execute(db)
+            .await
+        {
             tracing::warn!("could not link delegation {child} to its turn: {e}");
         }
     }
@@ -416,11 +447,25 @@ mod tests {
         }
         let db = ganban_core::init_db(&path).await.unwrap();
         let base = |tool: &'static str, parent: Option<i64>, tokens: i64| ops::NewAgentAction {
-            status: "applied", user_id: 1, profile_id: None, project_id: Some(1), chat_id: None,
-            routine_id: None, tool, summary: "s", args_json: "{}", result_json: None,
-            model: Some("m"), prompt_tokens: Some(tokens), completion_tokens: Some(tokens),
-            duration_ms: Some(10), protocol_slug: None, protocol_version: None, content_hash: None,
-            parent_action_id: parent, approver_id: None,
+            status: "applied",
+            user_id: 1,
+            profile_id: None,
+            project_id: Some(1),
+            chat_id: None,
+            routine_id: None,
+            tool,
+            summary: "s",
+            args_json: "{}",
+            result_json: None,
+            model: Some("m"),
+            prompt_tokens: Some(tokens),
+            completion_tokens: Some(tokens),
+            duration_ms: Some(10),
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: parent,
+            approver_id: None,
         };
         let parent_id = ops::record_agent_action(&db, base("structure_toc", None, 100)).await.unwrap();
         ops::record_agent_action(&db, base("delegate", Some(parent_id), 40)).await.unwrap();
@@ -449,15 +494,33 @@ mod tests {
         }
         let db = ganban_core::init_db(&path).await.unwrap();
         let child = |tokens: i64| ops::NewAgentAction {
-            status: "applied", user_id: 1, profile_id: None, project_id: Some(1), chat_id: None,
-            routine_id: None, tool: "delegate", summary: "s", args_json: "{}", result_json: None,
-            model: Some("m"), prompt_tokens: Some(tokens), completion_tokens: Some(0),
-            duration_ms: Some(10), protocol_slug: None, protocol_version: None, content_hash: None,
-            parent_action_id: None, approver_id: None,
+            status: "applied",
+            user_id: 1,
+            profile_id: None,
+            project_id: Some(1),
+            chat_id: None,
+            routine_id: None,
+            tool: "delegate",
+            summary: "s",
+            args_json: "{}",
+            result_json: None,
+            model: Some("m"),
+            prompt_tokens: Some(tokens),
+            completion_tokens: Some(0),
+            duration_ms: Some(10),
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: None,
+            approver_id: None,
         };
         let a = ops::record_agent_action(&db, child(40)).await.unwrap();
         let b = ops::record_agent_action(&db, child(60)).await.unwrap();
-        assert_eq!(ledger_delegating_turn(&db, 1, 1, "m", Usage::default(), &[], &[]).await, None, "no delegation, no row");
+        assert_eq!(
+            ledger_delegating_turn(&db, 1, 1, "m", Usage::default(), &[], &[]).await,
+            None,
+            "no delegation, no row"
+        );
 
         let own = Usage { prompt_tokens: 100, completion_tokens: 0, duration_ms: 5 };
         let agents = vec!["Scout".to_string(), "Worker".to_string()];
@@ -471,7 +534,11 @@ mod tests {
         .unwrap();
         assert_eq!((children, tokens), (2, 100));
         let (tool, summary, turn_tokens): (String, String, i64) =
-            sqlx::query_as("SELECT tool, summary, prompt_tokens FROM agent_actions WHERE id = ?").bind(parent).fetch_one(&db).await.unwrap();
+            sqlx::query_as("SELECT tool, summary, prompt_tokens FROM agent_actions WHERE id = ?")
+                .bind(parent)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(tool, "chat_turn");
         assert!(summary.contains("Scout, Worker"), "{summary}");
         assert_eq!(turn_tokens, 100, "the turn's own tokens only");

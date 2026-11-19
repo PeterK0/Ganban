@@ -157,7 +157,7 @@ async fn bank_drafts_categorise_post_and_count_separately() {
 
     // 25.00 out with a 0.50 fee: the bank moves 25.50.
     let sl = source_line(&db, &ent, cur.id, -2_500, 50).await;
-    let mut tx = db.begin().await.unwrap();
+    let mut tx = crate::db::begin_write(&db).await.unwrap();
     let e = draft_from_source_line_in(&mut tx, &ent, sl, unc, None).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(e.status, "draft");
@@ -167,7 +167,8 @@ async fn bank_drafts_categorise_post_and_count_separately() {
 
     let a = get_account(&db, &ent, cur.id).await.unwrap();
     assert_eq!((a.balance_minor, a.draft_balance_minor), (100_000, -2_550));
-    let page = list_entries(&db, &ent, EntryFilter { uncategorised: Some(true), ..Default::default() }, 50, 0).await.unwrap();
+    let page =
+        list_entries(&db, &ent, EntryFilter { uncategorised: Some(true), ..Default::default() }, 50, 0).await.unwrap();
     assert_eq!((page.total, page.entries[0].id), (1, e.id));
 
     // Split it: the splits add up to the bank line (either sign); the fee line stays.
@@ -182,11 +183,16 @@ async fn bank_drafts_categorise_post_and_count_separately() {
     assert!(balanced(&e));
     let amounts: Vec<(i64, i64)> = e.lines.iter().map(|l| (l.ledger_account_id, l.amount_minor)).collect();
     assert_eq!(amounts, vec![(cur.ledger_account_id, -2_550), (fees, 50), (groc, 1_500), (home, 1_000)]);
-    let page = list_entries(&db, &ent, EntryFilter { uncategorised: Some(true), ..Default::default() }, 50, 0).await.unwrap();
+    let page =
+        list_entries(&db, &ent, EntryFilter { uncategorised: Some(true), ..Default::default() }, 50, 0).await.unwrap();
     assert_eq!(page.total, 0);
-    let page = list_entries(&db, &ent, EntryFilter { ledger_account_id: Some(home), ..Default::default() }, 50, 0).await.unwrap();
+    let page = list_entries(&db, &ent, EntryFilter { ledger_account_id: Some(home), ..Default::default() }, 50, 0)
+        .await
+        .unwrap();
     assert_eq!(page.total, 1);
-    let page = list_entries(&db, &ent, EntryFilter { search: Some("corner".into()), ..Default::default() }, 50, 0).await.unwrap();
+    let page = list_entries(&db, &ent, EntryFilter { search: Some("corner".into()), ..Default::default() }, 50, 0)
+        .await
+        .unwrap();
     assert_eq!(page.total, 1);
 
     assert_eq!(post_entries(&db, &ent, &[e.id]).await.unwrap(), 1);
@@ -206,23 +212,32 @@ async fn manual_journals_must_balance() {
     let cur = create_account(&db, &ent, account("current", "Everyday", "EUR", 0)).await.unwrap();
     let salary = la(&db, &ent, "Salary").await;
     let line = |la: i64, amount: i64| LineInput::new(la, amount, "EUR");
-    let input = |lines| EntryInput { date: "2026-03-01".into(), description: "Pay".into(), payee: None, notes: None, lines };
+    let input =
+        |lines| EntryInput { date: "2026-03-01".into(), description: "Pay".into(), payee: None, notes: None, lines };
 
-    let err = create_entry(&db, &ent, input(vec![line(cur.ledger_account_id, 300_000), line(salary, -299_999)])).await.unwrap_err();
+    let err = create_entry(&db, &ent, input(vec![line(cur.ledger_account_id, 300_000), line(salary, -299_999)]))
+        .await
+        .unwrap_err();
     assert!(err.is_invalid_input(), "{err}");
     assert!(create_entry(&db, &ent, input(vec![line(cur.ledger_account_id, 1)])).await.is_err(), "one line");
     // A monetary account takes lines only in its currency.
     let usd = LineInput::new(cur.ledger_account_id, 100, "USD");
     assert!(create_entry(&db, &ent, input(vec![usd, line(salary, -100)])).await.is_err());
 
-    let e = create_entry(&db, &ent, input(vec![line(cur.ledger_account_id, 300_000), line(salary, -300_000)])).await.unwrap();
+    let e = create_entry(&db, &ent, input(vec![line(cur.ledger_account_id, 300_000), line(salary, -300_000)]))
+        .await
+        .unwrap();
     assert_eq!(e.status, "posted");
     assert_eq!(get_account(&db, &ent, cur.id).await.unwrap().balance_minor, 300_000);
 
     // Editing replaces the lines, which must still balance.
     let patch = |lines| EntryPatch { lines: Some(lines), ..Default::default() };
-    assert!(update_entry(&db, &ent, e.id, patch(vec![line(cur.ledger_account_id, 5), line(salary, -4)])).await.is_err());
-    let e = update_entry(&db, &ent, e.id, patch(vec![line(cur.ledger_account_id, 310_000), line(salary, -310_000)])).await.unwrap();
+    assert!(update_entry(&db, &ent, e.id, patch(vec![line(cur.ledger_account_id, 5), line(salary, -4)]))
+        .await
+        .is_err());
+    let e = update_entry(&db, &ent, e.id, patch(vec![line(cur.ledger_account_id, 310_000), line(salary, -310_000)]))
+        .await
+        .unwrap();
     assert_eq!(get_account(&db, &ent, cur.id).await.unwrap().balance_minor, 310_000);
     assert_eq!(audit_count(&db, &ent, "update").await, 1);
 
@@ -250,7 +265,9 @@ async fn foreign_lines_translate_at_the_ecb_rate() {
     assert_eq!(create_bank_draft(&db, &ent, d).await.unwrap().lines[0].functional_minor, -795);
     // Three uneven splits keep the entry balanced in EUR.
     let groc = la(&db, &ent, "Groceries").await;
-    let splits = (0..3).map(|i| Split { ledger_account_id: groc, amount_minor: if i == 0 { 334 } else { 333 }, memo: None }).collect();
+    let splits = (0..3)
+        .map(|i| Split { ledger_account_id: groc, amount_minor: if i == 0 { 334 } else { 333 }, memo: None })
+        .collect();
     assert!(balanced(&categorise(&db, &ent, e.id, splits).await.unwrap()));
     let a = get_account(&db, &ent, usd.id).await.unwrap();
     assert_eq!((a.draft_balance_minor, a.draft_balance_functional_minor), (-2_000, -1_595));
@@ -274,7 +291,9 @@ async fn closed_periods_refuse_edits_and_take_reversals() {
         .await
         .unwrap();
 
-    let err = update_entry(&db, &ent, opening.id, EntryPatch { description: Some("x".into()), ..Default::default() }).await.unwrap_err();
+    let err = update_entry(&db, &ent, opening.id, EntryPatch { description: Some("x".into()), ..Default::default() })
+        .await
+        .unwrap_err();
     assert_eq!(err.to_string(), "Invalid input: closed period: reverse it instead");
     assert!(delete_entry(&db, &ent, opening.id).await.unwrap_err().is_invalid_input());
     assert!(reverse_entry(&db, &ent, opening.id, "2026-01-31").await.is_err(), "a reversal dated in the closed month");
@@ -298,13 +317,17 @@ async fn deleting_a_draft_dismisses_its_source_line() {
     let cur = create_account(&db, &ent, account("current", "Everyday", "EUR", 0)).await.unwrap();
     let sl = source_line(&db, &ent, cur.id, -1_200, 0).await;
     let unc = system_account(&db, &ent, system::UNCATEGORISED_EXPENSE).await.unwrap().id;
-    let mut tx = db.begin().await.unwrap();
+    let mut tx = crate::db::begin_write(&db).await.unwrap();
     let e = draft_from_source_line_in(&mut tx, &ent, sl, unc, None).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!((e.source_line_id, e.lines[0].amount_minor), (Some(sl), -1_200));
 
     delete_entry(&db, &ent, e.id).await.unwrap();
-    let dismissed: Option<String> = sqlx::query_scalar("SELECT dismissed_at FROM fin_source_lines WHERE id = ?").bind(sl).fetch_one(&db).await.unwrap();
+    let dismissed: Option<String> = sqlx::query_scalar("SELECT dismissed_at FROM fin_source_lines WHERE id = ?")
+        .bind(sl)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(dismissed.is_some());
 }
 
@@ -339,10 +362,15 @@ async fn entities_never_reach_each_others_rows() {
 async fn the_functional_currency_changes_only_before_posting() {
     let db = test_db("currency").await;
     let ent = user(&db, 7).await;
-    let ent = update_entity(&db, &ent, EntityPatch { name: Some("Home".into()), functional_currency: Some("usd".into()) }).await.unwrap();
+    let ent =
+        update_entity(&db, &ent, EntityPatch { name: Some("Home".into()), functional_currency: Some("usd".into()) })
+            .await
+            .unwrap();
     assert_eq!((ent.name.as_str(), ent.functional_currency.as_str()), ("Home", "USD"));
     create_account(&db, &ent, account("current", "Everyday", "USD", 1_000)).await.unwrap();
-    let err = update_entity(&db, &ent, EntityPatch { functional_currency: Some("EUR".into()), ..Default::default() }).await.unwrap_err();
+    let err = update_entity(&db, &ent, EntityPatch { functional_currency: Some("EUR".into()), ..Default::default() })
+        .await
+        .unwrap_err();
     assert!(err.is_invalid_input());
 }
 
@@ -359,12 +387,17 @@ async fn malformed_lines_and_charts_are_refused() {
     d.functional_minor = Some(800);
     assert!(create_bank_draft(&db, &ent, d).await.unwrap_err().is_invalid_input());
     // A counter that is another monetary account takes only its own currency.
-    assert!(create_bank_draft(&db, &ent, draft(usd.id, -1_000, 0, eur.ledger_account_id)).await.unwrap_err().is_invalid_input());
+    assert!(create_bank_draft(&db, &ent, draft(usd.id, -1_000, 0, eur.ledger_account_id))
+        .await
+        .unwrap_err()
+        .is_invalid_input());
 
     // No cycles in the chart.
     let (a, b) = (la(&db, &ent, "Housing").await, la(&db, &ent, "Utilities").await);
     update_ledger_account(&db, &ent, b, LedgerAccountPatch { parent_id: Some(a), ..Default::default() }).await.unwrap();
-    let err = update_ledger_account(&db, &ent, a, LedgerAccountPatch { parent_id: Some(b), ..Default::default() }).await.unwrap_err();
+    let err = update_ledger_account(&db, &ent, a, LedgerAccountPatch { parent_id: Some(b), ..Default::default() })
+        .await
+        .unwrap_err();
     assert!(err.is_invalid_input());
 }
 
@@ -388,7 +421,10 @@ async fn deleting_a_paired_entry_audits_the_pair() {
     assert_eq!(get_entry(&db, &ent, inn.id).await.unwrap().pair.unwrap().other_entry_id, out.id);
     delete_entry(&db, &ent, out.id).await.unwrap();
     assert!(get_entry(&db, &ent, inn.id).await.unwrap().pair.is_none());
-    let audited: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fin_audit WHERE kind = 'pair' AND action = 'delete'").fetch_one(&db).await.unwrap();
+    let audited: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fin_audit WHERE kind = 'pair' AND action = 'delete'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(audited, 1);
 }
 
@@ -399,9 +435,13 @@ async fn category_totals_count_drafts_by_entry_date_in_natural_sign() {
     let a = create_account(&db, &ent, account("current", "Everyday", "EUR", 100_000)).await.unwrap();
     let (unc, groceries) = (la(&db, &ent, "Uncategorised").await, la(&db, &ent, "Groceries").await);
     let shop = create_bank_draft(&db, &ent, draft(a.id, -4_200, 0, unc)).await.unwrap();
-    categorise(&db, &ent, shop.id, vec![Split { ledger_account_id: groceries, amount_minor: 4_200, memo: None }]).await.unwrap();
+    categorise(&db, &ent, shop.id, vec![Split { ledger_account_id: groceries, amount_minor: 4_200, memo: None }])
+        .await
+        .unwrap();
     let refund = create_bank_draft(&db, &ent, draft(a.id, 200, 0, unc)).await.unwrap();
-    categorise(&db, &ent, refund.id, vec![Split { ledger_account_id: groceries, amount_minor: -200, memo: None }]).await.unwrap();
+    categorise(&db, &ent, refund.id, vec![Split { ledger_account_id: groceries, amount_minor: -200, memo: None }])
+        .await
+        .unwrap();
     create_bank_draft(&db, &ent, draft(a.id, -999, 0, unc)).await.unwrap();
 
     let rows = category_totals(&db, &ent, "2026-02-01", "2026-02-28").await.unwrap();

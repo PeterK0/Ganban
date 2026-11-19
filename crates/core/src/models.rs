@@ -1218,8 +1218,7 @@ pub static MODEL_KINDS: &[&str] = &["gundam", "40k", "aos", "other"];
 
 /// Build status for a kit/army — a richer lifecycle than the original TUI's
 /// derived-only progress. Order matters: it's the left-to-right shelf order.
-pub static MODEL_STATUSES: &[&str] =
-    &["Backlog", "In Progress", "Assembled", "Painted", "Display", "Shelved"];
+pub static MODEL_STATUSES: &[&str] = &["Backlog", "In Progress", "Assembled", "Painted", "Display", "Shelved"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ModelKit {

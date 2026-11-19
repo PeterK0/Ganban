@@ -191,10 +191,7 @@ impl Action {
 /// and punctuation dropped (card lines carry references and dates).
 pub fn merchant_key(description: &str, payee: Option<&str>) -> String {
     let base = payee.filter(|p| !p.trim().is_empty()).unwrap_or(description);
-    let kept: String = base
-        .chars()
-        .map(|c| if c.is_alphabetic() || c.is_whitespace() { c } else { ' ' })
-        .collect();
+    let kept: String = base.chars().map(|c| if c.is_alphabetic() || c.is_whitespace() { c } else { ' ' }).collect();
     clean_text(&kept).to_lowercase()
 }
 
@@ -267,7 +264,9 @@ async fn check_input(conn: &mut Conn, ent: &Entity, input: &RuleInput) -> Result
         return Err(AppError::InvalidInput("a rule needs at least one condition".into()));
     }
     let c = &input.conditions;
-    let blank = |p: &Option<String>| p.as_ref().is_some_and(|p| p.trim_matches(|ch: char| ch == '*' || ch.is_whitespace()).is_empty());
+    let blank = |p: &Option<String>| {
+        p.as_ref().is_some_and(|p| p.trim_matches(|ch: char| ch == '*' || ch.is_whitespace()).is_empty())
+    };
     if blank(&c.text) || blank(&c.description) || blank(&c.payee) {
         return Err(AppError::InvalidInput("a text condition can't be blank or only *".into()));
     }
@@ -275,7 +274,8 @@ async fn check_input(conn: &mut Conn, ent: &Entity, input: &RuleInput) -> Result
     if let Some(a) = input.conditions.account_id {
         get_account_in(conn, ent, a).await?;
     }
-    let targets = input.action.ledger_account_id.into_iter().chain(input.action.splits.iter().map(|s| s.ledger_account_id));
+    let targets =
+        input.action.ledger_account_id.into_iter().chain(input.action.splits.iter().map(|s| s.ledger_account_id));
     for la in targets.collect::<Vec<_>>() {
         if get_ledger_account_in(conn, ent, la).await?.archived {
             return Err(AppError::InvalidInput("that ledger account is archived".into()));
@@ -290,14 +290,16 @@ pub async fn list_rules(db: &Db, ent: &Entity) -> Result<Vec<Rule>> {
 }
 
 pub async fn create_rule(db: &Db, ent: &Entity, input: RuleInput) -> Result<Rule> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     check_input(&mut tx, ent, &input).await?;
     let position = match input.position {
         Some(p) => p,
-        None => sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(position), 0) + 1 FROM fin_rules WHERE entity_id = ?")
-            .bind(ent.id)
-            .fetch_one(&mut *tx)
-            .await?,
+        None => {
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(position), 0) + 1 FROM fin_rules WHERE entity_id = ?")
+                .bind(ent.id)
+                .fetch_one(&mut *tx)
+                .await?
+        }
     };
     let id = sqlx::query(
         "INSERT INTO fin_rules (entity_id, position, conditions_json, action_json, learned, hits, created_at) \
@@ -319,7 +321,7 @@ pub async fn create_rule(db: &Db, ent: &Entity, input: RuleInput) -> Result<Rule
 }
 
 pub async fn update_rule(db: &Db, ent: &Entity, id: i64, input: RuleInput) -> Result<Rule> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_rule_in(&mut tx, ent, id).await?;
     check_input(&mut tx, ent, &input).await?;
     sqlx::query("UPDATE fin_rules SET position = ?, conditions_json = ?, action_json = ?, learned = ? WHERE id = ?")
@@ -331,13 +333,22 @@ pub async fn update_rule(db: &Db, ent: &Entity, id: i64, input: RuleInput) -> Re
         .execute(&mut *tx)
         .await?;
     let after = get_rule_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "update", "rule", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?)).await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "rule",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
 
 pub async fn delete_rule(db: &Db, ent: &Entity, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_rule_in(&mut tx, ent, id).await?;
     sqlx::query("DELETE FROM fin_rules WHERE id = ?").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, ent, "delete", "rule", Some(id), Some(&serde_json::to_value(&before)?), None).await?;
@@ -371,23 +382,37 @@ async fn subject_of(conn: &mut Conn, ent: &Entity, source_line_id: Option<i64>) 
 /// Runs the rules over drafts that are still uncategorised: the given entries, or every
 /// draft. The first matching rule categorises the entry. Returns how many it did.
 pub async fn apply_rules(db: &Db, ent: &Entity, entry_ids: Option<Vec<i64>>) -> Result<usize> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let s = sys(&mut tx, ent).await?;
-    let ids = match entry_ids {
-        Some(ids) => ids,
-        None => sqlx::query_scalar("SELECT id FROM fin_entries WHERE entity_id = ? AND status = 'draft' AND source_line_id IS NOT NULL")
+    let ids =
+        match entry_ids {
+            Some(ids) => ids,
+            None => sqlx::query_scalar(
+                "SELECT id FROM fin_entries WHERE entity_id = ? AND status = 'draft' AND source_line_id IS NOT NULL",
+            )
             .bind(ent.id)
             .fetch_all(&mut *tx)
             .await?,
-    };
-    let n = apply_rules_in(&mut tx, ent, &s, &ids).await?;
+        };
+    let filed = filed_by_rules_in(&mut tx, ent, &s, &ids).await?;
+    // Categorised means done: what a rule filed leaves the inbox (and unsorted history).
+    let mut out = super::inbox::PostOutcome::default();
+    for &id in &filed {
+        sqlx::query("UPDATE fin_entries SET unsorted = 0 WHERE id = ?").bind(id).execute(&mut *tx).await?;
+        super::inbox::post_ids_in(&mut tx, ent, &[id], None, &mut out).await?;
+    }
     tx.commit().await?;
-    Ok(n)
+    Ok(filed.len())
 }
 
 pub(crate) async fn apply_rules_in(conn: &mut Conn, ent: &Entity, s: &Sys, ids: &[i64]) -> Result<usize> {
+    Ok(filed_by_rules_in(conn, ent, s, ids).await?.len())
+}
+
+/// Runs the rules over these entries; returns the ones a rule categorised.
+async fn filed_by_rules_in(conn: &mut Conn, ent: &Entity, s: &Sys, ids: &[i64]) -> Result<Vec<i64>> {
     let rules = rules_in(conn, ent).await?;
-    let mut done = 0;
+    let mut done = Vec::new();
     for &id in ids {
         let entry = get_entry_in(conn, ent, id).await?;
         // Paired entries (transfers, FX legs, pairs in review) are not categories.
@@ -408,8 +433,11 @@ pub(crate) async fn apply_rules_in(conn: &mut Conn, ent: &Entity, s: &Sys, ids: 
         // A rule whose category no longer fits (archived, wrong currency) is skipped.
         match super::categorise_in(conn, ent, id, splits).await {
             Ok(_) => {
-                sqlx::query("UPDATE fin_rules SET hits = hits + 1 WHERE id = ?").bind(rule.id).execute(&mut *conn).await?;
-                done += 1;
+                sqlx::query("UPDATE fin_rules SET hits = hits + 1 WHERE id = ?")
+                    .bind(rule.id)
+                    .execute(&mut *conn)
+                    .await?;
+                done.push(id);
             }
             Err(e) if skippable(&e) => {}
             Err(e) => return Err(e),
@@ -463,7 +491,12 @@ pub async fn suggest_rule(db: &Db, ent: &Entity, entry_id: i64) -> Result<Option
     } else {
         Conditions { description: Some(pattern), ..Default::default() }
     };
-    Ok(Some(RuleInput { position: None, conditions, action: Action { ledger_account_id: Some(*category), splits: vec![] }, learned: true }))
+    Ok(Some(RuleInput {
+        position: None,
+        conditions,
+        action: Action { ledger_account_id: Some(*category), splits: vec![] },
+        learned: true,
+    }))
 }
 
 #[cfg(test)]
@@ -489,7 +522,9 @@ mod tests {
         assert!(!text_matches("green*41", "Green Market 42"));
         assert!(text_matches("*market*", "Green Market 42"));
         assert!(!text_matches("market*", "Green Market"));
-        assert!(text_matches("ΑΓΟΡΑ", "αγορα σουπερ μαρκετ"));
+        // Case folds in other scripts too (made-up names).
+        assert!(text_matches("ΦΑΡΟΣ", "φαρος καφε"));
+        assert!(text_matches("ЛУНА", "кафе луна"));
     }
 
     #[test]
@@ -546,9 +581,12 @@ mod tests {
     #[test]
     fn action_validation() {
         assert!(Action::default().validate().is_err());
-        assert!(Action { ledger_account_id: Some(1), splits: vec![RuleSplit { ledger_account_id: 2, amount_minor: None, percent: None }] }
-            .validate()
-            .is_err());
+        assert!(Action {
+            ledger_account_id: Some(1),
+            splits: vec![RuleSplit { ledger_account_id: 2, amount_minor: None, percent: None }]
+        }
+        .validate()
+        .is_err());
         let two_rests = Action {
             ledger_account_id: None,
             splits: vec![
@@ -576,7 +614,7 @@ mod tests {
     #[test]
     fn merchant_keys_ignore_references() {
         assert_eq!(merchant_key("GREEN MARKET 0412 *1234", None), "green market");
-        assert_eq!(merchant_key("whatever", Some("Wolt")), "wolt");
-        assert_eq!(merchant_key("ΑΓΟΡΑ 12/10", None), "αγορα");
+        assert_eq!(merchant_key("whatever", Some("Plumtree")), "plumtree");
+        assert_eq!(merchant_key("ΦΑΡΟΣ 12/10", None), "φαρος");
     }
 }

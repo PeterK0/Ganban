@@ -79,10 +79,7 @@ impl DailyBrief {
     /// A compact, model-facing grounding block. Facts only — the persona/voice is
     /// applied separately (in the system prompt that precedes this).
     pub fn render(&self) -> String {
-        let mut s = format!(
-            "Current date: {} ({})\nCurrent time: {}\n\n",
-            self.today, self.weekday, self.now
-        );
+        let mut s = format!("Current date: {} ({})\nCurrent time: {}\n\n", self.today, self.weekday, self.now);
         if self.events.is_empty() {
             s.push_str("No events scheduled in the next 7 days.\n");
             return s;
@@ -98,17 +95,10 @@ impl DailyBrief {
                     _ => "time TBD".to_string(),
                 }
             };
-            let loc = e
-                .location
-                .as_deref()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| format!(" @ {l}"))
-                .unwrap_or_default();
-            let proj = if e.projects.is_empty() {
-                String::new()
-            } else {
-                format!(" [project: {}]", e.projects.join(", "))
-            };
+            let loc =
+                e.location.as_deref().filter(|l| !l.trim().is_empty()).map(|l| format!(" @ {l}")).unwrap_or_default();
+            let proj =
+                if e.projects.is_empty() { String::new() } else { format!(" [project: {}]", e.projects.join(", ")) };
             let tag = match e.bucket.as_str() {
                 "today" => "TODAY",
                 "tomorrow" => "TOMORROW",
@@ -267,12 +257,7 @@ pub async fn generate_rundown(
         }
         let (summary, flags, project_usage) = summarize_project(client, &params, &prompt, &ctx).await;
         usage.add(project_usage);
-        out.push(ProjectRundown {
-            project_id: p.id,
-            project_name: p.name.clone(),
-            summary,
-            flags,
-        });
+        out.push(ProjectRundown { project_id: p.id, project_name: p.name.clone(), summary, flags });
     }
 
     let rundown = Rundown {
@@ -358,11 +343,7 @@ async fn build_project_context(db: &Db, p: &Project, today: NaiveDate) -> Projec
         if e.done_at.is_some() || d < today || d > horizon {
             continue;
         }
-        let when = if e.all_day {
-            "all day".to_string()
-        } else {
-            e.start_time.clone().unwrap_or_default()
-        };
+        let when = if e.all_day { "all day".to_string() } else { e.start_time.clone().unwrap_or_default() };
         event_lines.push(format!("- {} {}: {}", d.format("%Y-%m-%d"), when, e.title));
         if next_event.is_none() {
             next_event = Some(format!("{} {}", d.format("%Y-%m-%d"), e.title));
@@ -388,9 +369,7 @@ async fn build_project_context(db: &Db, p: &Project, today: NaiveDate) -> Projec
         let snippet: String = desc.chars().take(200).collect();
         text.push_str(&format!("Description: {snippet}\n"));
     }
-    text.push_str(&format!(
-        "Open tasks: {open} (due within {HORIZON_DAYS} days: {due_soon}, blocked: {blocked})\n"
-    ));
+    text.push_str(&format!("Open tasks: {open} (due within {HORIZON_DAYS} days: {due_soon}, blocked: {blocked})\n"));
     let section = |title: &str, lines: &[String]| {
         if lines.is_empty() {
             String::new()
@@ -456,11 +435,7 @@ fn parse_summary(raw: &str) -> Option<(String, Vec<String>)> {
         return None;
     }
     let v: Value = serde_json::from_str(&raw[start..=end]).ok()?;
-    let summary = v
-        .get("summary")
-        .and_then(|s| s.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+    let summary = v.get("summary").and_then(|s| s.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())?;
     let flags = v
         .get("flags")
         .and_then(|f| f.as_array())
@@ -627,15 +602,15 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
             }
             json!({ "matches": rows.into_iter().map(|(id, title, status, project)| json!({
                 "task_id": id, "title": title, "status": status, "project": project
-            })).collect::<Vec<_>>() }).to_string()
+            })).collect::<Vec<_>>() })
+            .to_string()
         }
         "find_projects" => {
-            let rows: Vec<(i64, String)> = sqlx::query_as(
-                "SELECT id, name FROM projects WHERE archived = 0 ORDER BY updated_at DESC",
-            )
-            .fetch_all(db)
-            .await
-            .unwrap_or_default();
+            let rows: Vec<(i64, String)> =
+                sqlx::query_as("SELECT id, name FROM projects WHERE archived = 0 ORDER BY updated_at DESC")
+                    .fetch_all(db)
+                    .await
+                    .unwrap_or_default();
             json!({ "projects": rows.into_iter().map(|(id, name)| json!({ "project_id": id, "name": name })).collect::<Vec<_>>() }).to_string()
         }
         "create_task" => {
@@ -649,7 +624,8 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
                 .ok()
                 .flatten();
             if exists.is_none() {
-                return json!({ "error": format!("project {project_id} does not exist — call find_projects first") }).to_string();
+                return json!({ "error": format!("project {project_id} does not exist — call find_projects first") })
+                    .to_string();
             }
             // Same gate as everyone: prepare_write validates and shapes it,
             // then it parks as a proposal until the user approves.
@@ -678,12 +654,13 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
             let Some(task_id) = args["task_id"].as_i64() else {
                 return json!({ "error": "task_id is required — call find_tasks first" }).to_string();
             };
-            let project_id: Option<i64> = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ? AND archived = 0")
-                .bind(task_id)
-                .fetch_optional(db)
-                .await
-                .ok()
-                .flatten();
+            let project_id: Option<i64> =
+                sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ? AND archived = 0")
+                    .bind(task_id)
+                    .fetch_optional(db)
+                    .await
+                    .ok()
+                    .flatten();
             let Some(project_id) = project_id else {
                 return json!({ "error": format!("task {task_id} does not exist (or is archived) — use find_tasks first") }).to_string();
             };
@@ -743,7 +720,9 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
                     .await
                     .ok()
                     .flatten();
-                    let seen = ganban_core::visibility::can_see_task(db, viewer_for(db, user_id).await, tid).await.unwrap_or(false);
+                    let seen = ganban_core::visibility::can_see_task(db, viewer_for(db, user_id).await, tid)
+                        .await
+                        .unwrap_or(false);
                     match row.filter(|_| seen) {
                         Some(r) => Some(r),
                         None => return json!({ "error": format!("task {tid} does not exist (or is archived) — use find_tasks first") }).to_string(),
@@ -757,14 +736,19 @@ pub async fn execute_tool(db: &Db, user_id: i64, name: &str, args: &Value) -> St
             let project_id: i64 = match &anchor {
                 Some((_, pid, _)) => *pid,
                 None => {
-                    match sqlx::query_scalar::<_, i64>("SELECT id FROM projects WHERE archived = 0 ORDER BY updated_at DESC LIMIT 1")
-                        .fetch_optional(db)
-                        .await
-                        .ok()
-                        .flatten()
+                    match sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM projects WHERE archived = 0 ORDER BY updated_at DESC LIMIT 1",
+                    )
+                    .fetch_optional(db)
+                    .await
+                    .ok()
+                    .flatten()
                     {
                         Some(pid) => pid,
-                        None => return json!({ "error": "no projects exist yet — the user must create one first" }).to_string(),
+                        None => {
+                            return json!({ "error": "no projects exist yet — the user must create one first" })
+                                .to_string()
+                        }
                     }
                 }
             };
@@ -833,21 +817,27 @@ mod tests {
         }
         let db = ganban_core::init_db(&path).await.unwrap();
         ganban_core::auth::ensure_owner(&db).await.unwrap(); // the Secretary is the owner's
-        let p = ops::create_project(&db, ganban_core::models::CreateProjectInput { name: "Visa".into(), description: None })
-            .await
-            .unwrap();
-        let t = ops::create_task(&db, ganban_core::models::CreateTaskInput {
-            project_id: p.id,
-            area_id: None,
-            title: "Book biometrics appointment".into(),
-            description: None,
-            status: "To Do".into(),
-            priority: "Medium".into(),
-            prefix: None,
-            cost: None,
-            currency: None,
-            deadline: None,
-        })
+        let p = ops::create_project(
+            &db,
+            ganban_core::models::CreateProjectInput { name: "Visa".into(), description: None },
+        )
+        .await
+        .unwrap();
+        let t = ops::create_task(
+            &db,
+            ganban_core::models::CreateTaskInput {
+                project_id: p.id,
+                area_id: None,
+                title: "Book biometrics appointment".into(),
+                description: None,
+                status: "To Do".into(),
+                priority: "Medium".into(),
+                prefix: None,
+                cost: None,
+                currency: None,
+                deadline: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -856,29 +846,49 @@ mod tests {
         assert!(found.contains("Book biometrics appointment") && found.contains(&t.id.to_string()), "{found}");
 
         // Bogus task id: refused, nothing filed.
-        let bad = execute_tool(&db, 1, "create_event", &json!({ "title": "X", "event_date": "2027-01-05T10:00:00", "task_id": 99999 })).await;
+        let bad = execute_tool(
+            &db,
+            1,
+            "create_event",
+            &json!({ "title": "X", "event_date": "2027-01-05T10:00:00", "task_id": 99999 }),
+        )
+        .await;
         assert!(bad.contains("does not exist"), "{bad}");
 
         // Real request: a PROPOSAL is filed; the calendar stays untouched.
-        let ok = execute_tool(&db, 1, "create_event", &json!({
-            "title": "Biometrics", "event_date": "2027-01-05T09:00:00", "task_id": t.id
-        })).await;
+        let ok = execute_tool(
+            &db,
+            1,
+            "create_event",
+            &json!({
+                "title": "Biometrics", "event_date": "2027-01-05T09:00:00", "task_id": t.id
+            }),
+        )
+        .await;
         assert!(ok.contains("proposal_id") && ok.contains("NOT created yet"), "{ok}");
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events").fetch_one(&db).await.unwrap();
         assert_eq!(n, 0, "the seam: nothing exists before approval");
-        let summary: String = sqlx::query_scalar("SELECT summary FROM proposals ORDER BY id DESC LIMIT 1")
-            .fetch_one(&db)
-            .await
-            .unwrap();
-        assert!(summary.contains("Biometrics") && summary.contains("09:00") && summary.contains("Book biometrics appointment"), "preview must carry name, time and task: {summary}");
+        let summary: String =
+            sqlx::query_scalar("SELECT summary FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
+        assert!(
+            summary.contains("Biometrics")
+                && summary.contains("09:00")
+                && summary.contains("Book biometrics appointment"),
+            "preview must carry name, time and task: {summary}"
+        );
 
         // Approval applies event + task link + display time in ONE go.
-        let pid: i64 = sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
+        let pid: i64 =
+            sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
         let pending = ganban_core::proposals::take(&db, pid).await.unwrap().unwrap();
         let root = std::env::temp_dir();
         crate::tools::apply_write(&db, &root, &pending.command, &pending.args).await.unwrap();
         let (linked, start_time): (i64, Option<String>) = (
-            sqlx::query_scalar("SELECT COUNT(*) FROM event_tasks WHERE task_id = ?").bind(t.id).fetch_one(&db).await.unwrap(),
+            sqlx::query_scalar("SELECT COUNT(*) FROM event_tasks WHERE task_id = ?")
+                .bind(t.id)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
             sqlx::query_scalar("SELECT start_time FROM events ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap(),
         );
         assert_eq!(linked, 1, "approval must land the task link too");
@@ -891,7 +901,8 @@ mod tests {
         assert_eq!(proj_linked, 1, "the task's parent project must be linked too");
 
         // Date parsing rejects garbage rather than guessing.
-        let garbage = execute_tool(&db, 1, "create_event", &json!({ "title": "X", "event_date": "next tuesday" })).await;
+        let garbage =
+            execute_tool(&db, 1, "create_event", &json!({ "title": "X", "event_date": "next tuesday" })).await;
         assert!(garbage.contains("could not parse"), "{garbage}");
 
         // create_task: resolve the project, file the proposal (drafted email
@@ -901,35 +912,55 @@ mod tests {
         assert!(projects.contains("\"name\":\"Visa\""), "{projects}");
         let bogus = execute_tool(&db, 1, "create_task", &json!({ "project_id": 9999, "title": "X" })).await;
         assert!(bogus.contains("does not exist"), "{bogus}");
-        let proposed = execute_tool(&db, 1, "create_task", &json!({
-            "project_id": p.id, "title": "Email Strength Room about remote workouts",
-            "description": "Draft: Dear team, I am moving abroad on 17 August…", "priority": "High"
-        })).await;
+        let proposed = execute_tool(
+            &db,
+            1,
+            "create_task",
+            &json!({
+                "project_id": p.id, "title": "Email Strength Room about remote workouts",
+                "description": "Draft: Dear team, I am moving abroad on 17 August…", "priority": "High"
+            }),
+        )
+        .await;
         assert!(proposed.contains("proposal_id") && proposed.contains("NOT created yet"), "{proposed}");
-        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE title LIKE 'Email Strength Room%'").fetch_one(&db).await.unwrap();
-        assert_eq!(before, 0, "the seam holds for tasks too");
-        let pid2: i64 = sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
-        let pending2 = ganban_core::proposals::take(&db, pid2).await.unwrap().unwrap();
-        crate::tools::apply_write(&db, &root, &pending2.command, &pending2.args).await.unwrap();
-        let desc: Option<String> = sqlx::query_scalar("SELECT description FROM tasks WHERE title LIKE 'Email Strength Room%'")
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE title LIKE 'Email Strength Room%'")
             .fetch_one(&db)
             .await
             .unwrap();
-        assert!(desc.unwrap_or_default().contains("Draft: Dear team"), "the drafted email must land in the description");
+        assert_eq!(before, 0, "the seam holds for tasks too");
+        let pid2: i64 =
+            sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
+        let pending2 = ganban_core::proposals::take(&db, pid2).await.unwrap().unwrap();
+        crate::tools::apply_write(&db, &root, &pending2.command, &pending2.args).await.unwrap();
+        let desc: Option<String> =
+            sqlx::query_scalar("SELECT description FROM tasks WHERE title LIKE 'Email Strength Room%'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            desc.unwrap_or_default().contains("Draft: Dear team"),
+            "the drafted email must land in the description"
+        );
 
         // update_task: the second-turn field ask ("have a draft of the email
         // in the description") — amend the EXISTING task through the gate.
-        let tid2: i64 = sqlx::query_scalar("SELECT id FROM tasks WHERE title LIKE 'Email Strength Room%'").fetch_one(&db).await.unwrap();
+        let tid2: i64 = sqlx::query_scalar("SELECT id FROM tasks WHERE title LIKE 'Email Strength Room%'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         let upd = execute_tool(&db, 1, "update_task", &json!({
             "task_id": tid2, "description": "Dear Strength Room team, I'm moving abroad on 17 August — full draft v2…"
         })).await;
         assert!(upd.contains("proposal_id") && upd.contains("NOT applied yet"), "{upd}");
-        let unchanged: Option<String> = sqlx::query_scalar("SELECT description FROM tasks WHERE id = ?").bind(tid2).fetch_one(&db).await.unwrap();
+        let unchanged: Option<String> =
+            sqlx::query_scalar("SELECT description FROM tasks WHERE id = ?").bind(tid2).fetch_one(&db).await.unwrap();
         assert!(unchanged.unwrap_or_default().contains("Draft: Dear team"), "the seam: unchanged until approval");
-        let pid3: i64 = sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
+        let pid3: i64 =
+            sqlx::query_scalar("SELECT id FROM proposals ORDER BY id DESC LIMIT 1").fetch_one(&db).await.unwrap();
         let pending3 = ganban_core::proposals::take(&db, pid3).await.unwrap().unwrap();
         crate::tools::apply_write(&db, &root, &pending3.command, &pending3.args).await.unwrap();
-        let after: Option<String> = sqlx::query_scalar("SELECT description FROM tasks WHERE id = ?").bind(tid2).fetch_one(&db).await.unwrap();
+        let after: Option<String> =
+            sqlx::query_scalar("SELECT description FROM tasks WHERE id = ?").bind(tid2).fetch_one(&db).await.unwrap();
         assert!(after.unwrap_or_default().contains("full draft v2"), "approval applies the amendment");
 
         // Missing task refused before anything is filed.
@@ -947,9 +978,12 @@ mod tests {
         }
         let db = ganban_core::init_db(&path).await.unwrap();
         let owner = ganban_core::auth::ensure_owner(&db).await.unwrap();
-        let p = ops::create_project(&db, ganban_core::models::CreateProjectInput { name: "Visa".into(), description: None })
-            .await
-            .unwrap();
+        let p = ops::create_project(
+            &db,
+            ganban_core::models::CreateProjectInput { name: "Visa".into(), description: None },
+        )
+        .await
+        .unwrap();
         let member = ops::create_user(
             &db,
             ganban_core::models::CreateUserInput { username: "mia".into(), full_name: "Mia".into(), email: None },
@@ -972,17 +1006,28 @@ mod tests {
         };
         let open = ops::create_task(&db, task("Passport photo open")).await.unwrap();
         let hidden = ops::create_task(&db, task("Passport photo admins")).await.unwrap();
-        ganban_core::visibility::set_task_visibility(&db, hidden.id, ganban_core::visibility::ADMINS_ONLY, &[]).await.unwrap();
+        ganban_core::visibility::set_task_visibility(&db, hidden.id, ganban_core::visibility::ADMINS_ONLY, &[])
+            .await
+            .unwrap();
 
         let mine = execute_tool(&db, member, "find_tasks", &json!({ "query": "passport photo" })).await;
         assert!(mine.contains("Passport photo open"), "{mine}");
         assert!(!mine.contains("Passport photo admins"), "a hidden task is absent: {mine}");
         let all = execute_tool(&db, owner, "find_tasks", &json!({ "query": "passport photo" })).await;
-        assert!(all.contains("Passport photo open") && all.contains("Passport photo admins"), "the owner sees both: {all}");
+        assert!(
+            all.contains("Passport photo open") && all.contains("Passport photo admins"),
+            "the owner sees both: {all}"
+        );
 
-        let anchored = execute_tool(&db, member, "create_event", &json!({
-            "title": "Photo", "event_date": "2027-01-05T10:00:00", "task_id": hidden.id
-        })).await;
+        let anchored = execute_tool(
+            &db,
+            member,
+            "create_event",
+            &json!({
+                "title": "Photo", "event_date": "2027-01-05T10:00:00", "task_id": hidden.id
+            }),
+        )
+        .await;
         assert!(anchored.contains("does not exist"), "a hidden task can't anchor an event: {anchored}");
         let _ = open;
     }

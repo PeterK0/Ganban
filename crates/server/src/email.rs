@@ -17,10 +17,10 @@
 //! able to authorize anything — drafts ride the standard proposal gate.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use futures_util::StreamExt;
 use ganban_core::error::AppError;
 use ganban_core::models::{EmailAccount, EmailMessage};
 use ganban_core::{ops, Db};
-use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 /// Envelope re-sync cadence for enabled accounts.
@@ -87,7 +87,9 @@ impl Reach {
 pub async fn resolve_mail_host(host: &str, port: i64, reach: Reach) -> Result<Vec<std::net::SocketAddr>, String> {
     let port = u16::try_from(port).map_err(|_| format!("{port} is not a valid port"))?;
     match reach {
-        Reach::PublicOnly => crate::net_guard::resolve_public(host, port).await.map_err(|e| format!("{host}:{port}: {e}")),
+        Reach::PublicOnly => {
+            crate::net_guard::resolve_public(host, port).await.map_err(|e| format!("{host}:{port}: {e}"))
+        }
         Reach::Any => crate::net_guard::resolve(host, port, crate::net_guard::Scope::OwnerNetwork)
             .await
             .map_err(|e| format!("{host}:{port}: {e}")),
@@ -95,12 +97,18 @@ pub async fn resolve_mail_host(host: &str, port: i64, reach: Reach) -> Result<Ve
 }
 
 /// TCP+TLS to the mailbox, no auth yet (shared by both auth paths).
-async fn open_tls(account: &EmailAccount, reach: Reach) -> Result<async_imap::Client<async_native_tls::TlsStream<tokio::net::TcpStream>>, String> {
+async fn open_tls(
+    account: &EmailAccount,
+    reach: Reach,
+) -> Result<async_imap::Client<async_native_tls::TlsStream<tokio::net::TcpStream>>, String> {
     let addrs = resolve_mail_host(&account.host, account.port, reach).await?;
-    let tcp = tokio::time::timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS), tokio::net::TcpStream::connect(&addrs[..]))
-        .await
-        .map_err(|_| format!("timed out connecting to {}:{}", account.host, account.port))?
-        .map_err(|e| format!("could not reach {}:{} — {e}", account.host, account.port))?;
+    let tcp = tokio::time::timeout(
+        std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        tokio::net::TcpStream::connect(&addrs[..]),
+    )
+    .await
+    .map_err(|_| format!("timed out connecting to {}:{}", account.host, account.port))?
+    .map_err(|e| format!("could not reach {}:{} — {e}", account.host, account.port))?;
     let tls = async_native_tls::TlsConnector::new()
         .connect(&account.host, tcp)
         .await
@@ -115,7 +123,8 @@ async fn connect(account: &EmailAccount, reach: Reach) -> Result<Session, String
     if account.auth_type == "oauth" {
         let client_id = account.oauth_client_id.as_deref().ok_or("OAuth account is missing its client id")?;
         let refresh = account.oauth_refresh_token.as_deref().ok_or("OAuth account is not signed in — reconnect it")?;
-        let token = crate::email_oauth::access_token(client_id, account.oauth_client_secret.as_deref(), refresh).await?;
+        let token =
+            crate::email_oauth::access_token(client_id, account.oauth_client_secret.as_deref(), refresh).await?;
         let auth = XOAuth2 { user: account.username.clone(), access_token: token };
         client
             .authenticate("XOAUTH2", auth)
@@ -132,12 +141,7 @@ async fn connect(account: &EmailAccount, reach: Reach) -> Result<Session, String
 /// Try the account's credentials and list its folders (the Plug-ins "Test").
 pub async fn test_account(account: &EmailAccount, reach: Reach) -> Result<Vec<String>, String> {
     let mut session = connect(account, reach).await?;
-    let names: Vec<_> = session
-        .list(Some(""), Some("*"))
-        .await
-        .map_err(|e| e.to_string())?
-        .collect::<Vec<_>>()
-        .await;
+    let names: Vec<_> = session.list(Some(""), Some("*")).await.map_err(|e| e.to_string())?.collect::<Vec<_>>().await;
     let mut folders = Vec::new();
     for n in names.into_iter().flatten() {
         folders.push(n.name().to_string());
@@ -206,7 +210,11 @@ fn parse_headers(raw: &[u8]) -> Parsed {
                 .map(|a| {
                     let name = a.name().unwrap_or_default();
                     let addr = a.address().unwrap_or_default();
-                    if name.is_empty() { addr.to_string() } else { format!("{name} <{addr}>") }
+                    if name.is_empty() {
+                        addr.to_string()
+                    } else {
+                        format!("{name} <{addr}>")
+                    }
                 })
                 .unwrap_or_default();
             (
@@ -246,12 +254,8 @@ pub async fn sync_account(db: &Db, account: &EmailAccount) -> Result<SyncSummary
 
     // Detect the Drafts folder once while we're here (manual override wins).
     let drafts = if account.drafts_folder.is_empty() {
-        let names: Vec<_> = session
-            .list(Some(""), Some("*"))
-            .await
-            .map_err(|e| e.to_string())?
-            .collect::<Vec<_>>()
-            .await;
+        let names: Vec<_> =
+            session.list(Some(""), Some("*")).await.map_err(|e| e.to_string())?.collect::<Vec<_>>().await;
         let folders: Vec<String> = names.into_iter().flatten().map(|n| n.name().to_string()).collect();
         detect_drafts_folder(&folders)
     } else {
@@ -324,13 +328,12 @@ pub async fn sync_account(db: &Db, account: &EmailAccount) -> Result<SyncSummary
                     summary.new_messages += 1;
                     // A new message in an already-linked thread should have its
                     // body too (the thread is published — keep it complete).
-                    let linked: Option<i64> =
-                        sqlx::query_scalar("SELECT project_id FROM email_threads WHERE id = ?")
-                            .bind(thread_id)
-                            .fetch_one(db)
-                            .await
-                            .ok()
-                            .flatten();
+                    let linked: Option<i64> = sqlx::query_scalar("SELECT project_id FROM email_threads WHERE id = ?")
+                        .bind(thread_id)
+                        .fetch_one(db)
+                        .await
+                        .ok()
+                        .flatten();
                     let _ = linked; // bodies for linked threads are fetched below
                 }
             }
@@ -456,11 +459,8 @@ pub fn build_reply(
     references: &[String],
     body: &str,
 ) -> Result<Vec<u8>, String> {
-    let subject = if subject.to_ascii_lowercase().starts_with("re:") {
-        subject.to_string()
-    } else {
-        format!("Re: {subject}")
-    };
+    let subject =
+        if subject.to_ascii_lowercase().starts_with("re:") { subject.to_string() } else { format!("Re: {subject}") };
     let mut builder = mail_builder::MessageBuilder::new()
         .from(from.to_string())
         .to(to.to_string())
@@ -482,9 +482,8 @@ pub fn build_reply(
 pub async fn apply_draft(db: &Db, args: &Value) -> Result<Value, AppError> {
     let thread_id = args.get("threadId").and_then(Value::as_i64).ok_or_else(bad)?;
     let body = args.get("body").and_then(Value::as_str).ok_or_else(bad)?;
-    let thread = ops::get_email_thread(db, thread_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("email thread".into()))?;
+    let thread =
+        ops::get_email_thread(db, thread_id).await?.ok_or_else(|| AppError::NotFound("email thread".into()))?;
     let account = ops::get_email_account(db, thread.account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("email account".into()))?;
@@ -503,7 +502,8 @@ pub async fn apply_draft(db: &Db, args: &Value) -> Result<Value, AppError> {
     .map_err(AppError::InvalidInput)?;
 
     let folder = if account.drafts_folder.is_empty() { "Drafts".to_string() } else { account.drafts_folder.clone() };
-    let mut session = connect(&account, Reach::for_account(db, &account).await).await.map_err(AppError::InvalidInput)?;
+    let mut session =
+        connect(&account, Reach::for_account(db, &account).await).await.map_err(AppError::InvalidInput)?;
     session
         .append(&folder, Some("(\\Draft)"), None, &bytes)
         .await

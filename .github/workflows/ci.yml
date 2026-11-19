@@ -2,11 +2,12 @@ name: CI
 
 # Checks every push and pull request: the TypeScript build, the Rust core and server tests, and the
 # node test suites. Three jobs run in parallel:
-#   web    (Linux)  npm ci, tsc, vite build, the headless node suites
-#   rust   (Linux)  cargo test for ganban-core and ganban-server
+#   web    (Linux)  npm ci, tsc, vite build, every node suite (npm run test:all)
+#   rust   (Linux)  cargo fmt --check, then cargo test for ganban-core and ganban-server
 #   macos  (macOS)  test:ops (the host scripts in ops/ target macOS and launchd) and a cargo check
-#                   of the desktop shell (gansty). The shell needs WebKitGTK and friends on Linux,
-#                   so it is checked on macOS only; release.yml builds it on every OS.
+#                   of the desktop shell (gansty). On Linux the shell needs WebKitGTK and friends:
+#                   linux-shell.yml checks and tests it there when src-tauri/ changes, and
+#                   release.yml builds it on every OS.
 
 # Pushes to main, and pull requests (a PR branch's pushes run once, through its pull request).
 on:
@@ -45,25 +46,12 @@ jobs:
       - name: Build the web UI
         run: npx vite build
 
-      # Pure-module suites: esbuild bundles the real source and node:assert checks it. No browser,
-      # no server. test:reports skips its external XLSX/PDF readers when they're absent.
+      # Every node suite, through one runner: each test:* script in package.json except test:ops (macOS, below),
+      # and a guard that fails when a scripts/test-*.mjs has no script. Esbuild bundles the real source and
+      # node:assert checks it; no browser, no server. test:reports skips its external XLSX/PDF readers when absent.
       - name: Node test suites
         run: |
-          # A private tab's suite, where the tree carries it (the public tree doesn't).
-          if [ -f scripts/test-extra-tabs.mjs ]; then npm run test:extra-tabs; fi
-          npm run test:pins
-          npm run test:recur
-          npm run test:doclinks
-          npm run test:update
-          npm run test:apkupdate
-          npm run test:updatesource
-          npm run test:nav
-          npm run test:reports
-          npm run test:listedit
-          node scripts/test-statusfilter.mjs
-          node scripts/test-workspaces.mjs
-          node scripts/test-invite.mjs
-          npm run test:appimage
+          npm run test:all
           bash -n packaging/arch/PKGBUILD
 
   rust:
@@ -79,11 +67,17 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
+
+      # The whole workspace is formatted with rustfmt (rustfmt.toml: width 120). Run `cargo fmt --all` before you commit.
+      - name: Check formatting
+        run: cargo fmt --all --check
 
       # Failing tests become annotations, so they show on the run's summary page without opening the log.
       - name: Test ganban-core and ganban-server

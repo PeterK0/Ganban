@@ -55,27 +55,30 @@ async fn relaxing_project_id_preserves_existing_ledger_rows() {
     assert_eq!(rows[0].project_id, Some(7));
 
     // And the relaxed column now accepts cross-project (NULL) entries.
-    ops::record_agent_action(&db, ops::NewAgentAction {
-        status: "applied",
-        user_id: 1,
-        profile_id: None,
-        project_id: None,
-        chat_id: None,
-        routine_id: Some(1),
-        model: None,
-        prompt_tokens: None,
-        completion_tokens: None,
-        duration_ms: None,
-        protocol_slug: None,
-        protocol_version: None,
-        content_hash: None,
-        parent_action_id: None,
-        approver_id: None,
-        tool: "rundown",
-        summary: "routine run",
-        args_json: "{}",
-        result_json: None,
-    })
+    ops::record_agent_action(
+        &db,
+        ops::NewAgentAction {
+            status: "applied",
+            user_id: 1,
+            profile_id: None,
+            project_id: None,
+            chat_id: None,
+            routine_id: Some(1),
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: None,
+            approver_id: None,
+            tool: "rundown",
+            summary: "routine run",
+            args_json: "{}",
+            result_json: None,
+        },
+    )
     .await
     .unwrap();
     assert_eq!(ops::list_agent_actions(&db, None, 10).await.unwrap().len(), 2);

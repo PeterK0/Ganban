@@ -67,7 +67,7 @@ pub async fn save_profile(db: &Db, ent: &Entity, input: ProfileInput) -> Result<
         return Err(AppError::InvalidInput("that key belongs to a built-in profile".into()));
     }
     input.mapping.validate()?;
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query(
         "INSERT INTO fin_profiles (entity_id, key, name, mapping_json) VALUES (?, ?, ?, ?) \
          ON CONFLICT(entity_id, key) DO UPDATE SET name = excluded.name, mapping_json = excluded.mapping_json",
@@ -85,7 +85,7 @@ pub async fn save_profile(db: &Db, ent: &Entity, input: ProfileInput) -> Result<
 }
 
 pub async fn delete_profile(db: &Db, ent: &Entity, key: &str) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let n = sqlx::query("DELETE FROM fin_profiles WHERE entity_id = ? AND key = ?")
         .bind(ent.id)
         .bind(key)
@@ -105,11 +105,12 @@ pub async fn resolve_profile(db: &Db, ent: &Entity, key: &str) -> Result<Profile
     if let Some(p) = ProfileSpec::builtin(key) {
         return Ok(p);
     }
-    let json: Option<String> = sqlx::query_scalar("SELECT mapping_json FROM fin_profiles WHERE entity_id = ? AND key = ?")
-        .bind(ent.id)
-        .bind(key)
-        .fetch_optional(db)
-        .await?;
+    let json: Option<String> =
+        sqlx::query_scalar("SELECT mapping_json FROM fin_profiles WHERE entity_id = ? AND key = ?")
+            .bind(ent.id)
+            .bind(key)
+            .fetch_optional(db)
+            .await?;
     let json = json.ok_or_else(|| not_found("profile"))?;
     Ok(ProfileSpec::Mapping { key: key.to_string(), mapping: serde_json::from_str(&json)? })
 }
@@ -139,6 +140,21 @@ pub async fn preview(db: &Db, ent: &Entity, bytes: &[u8], profile_key: Option<&s
         None => None,
     };
     let mut r = parse(bytes, spec.as_ref())?;
+    // Not a built-in format: a saved layout whose named columns are all in the file's header
+    // is this file's (the most specific one when several fit).
+    if r.profile_key.is_none() && profile_key.is_none() {
+        let grid = super::read_grid(bytes)?;
+        let saved = list_profiles(db, ent).await?;
+        let best = saved
+            .iter()
+            .filter_map(|p| Some((p.mapping.as_ref()?.fits(&grid.rows)?, p)))
+            .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.key.cmp(&a.1.key)));
+        if let Some((_, p)) = best {
+            let spec = resolve_profile(db, ent, &p.key).await?;
+            r = parse(bytes, Some(&spec))?;
+            r.confidence = 0.9;
+        }
+    }
     r.rows.truncate(PREVIEW_ROWS);
     if let Some(key) = r.profile_key.clone() {
         let accounts = crate::finance::list_accounts(db, ent, false).await?;
@@ -183,8 +199,19 @@ pub struct ImportResult {
     pub categorised_by_rules: usize,
     /// Refunds given the category of the expense they return.
     pub refunds: usize,
-    /// Lines older than the cut-off the user chose, posted straight away.
+    /// Lines posted: filed by a rule, a payee's default, the fee rule or a pair, and old
+    /// lines filed as history.
     pub posted: usize,
+    /// Lines filed by their payee's default category.
+    pub filed_by_payee: usize,
+    /// Old lines (before the history cut-off) nothing filed: posted as unsorted history.
+    pub history_unsorted: usize,
+    /// Old lines filed by the local model's suggestion for their group.
+    pub history_suggested: usize,
+    /// Lines left in the inbox for the user: no category, or a pair to review.
+    pub decisions: usize,
+    /// The transfer and exchange pairs booked without asking, for "N transfers matched".
+    pub transfer_pair_ids: Vec<i64>,
     /// Rows skipped while parsing, and lines of accounts left out of the map.
     pub warnings: Vec<String>,
 }
@@ -196,7 +223,8 @@ fn opening_from_rows(rows: &[&ParsedRow]) -> Option<(i64, String)> {
     let first = rows.iter().min_by_key(|r| instant(r))?;
     let ties = rows.iter().filter(|r| instant(r) == instant(first)).count();
     let balance = first.balance_minor?;
-    (ties == 1).then(|| (balance - (first.amount_minor - first.fee_minor), first.booked_date.format("%Y-%m-%d").to_string()))
+    (ties == 1)
+        .then(|| (balance - (first.amount_minor - first.fee_minor), first.booked_date.format("%Y-%m-%d").to_string()))
 }
 
 async fn resolve_accounts(
@@ -233,6 +261,15 @@ async fn resolve_accounts(
         };
         if account.archived {
             return Err(AppError::InvalidInput("an account in the map is archived".into()));
+        }
+        // Made for the other side of a move, with no lines of its own in the file: nothing
+        // says yet where its money went.
+        if matches!(choice, AccountChoice::Create { .. }) && !parsed.rows.iter().any(|r| r.account_guess == g.guess_key)
+        {
+            sqlx::query("UPDATE fin_accounts SET unconfirmed = 1 WHERE id = ?")
+                .bind(account.id)
+                .execute(&mut *conn)
+                .await?;
         }
         if !account.currency.eq_ignore_ascii_case(&g.currency) {
             return Err(AppError::InvalidInput(format!(
@@ -309,8 +346,19 @@ impl Default for ImportOptions {
 
 /// The checks an import makes before it starts: the profile exists and each existing
 /// account in the map is the user's own and open. The rest is checked as it runs.
-pub async fn check_request(db: &Db, ent: &Entity, profile_key: &str, map: &HashMap<String, AccountChoice>) -> Result<()> {
+pub async fn check_request(
+    db: &Db,
+    ent: &Entity,
+    profile_key: &str,
+    map: &HashMap<String, AccountChoice>,
+) -> Result<()> {
     resolve_profile(db, ent, profile_key).await?;
+    if let Some((done, total)) = crate::finance::payees::preparing(db, ent).await? {
+        return Err(AppError::InvalidInput(format!(
+            "Finance is still sorting your existing lines into payees after the update ({done} of {total}): \
+             try the import again in a minute"
+        )));
+    }
     let mut conn = db.acquire().await?;
     for choice in map.values() {
         if let AccountChoice::Existing(id) = choice {
@@ -356,12 +404,10 @@ async fn stored_lines(db: &Db, ent: &Entity, accounts: &[i64], from: &str, to: &
     Ok(out)
 }
 
-/// A write transaction that takes the write lock at its start (`BEGIN IMMEDIATE`),
-/// waiting its turn behind other writers. A deferred one that reads first would
-/// fail outright, not wait, when another writer commits before its first write (WAL's
-/// stale snapshot), and an import's batches read first.
+/// An import's batches read first, so each runs in a write transaction
+/// ([`crate::db::begin_write`]).
 async fn write_tx(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
-    Ok(db.begin_with("BEGIN IMMEDIATE").await?)
+    crate::db::begin_write(db).await
 }
 
 /// Imports a file into the user's books, in short transactions, so the rest of the
@@ -396,7 +442,8 @@ pub async fn import_file_with(
     let spec = resolve_profile(db, ent, profile_key).await?;
     let parsed = parse(bytes, Some(&spec))?;
 
-    let owned: Vec<ParsedRow> = parsed.rows.iter().filter(|r| account_map.contains_key(&r.account_guess)).cloned().collect();
+    let owned: Vec<ParsedRow> =
+        parsed.rows.iter().filter(|r| account_map.contains_key(&r.account_guess)).cloned().collect();
     let mut warnings = parsed.warnings.clone();
     let unmapped = parsed.rows.len() - owned.len();
     if unmapped > 0 {
@@ -412,16 +459,20 @@ pub async fn import_file_with(
             AccountChoice::Create { .. } => None,
         })
         .collect();
-    let on_existing: Vec<usize> = (0..owned.len()).filter(|&i| existing.contains_key(owned[i].account_guess.as_str())).collect();
-    let incoming: Vec<dedupe::Incoming> =
-        on_existing.iter().map(|&i| dedupe::Incoming::of(existing[owned[i].account_guess.as_str()], &owned[i])).collect();
+    let on_existing: Vec<usize> =
+        (0..owned.len()).filter(|&i| existing.contains_key(owned[i].account_guess.as_str())).collect();
+    let incoming: Vec<dedupe::Incoming> = on_existing
+        .iter()
+        .map(|&i| dedupe::Incoming::of(existing[owned[i].account_guess.as_str()], &owned[i]))
+        .collect();
     let dates = || on_existing.iter().map(|&i| owned[i].booked_date);
     let stored = match (dates().min(), dates().max()) {
         (Some(from), Some(to)) => {
             let mut ids: Vec<i64> = existing.values().copied().collect();
             ids.sort_unstable();
             ids.dedup();
-            stored_lines(db, ent, &ids, &from.format("%Y-%m-%d").to_string(), &to.format("%Y-%m-%d").to_string()).await?
+            stored_lines(db, ent, &ids, &from.format("%Y-%m-%d").to_string(), &to.format("%Y-%m-%d").to_string())
+                .await?
         }
         _ => Vec::new(),
     };
@@ -432,8 +483,12 @@ pub async fn import_file_with(
 
     // Rates for the new lines, before any write: no network wait inside a transaction.
     report(Stage::Rates, 0, 0);
-    let new_lines: Vec<&ParsedRow> =
-        owned.iter().zip(&verdicts).filter(|(_, v)| !matches!(v, Some(dedupe::Verdict::Known(_)))).map(|(r, _)| r).collect();
+    let new_lines: Vec<&ParsedRow> = owned
+        .iter()
+        .zip(&verdicts)
+        .filter(|(_, v)| !matches!(v, Some(dedupe::Verdict::Known(_))))
+        .map(|(r, _)| r)
+        .collect();
     let (need, like) = rates_needed(&new_lines, &ent.functional_currency);
     rates::ensure_rates(db, &need).await?;
     let _ = rates::ensure_rates(db, &like).await;
@@ -441,6 +496,16 @@ pub async fn import_file_with(
     report(Stage::Accounts, 0, 0);
     let mut tx = write_tx(db).await?;
     let accounts = resolve_accounts(&mut tx, ent, &parsed, profile_key, &account_map).await?;
+    // An account whose own statement this is: confirmed from now on.
+    let mut own: Vec<i64> = owned.iter().filter_map(|r| accounts.get(&r.account_guess).copied()).collect();
+    own.sort_unstable();
+    own.dedup();
+    for id in own {
+        sqlx::query("UPDATE fin_accounts SET unconfirmed = 0 WHERE id = ? AND unconfirmed = 1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     let s = pairing::sys(&mut tx, ent).await?;
     let file_name: String = file_name.trim().chars().take(200).collect();
     let batch_id = sqlx::query(
@@ -458,7 +523,8 @@ pub async fn import_file_with(
 
     // The lines of the accounts just created: new, each with its hash.
     let created: Vec<usize> = (0..owned.len()).filter(|&i| verdicts[i].is_none()).collect();
-    let incoming: Vec<dedupe::Incoming> = created.iter().map(|&i| dedupe::Incoming::of(accounts[&owned[i].account_guess], &owned[i])).collect();
+    let incoming: Vec<dedupe::Incoming> =
+        created.iter().map(|&i| dedupe::Incoming::of(accounts[&owned[i].account_guess], &owned[i])).collect();
     for (&i, v) in created.iter().zip(dedupe::plan(&incoming, &[])) {
         verdicts[i] = Some(v);
     }
@@ -479,7 +545,7 @@ pub async fn import_file_with(
     let unfinished: Vec<(i64, i64, i64)> = sqlx::query_as(
         "SELECT s.id, e.id, b.id FROM fin_source_lines s JOIN fin_import_batches b ON b.id = s.batch_id \
          JOIN fin_entries e ON e.source_line_id = s.id \
-         WHERE s.entity_id = ? AND b.status = 'running' AND b.id != ? AND e.status != 'reversed'",
+         WHERE s.entity_id = ? AND b.status IN ('running', 'failed') AND b.id != ? AND e.status != 'reversed'",
     )
     .bind(ent.id)
     .bind(batch_id)
@@ -570,7 +636,9 @@ pub async fn import_file_with(
             }
             let line_id = inserted.last_insert_rowid();
             // The real side of a pocket move the import wrote earlier: attach it.
-            if let Some(entry) = pairing::find_written_counterpart(&mut tx, ent, &s, account_id, &date, row.amount_minor).await? {
+            if let Some(entry) =
+                pairing::find_written_counterpart(&mut tx, ent, &s, account_id, &date, row.amount_minor).await?
+            {
                 sqlx::query("UPDATE fin_entries SET source_line_id = ?, notes = NULL, updated_at = ? WHERE id = ?")
                     .bind(line_id)
                     .bind(now())
@@ -580,8 +648,22 @@ pub async fn import_file_with(
                 result.duplicates += 1;
                 continue;
             }
-            // A fee line (Revolut's "Plan fee") is a bank fee from the start.
-            let counter = if row.kind_hint == Some(KindHint::Fee) { s.fees } else { s.uncategorised_for(row.amount_minor) };
+            // The real side of an exchange the import estimated (an exchange line itself): it
+            // replaces the estimate.
+            let exchange = row.kind_hint == Some(KindHint::Exchange);
+            if let Some(entry) = match exchange {
+                true => {
+                    pairing::settle_estimate(&mut tx, ent, &s, account_id, &date, row.amount_minor, line_id).await?
+                }
+                false => None,
+            } {
+                result.created += 1;
+                fresh.push(Fresh { entry_id: entry, at: row.booked_at, fx_currency: None, counterpart_account: None });
+                continue;
+            }
+            // A fee line (a plan's monthly fee) is a bank fee from the start.
+            let counter =
+                if row.kind_hint == Some(KindHint::Fee) { s.fees } else { s.uncategorised_for(row.amount_minor) };
             let entry = draft_from_source_line_in(&mut tx, ent, line_id, counter, None).await?;
             result.created += 1;
             to_fresh(row, entry.id, &mut fresh, &mut pockets);
@@ -612,6 +694,7 @@ pub async fn import_file_with(
         tokio::time::sleep(opts.pass_pause).await;
         result.paired += outcome.paired;
         result.review += outcome.review;
+        result.transfer_pair_ids.extend(outcome.pair_ids);
     }
     for chunk in pockets.chunks(step) {
         let mut tx = write_tx(db).await?;
@@ -623,37 +706,54 @@ pub async fn import_file_with(
         tx.commit().await?;
         tokio::time::sleep(opts.pass_pause).await;
     }
+    // The pocket moves written above are pairs booked without asking too.
+    if !pockets.is_empty() {
+        let mut conn = db.acquire().await?;
+        for chunk in pockets.chunks(400) {
+            let list = chunk.iter().map(|p| p.0.to_string()).collect::<Vec<_>>().join(",");
+            let more: Vec<i64> = sqlx::query_scalar(&format!(
+                "SELECT id FROM fin_pairs WHERE entity_id = ? AND status = 'auto' AND entry_a IN ({list})"
+            ))
+            .bind(ent.id)
+            .fetch_all(&mut *conn)
+            .await?;
+            for id in more {
+                if !result.transfer_pair_ids.contains(&id) {
+                    result.transfer_pair_ids.push(id);
+                }
+            }
+        }
+    }
+    // Then each line is filed if it can be: its payee first (who it is), then the rules on
+    // what's unpaired, then the payee's default category, then refunds. A line filed by any
+    // of them posts; old lines nothing filed post as unsorted history (`file_history`).
     report(Stage::Rules, 0, ids.len());
     for (n, chunk) in ids.chunks(step).enumerate() {
         let mut tx = write_tx(db).await?;
+        for &id in chunk {
+            crate::finance::payees::attach_in(&mut tx, ent, id).await?;
+        }
         result.categorised_by_rules += apply_rules_in(&mut tx, ent, &s, chunk).await?;
+        let by_payee = crate::finance::payees::apply_defaults_in(&mut tx, ent, &s, chunk).await?;
+        result.filed_by_payee += by_payee;
+        result.posted += by_payee;
         result.refunds += pairing::match_refunds(&mut tx, ent, &s, chunk).await?;
+        file_lines(&mut tx, ent, &s, chunk, opts.post_before.as_deref(), &mut result).await?;
         tx.commit().await?;
         tokio::time::sleep(opts.pass_pause).await;
         report(Stage::Rules, ((n + 1) * step).min(ids.len()), ids.len());
     }
 
-    // History the bank settled long ago skips the inbox when the user asks: posted after
-    // pairing and the rules, so it goes in as well sorted as it can be.
-    if let Some(before) = opts.post_before.as_deref() {
-        let mut out = crate::finance::inbox::PostOutcome::default();
-        for chunk in ids.chunks(step) {
-            let mut tx = write_tx(db).await?;
-            crate::finance::inbox::post_ids_in(&mut tx, ent, chunk, Some(before), &mut out).await?;
-            tx.commit().await?;
-            tokio::time::sleep(opts.pass_pause).await;
-        }
-        result.posted = out.posted;
-    }
-
     let mut tx = write_tx(db).await?;
-    sqlx::query("UPDATE fin_import_batches SET rows_total = ?, rows_new = ?, rows_duplicate = ?, status = 'done' WHERE id = ?")
-        .bind(owned.len() as i64)
-        .bind(result.created as i64)
-        .bind(result.duplicates as i64)
-        .bind(batch_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE fin_import_batches SET rows_total = ?, rows_new = ?, rows_duplicate = ?, status = 'done' WHERE id = ?",
+    )
+    .bind(owned.len() as i64)
+    .bind(result.created as i64)
+    .bind(result.duplicates as i64)
+    .bind(batch_id)
+    .execute(&mut *tx)
+    .await?;
     for b in &resumed_batches {
         sqlx::query("UPDATE fin_import_batches SET status = 'done' WHERE id = ? AND entity_id = ?")
             .bind(b)
@@ -671,6 +771,74 @@ pub async fn import_file_with(
     Ok(result)
 }
 
+/// The last step of an import's final pass, per line: a categorised draft posts (categorised
+/// means done). An uncategorised one dated before `history_before` takes the local model's
+/// suggestion for its group when there is one, else posts as unsorted history. What's left
+/// is a decision for the user.
+async fn file_lines(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &pairing::Sys,
+    ids: &[i64],
+    history_before: Option<&str>,
+    result: &mut ImportResult,
+) -> Result<()> {
+    use crate::finance::inbox::{group_key_of, post_ids_in, PostOutcome};
+    use crate::finance::payees;
+    for &id in ids {
+        let row: Option<(String, String, String, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT status, date, description, payee, payee_id FROM fin_entries WHERE id = ? AND entity_id = ?",
+        )
+        .bind(id)
+        .bind(ent.id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((status, date, description, payee, payee_id)) = row else { continue };
+        if status != "draft" {
+            continue;
+        }
+        let v = match pairing::bank_view(conn, ent, s, id).await {
+            Ok(v) => v,
+            Err(e) if pairing::skippable(&e) => continue,
+            Err(e) => return Err(e),
+        };
+        if !v.is_uncategorised(s) {
+            let mut out = PostOutcome::default();
+            post_ids_in(conn, ent, &[id], None, &mut out).await?;
+            result.posted += out.posted;
+            result.decisions += out.review;
+            continue;
+        }
+        let old = history_before.is_some_and(|b| date.as_str() < b);
+        if !old || pairing::is_paired(conn, id).await? {
+            result.decisions += 1;
+            continue;
+        }
+        let suggested: Option<i64> = sqlx::query_scalar(
+            "SELECT ledger_account_id FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?",
+        )
+        .bind(ent.id)
+        .bind(group_key_of(payee_id, &description, payee.as_deref(), v.amount_minor))
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+        if let Some(la) = suggested {
+            if payees::file_in(conn, ent, s, id, la).await? {
+                result.history_suggested += 1;
+                result.posted += 1;
+                continue;
+            }
+        }
+        let n = payees::post_as_history_in(conn, ent, &[id]).await?;
+        result.history_unsorted += n;
+        result.posted += n;
+        if n == 0 {
+            result.decisions += 1;
+        }
+    }
+    Ok(())
+}
+
 /// The (currency, date) pairs an import needs a rate for: each foreign line's date, in
 /// its currency and in the functional currency. The second list is what pairing would
 /// like (the other currency an exchange leg names, for its plausibility check): fetched
@@ -681,7 +849,8 @@ pub fn rates_needed(rows: &[&ParsedRow], functional: &str) -> (Vec<(String, Stri
     for r in rows {
         let date = r.booked_date.format("%Y-%m-%d").to_string();
         let foreign = !r.currency.eq_ignore_ascii_case(functional);
-        let wanted = [(foreign, Some(r.currency.as_str())), (foreign, Some(functional)), (false, r.fx_currency.as_deref())];
+        let wanted =
+            [(foreign, Some(r.currency.as_str())), (foreign, Some(functional)), (false, r.fx_currency.as_deref())];
         for (required, cur) in wanted {
             let Some(cur) = cur.map(str::to_uppercase) else { continue };
             if cur == "EUR" || (!required && cur == functional.to_uppercase()) {

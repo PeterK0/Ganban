@@ -26,7 +26,9 @@ async fn may_set_ai_included(cx: &Ctx<'_>, a: &Args<'_>, user: &AuthUser) -> Res
     let kind = a.req_str("kind")?;
     let id = a.req_i64("id")?;
     let project = match kind.as_str() {
-        "attachment" => auth::attachment_project_id(cx.db, id).await?.ok_or_else(|| AppError::NotFound("file".into()))?,
+        "attachment" => {
+            auth::attachment_project_id(cx.db, id).await?.ok_or_else(|| AppError::NotFound("file".into()))?
+        }
         "project" => storage::project_file_project(cx.db, id).await?,
         _ => return Err(AppError::InvalidInput(format!("kind '{kind}' is not one of attachment | project"))),
     };
@@ -40,7 +42,9 @@ async fn may_set_ai_included(cx: &Ctx<'_>, a: &Args<'_>, user: &AuthUser) -> Res
     if storage::file_uploader(cx.db, &kind, id).await? == Some(user.id) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("only a project admin or the file's uploader can change whether the AI reads it".into()))
+        Err(AppError::Forbidden(
+            "only a project admin or the file's uploader can change whether the AI reads it".into(),
+        ))
     }
 }
 
@@ -58,7 +62,9 @@ async fn may_touch_file(cx: &Ctx<'_>, a: &Args<'_>, user: &AuthUser) -> Result<(
             }
             Ok(())
         }
-        "project" => require_role(cx.db, user, storage::project_file_project(cx.db, id).await?, auth::ROLE_MEMBER).await,
+        "project" => {
+            require_role(cx.db, user, storage::project_file_project(cx.db, id).await?, auth::ROLE_MEMBER).await
+        }
         other => Err(AppError::InvalidInput(format!("kind '{other}' is not one of attachment | project"))),
     }
 }
@@ -142,11 +148,14 @@ pub(super) const COMMANDS: &[Command] = &[
     // ----- The AI overview -----
     // Put a task attachment or a project file in or out of the project's knowledge base.
     // Over the size guard (GANBAN_AI_MAX_FILE_MB) including needs `force`. Returns the row.
-    command("set_file_ai_included").access(Access::Custom(|cx, a, user| Box::pin(may_set_ai_included(cx, a, user)))).run(
-        |cx, a| {
+    command("set_file_ai_included")
+        .access(Access::Custom(|cx, a, user| Box::pin(may_set_ai_included(cx, a, user))))
+        .run(|cx, a| {
             Box::pin(async move {
                 let id = a.req_i64("id")?;
-                let included = a.opt_bool("included").ok_or_else(|| AppError::InvalidInput("missing argument 'included'".into()))?;
+                let included = a
+                    .opt_bool("included")
+                    .ok_or_else(|| AppError::InvalidInput("missing argument 'included'".into()))?;
                 let force = a.opt_bool("force").unwrap_or(false);
                 match a.req_str("kind")?.as_str() {
                     "attachment" => reply(storage::set_attachment_ai_included(cx.db, id, included, force).await?),
@@ -154,8 +163,15 @@ pub(super) const COMMANDS: &[Command] = &[
                     other => Err(AppError::InvalidInput(format!("kind '{other}' is not one of attachment | project"))),
                 }
             })
-        },
-    ),
+        }),
+    // Take every file of the project out of the AI overview at once (project admins).
+    // Answers no count: it would count attachments of tasks the admin may not see.
+    command("exclude_project_files_from_ai").access(Access::Admin(PROJECT)).run(|cx, a| {
+        Box::pin(async move {
+            storage::exclude_project_files_from_ai(cx.db, a.req_i64("projectId")?).await?;
+            reply(json!({}))
+        })
+    }),
     // ----- Names and folders -----
     // Rename a task attachment or a project file in place: same folder, a name not already
     // taken there. Returns the row.
@@ -202,12 +218,16 @@ pub(super) const COMMANDS: &[Command] = &[
         },
     ),
     // Rename (or move) a folder: every file under `from` takes the `to` prefix.
-    command("rename_folder").access(Access::Custom(|cx, a, user| Box::pin(may_use_folders(cx, a, user)))).run(|cx, a| {
-        Box::pin(async move {
-            let moved = storage::rename_folder(cx.db, folder_scope(cx, a).await?, &a.req_str("from")?, &a.req_str("to")?).await?;
-            Ok(json!({ "moved": moved }))
-        })
-    }),
+    command("rename_folder").access(Access::Custom(|cx, a, user| Box::pin(may_use_folders(cx, a, user)))).run(
+        |cx, a| {
+            Box::pin(async move {
+                let moved =
+                    storage::rename_folder(cx.db, folder_scope(cx, a).await?, &a.req_str("from")?, &a.req_str("to")?)
+                        .await?;
+                Ok(json!({ "moved": moved }))
+            })
+        },
+    ),
     // Move files into a folder (`dir: ""` is the root): the project's own files, or with
     // `taskId` the task's attachments.
     command("move_files").access(Access::Custom(|cx, a, user| Box::pin(may_use_folders(cx, a, user)))).run(|cx, a| {
@@ -265,8 +285,12 @@ mod tests {
     async fn world(db: &ganban_core::Db) -> (i64, i64) {
         owner(db).await;
         let a = seed(db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
-        let t = seed(db, "create_task", json!({ "input": { "project_id": a, "title": "t", "status": "To Do", "priority": "Low" } }))
-            .await["id"]
+        let t = seed(
+            db,
+            "create_task",
+            json!({ "input": { "project_id": a, "title": "t", "status": "To Do", "priority": "Low" } }),
+        )
+        .await["id"]
             .as_i64()
             .unwrap();
         (a, t)
@@ -286,7 +310,8 @@ mod tests {
         let mia = member(&db, 7, &[(a, "member")]).await;
         let bo = member(&db, 8, &[]).await;
 
-        let new = json!({ "input": { "task_id": t, "file_path": "/tmp/x.pdf", "file_name": "x.pdf", "uploaded_by": 8 } });
+        let new =
+            json!({ "input": { "task_id": t, "file_path": "/tmp/x.pdf", "file_name": "x.pdf", "uploaded_by": 8 } });
         assert!(http(&db, bo, "create_file_attachment", new.clone()).await.unwrap_err().is_not_found());
         let att = http(&db, mia, "create_file_attachment", new).await.unwrap();
         assert_eq!(att["uploaded_by"], 7, "a spoofed uploader is overwritten with the caller");
@@ -331,20 +356,40 @@ mod tests {
         let att = http(&db, mia, "create_file_attachment", new).await.unwrap();
         assert_eq!(att["ai_included"], false, "a new attachment starts out of the AI overview");
         let att = att["id"].as_i64().unwrap();
-        let pf = sqlx::query("INSERT INTO project_files (project_id, file_name, size_bytes, uploaded_by) VALUES (?, 'deck.pdf', 10, 7)")
-            .bind(a)
-            .execute(&db)
-            .await
-            .unwrap()
-            .last_insert_rowid();
+        let pf = sqlx::query(
+            "INSERT INTO project_files (project_id, file_name, size_bytes, uploaded_by) VALUES (?, 'deck.pdf', 10, 7)",
+        )
+        .bind(a)
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
 
         for (kind, id) in [("attachment", att), ("project", pf)] {
             let set = |included: bool| json!({ "kind": kind, "id": id, "included": included });
-            assert!(http(&db, bo, "set_file_ai_included", set(true)).await.unwrap_err().is_not_found(), "{kind}: outsider");
-            assert!(http(&db, lu, "set_file_ai_included", set(true)).await.unwrap_err().is_forbidden(), "{kind}: other member");
-            assert_eq!(http(&db, mia, "set_file_ai_included", set(true)).await.unwrap()["ai_included"], true, "{kind}: uploader");
-            assert_eq!(http(&db, ana, "set_file_ai_included", set(false)).await.unwrap()["ai_included"], false, "{kind}: admin");
-            assert_eq!(http(&db, boss, "set_file_ai_included", set(true)).await.unwrap()["ai_included"], true, "{kind}: owner");
+            assert!(
+                http(&db, bo, "set_file_ai_included", set(true)).await.unwrap_err().is_not_found(),
+                "{kind}: outsider"
+            );
+            assert!(
+                http(&db, lu, "set_file_ai_included", set(true)).await.unwrap_err().is_forbidden(),
+                "{kind}: other member"
+            );
+            assert_eq!(
+                http(&db, mia, "set_file_ai_included", set(true)).await.unwrap()["ai_included"],
+                true,
+                "{kind}: uploader"
+            );
+            assert_eq!(
+                http(&db, ana, "set_file_ai_included", set(false)).await.unwrap()["ai_included"],
+                false,
+                "{kind}: admin"
+            );
+            assert_eq!(
+                http(&db, boss, "set_file_ai_included", set(true)).await.unwrap()["ai_included"],
+                true,
+                "{kind}: owner"
+            );
         }
 
         // The uploader must still see the task: hidden from her, the attachment isn't there.
@@ -358,6 +403,45 @@ mod tests {
         assert!(seed_err(&db, "set_file_ai_included", bad).await.is_invalid_input());
     }
 
+    /// "Take every file out of the AI overview": a project admin's, for that project only.
+    #[tokio::test]
+    async fn every_file_of_a_project_comes_out_of_the_ai_overview_at_once() {
+        let db = test_db("files_ai_all_out").await;
+        let (a, t) = world(&db).await;
+        let ana = member(&db, 6, &[(a, "admin")]).await;
+        let mia = member(&db, 7, &[(a, "member")]).await;
+        let new = json!({ "input": { "task_id": t, "file_path": "/tmp/x.pdf", "file_name": "x.pdf" } });
+        let att = http(&db, mia, "create_file_attachment", new).await.unwrap()["id"].as_i64().unwrap();
+        let other = seed(&db, "create_project", json!({ "input": { "name": "Other" } })).await["id"].as_i64().unwrap();
+        for p in [a, other] {
+            sqlx::query(
+                "INSERT INTO project_files (project_id, file_name, size_bytes, uploaded_by) VALUES (?, 'f.pdf', 10, 7)",
+            )
+            .bind(p)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        // As the migration left the files that already existed: all in.
+        sqlx::query("UPDATE project_files SET ai_included = 1").execute(&db).await.unwrap();
+        sqlx::query("UPDATE file_attachments SET ai_included = 1 WHERE id = ?").bind(att).execute(&db).await.unwrap();
+
+        let args = json!({ "projectId": a });
+        assert!(http(&db, mia, "exclude_project_files_from_ai", args.clone()).await.unwrap_err().is_forbidden());
+        http(&db, ana, "exclude_project_files_from_ai", args.clone()).await.unwrap();
+        let left = |sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&db).await.unwrap() }
+        };
+        assert_eq!(left("SELECT COUNT(*) FROM file_attachments WHERE ai_included != 0").await, 0);
+        assert_eq!(
+            left("SELECT COUNT(*) FROM project_files WHERE ai_included != 0").await,
+            1,
+            "the other project's file stays in"
+        );
+        assert_eq!(http(&db, ana, "exclude_project_files_from_ai", args).await.unwrap(), json!({}), "again: a no-op");
+    }
+
     /// A file over the size guard goes in only with `force`; the refusal names its size.
     #[tokio::test]
     async fn including_a_file_over_the_size_guard_needs_force() {
@@ -365,13 +449,14 @@ mod tests {
         let (a, _) = world(&db).await;
         let ana = member(&db, 6, &[(a, "admin")]).await;
         let big = 380_i64 * 1024 * 1024;
-        let pf = sqlx::query("INSERT INTO project_files (project_id, file_name, size_bytes) VALUES (?, 'textbook.pdf', ?)")
-            .bind(a)
-            .bind(big)
-            .execute(&db)
-            .await
-            .unwrap()
-            .last_insert_rowid();
+        let pf =
+            sqlx::query("INSERT INTO project_files (project_id, file_name, size_bytes) VALUES (?, 'textbook.pdf', ?)")
+                .bind(a)
+                .bind(big)
+                .execute(&db)
+                .await
+                .unwrap()
+                .last_insert_rowid();
         let set = |force: Option<bool>| {
             let mut v = json!({ "kind": "project", "id": pf, "included": true });
             if let Some(f) = force {
@@ -384,7 +469,11 @@ mod tests {
         assert!(http(&db, ana, "set_file_ai_included", set(Some(false))).await.is_err());
         let row = http(&db, ana, "set_file_ai_included", set(Some(true))).await.unwrap();
         assert_eq!(row["ai_included"], true);
-        let stored: i64 = sqlx::query_scalar("SELECT ai_included FROM project_files WHERE id = ?").bind(pf).fetch_one(&db).await.unwrap();
+        let stored: i64 = sqlx::query_scalar("SELECT ai_included FROM project_files WHERE id = ?")
+            .bind(pf)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(stored, ganban_core::storage::AI_FORCED, "the forced choice is kept");
     }
 
@@ -395,31 +484,51 @@ mod tests {
         let (a, t) = world(&db).await;
         let mia = member(&db, 7, &[(a, "member")]).await;
         let bo = member(&db, 9, &[]).await;
-        let att = http(&db, mia, "create_file_attachment", json!({ "input": { "task_id": t, "file_path": "/tmp/x.pdf", "file_name": "x.pdf" } }))
-            .await
-            .unwrap()["id"]
+        let att = http(
+            &db,
+            mia,
+            "create_file_attachment",
+            json!({ "input": { "task_id": t, "file_path": "/tmp/x.pdf", "file_name": "x.pdf" } }),
+        )
+        .await
+        .unwrap()["id"]
             .as_i64()
             .unwrap();
-        let pf = sqlx::query("INSERT INTO project_files (project_id, file_name, size_bytes) VALUES (?, 'deck.pdf', 10)")
-            .bind(a)
-            .execute(&db)
-            .await
-            .unwrap()
-            .last_insert_rowid();
+        let pf =
+            sqlx::query("INSERT INTO project_files (project_id, file_name, size_bytes) VALUES (?, 'deck.pdf', 10)")
+                .bind(a)
+                .execute(&db)
+                .await
+                .unwrap()
+                .last_insert_rowid();
 
         let rename = |kind: &str, id: i64, name: &str| json!({ "kind": kind, "id": id, "name": name });
         assert!(http(&db, bo, "rename_file", rename("project", pf, "y.pdf")).await.unwrap_err().is_not_found());
-        assert_eq!(http(&db, mia, "rename_file", rename("project", pf, "pitch.pdf")).await.unwrap()["file_name"], "pitch.pdf");
-        assert_eq!(http(&db, mia, "rename_file", rename("attachment", att, "plan.pdf")).await.unwrap()["file_name"], "plan.pdf");
-        assert!(http(&db, mia, "rename_file", rename("attachment", att, "a/b.pdf")).await.unwrap_err().is_invalid_input());
+        assert_eq!(
+            http(&db, mia, "rename_file", rename("project", pf, "pitch.pdf")).await.unwrap()["file_name"],
+            "pitch.pdf"
+        );
+        assert_eq!(
+            http(&db, mia, "rename_file", rename("attachment", att, "plan.pdf")).await.unwrap()["file_name"],
+            "plan.pdf"
+        );
+        assert!(http(&db, mia, "rename_file", rename("attachment", att, "a/b.pdf"))
+            .await
+            .unwrap_err()
+            .is_invalid_input());
 
         let task_scope = json!({ "projectId": a, "taskId": t, "path": "Photos" });
         assert!(http(&db, bo, "create_file_folder", task_scope.clone()).await.unwrap_err().is_not_found());
         http(&db, mia, "create_file_folder", task_scope.clone()).await.unwrap();
         http(&db, mia, "create_file_folder", json!({ "projectId": a, "path": "Specs" })).await.unwrap();
-        assert_eq!(http(&db, mia, "list_file_folders", json!({ "projectId": a, "taskId": t })).await.unwrap(), json!(["Photos"]));
+        assert_eq!(
+            http(&db, mia, "list_file_folders", json!({ "projectId": a, "taskId": t })).await.unwrap(),
+            json!(["Photos"])
+        );
         assert_eq!(http(&db, mia, "list_file_folders", json!({ "projectId": a })).await.unwrap(), json!(["Specs"]));
-        let moved = http(&db, mia, "move_files", json!({ "projectId": a, "taskId": t, "ids": [att], "dir": "Photos" })).await.unwrap();
+        let moved = http(&db, mia, "move_files", json!({ "projectId": a, "taskId": t, "ids": [att], "dir": "Photos" }))
+            .await
+            .unwrap();
         assert_eq!(moved["moved"], 1);
         let to = json!({ "projectId": a, "taskId": t, "from": "Photos", "to": "Site" });
         assert_eq!(http(&db, mia, "rename_folder", to).await.unwrap()["moved"], 1);
@@ -452,7 +561,10 @@ mod tests {
         let run_as = |u| Ctx::http(&db, u).with_storage_root(&root);
 
         assert!(run(&run_as(mia), "get_storage_location", json!({ "projectId": a })).await.unwrap_err().is_forbidden());
-        assert!(run(&run_as(ana), "get_storage_location", json!({})).await.unwrap_err().is_forbidden(), "no project: owner only");
+        assert!(
+            run(&run_as(ana), "get_storage_location", json!({})).await.unwrap_err().is_forbidden(),
+            "no project: owner only"
+        );
         let at = run(&run_as(ana), "get_storage_location", json!({ "projectId": a })).await.unwrap();
         let real = std::fs::canonicalize(&root).unwrap();
         assert_eq!(at["root"], real.to_string_lossy().as_ref());
@@ -460,7 +572,8 @@ mod tests {
         assert_eq!(at["isThisMachine"], false);
         assert!(at["hostName"].as_str().is_some_and(|h| !h.is_empty()));
         assert_eq!(run(&run_as(boss), "get_storage_location", json!({})).await.unwrap()["projectDir"], json!(null));
-        let here = run(&Ctx::in_process(&db).with_storage_root(&root), "get_storage_location", json!({})).await.unwrap();
+        let here =
+            run(&Ctx::in_process(&db).with_storage_root(&root), "get_storage_location", json!({})).await.unwrap();
         assert_eq!(here["isThisMachine"], true);
     }
 
@@ -484,7 +597,10 @@ mod tests {
 
         assert_eq!(run(&cx, "share_file_attachment", json!({ "attachmentId": id })).await.unwrap()["is_shared"], true);
         assert!(blob.exists(), "sharing copies the bytes into the allocation");
-        assert_eq!(run(&cx, "unshare_file_attachment", json!({ "attachmentId": id })).await.unwrap()["is_shared"], false);
+        assert_eq!(
+            run(&cx, "unshare_file_attachment", json!({ "attachmentId": id })).await.unwrap()["is_shared"],
+            false
+        );
         assert!(!blob.exists());
 
         // Without a storage root (the agent tools' executor) nothing can be shared.

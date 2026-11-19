@@ -11,7 +11,7 @@ import CommentList from './CommentList';
 import MarkdownPreview from './MarkdownPreview';
 import MultiSelectDropdown from './MultiSelectDropdown';
 import { open } from '@tauri-apps/plugin-dialog';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { openPathHere } from '../lib/systemOpen';
 import { isTauri, isUnloading, hasDaemon, restoreSharedFile, runLocalAgentTask, submitProposal, downloadSharedFile, openSharedFile } from '../lib/daemon';
 import { canShowInFolder, hasFilePaths, revealFile, type RevealResult } from '../lib/shell';
 import { afterReveal, type Locatable } from '../lib/fileLocation.pure';
@@ -25,6 +25,11 @@ import type { TaskUploadHandle } from './TaskUploadArea';
 import { useProjectRole } from '../lib/projectRole';
 import { onBeforeRestart } from '../lib/restartFlush';
 import { inflightSaves } from '../lib/inflightSaves';
+import { insertAt, insertLineAt, type Inserted } from '../lib/insertAtCaret';
+import {
+  dropDraft, FIELD_LABELS, keepDraft, readDraft, rebaseForm, resolveConflict, saveFormChecked, takeFields, TaskConflict,
+  type FormField,
+} from '../lib/taskConflict';
 import {
   applyForm, FORM_FIELDS, forgetPending, formFromTask, formsEqual, formToUpdate, freshest, isFormDirty, isFormSavable,
   beginSave, rememberPending, rememberSaved, type TaskForm,
@@ -257,6 +262,24 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   const form: TaskForm = { title, description, status, priority, prefix, cost, currency, deadline, areaId };
   const latestFormRef = useRef<{ taskId: number | null; form: TaskForm }>({ taskId: null, form });
   latestFormRef.current = { taskId: formTaskId, form };
+  // A save found the task changed elsewhere, in a field this edit changed too
+  // (lib/taskConflict.ts). The form holds the edit on top of the task as it is
+  // now, and the notice asks which version stays. Until then nothing saves it:
+  // leaving keeps it on the device instead.
+  const [conflict, setConflict] = useState<{ taskId: number; fresh: Task; base: TaskForm; fields: FormField[] } | null>(null);
+  const conflictRef = useRef(conflict);
+  conflictRef.current = conflict;
+  const setFormValues = (f: TaskForm) => {
+    setTitle(f.title);
+    setDescription(f.description);
+    setStatus(f.status as Task['status']);
+    setPriority(f.priority as Task['priority']);
+    setPrefix(f.prefix);
+    setCost(f.cost);
+    setCurrency(f.currency);
+    setDeadline(f.deadline);
+    setAreaId(f.areaId);
+  };
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
   const mountedRef = useRef(true);
@@ -273,6 +296,41 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
    * that reopens from an older copy shows it (lib/taskForm.ts, saved copies). */
   const saveToHost = async (base: Task, input: UpdateTaskInput, seq = beginSave()): Promise<Task> =>
     rememberSaved(base, await inflightRef.current.track(() => updateTaskApi(base.id, input), input), seq);
+  /** Save the form `f`, an edit of `base`, checked against the version it's based on:
+   * a save the other edit doesn't touch goes again by itself; a clash rejects with a
+   * TaskConflict. */
+  const saveFormToHost = async (base: Task, f: TaskForm, seq = beginSave()): Promise<Task> => {
+    const send = () => saveFormChecked(base, f, (input, stamp) => updateTaskApi(base.id, input, stamp));
+    const saved = rememberSaved(base, await inflightRef.current.track(send, formToUpdate(f)), seq);
+    dropDraft(base);
+    return saved;
+  };
+  /** A save of `sent` answered with `saved`. When it was saved again on a newer
+   * version (lib/taskConflict.ts), the task holds another device's edit to other
+   * fields: show it, keeping what was typed since, or the next save would send
+   * the old values back. */
+  const adoptSaved = (sent: TaskForm, saved: Task) => {
+    const { taskId, form: latest } = latestFormRef.current;
+    if (!mountedRef.current || taskId !== saved.id) return;
+    const now = formFromTask(saved);
+    if (formsEqual(now, sent)) return;
+    const next = rebaseForm(latest, sent, now);
+    if (!formsEqual(next, latest)) setFormValues(next);
+    if (sentRef.current?.form === sent) sentRef.current = { taskId: saved.id, form: now };
+  };
+  /** A save of `sent` on `base` clashed. Keep the edit on the device, and if this
+   * editor still shows the task, show the notice with the edit on the new version. */
+  const onConflict = (c: TaskConflict, base: Task) => {
+    const fresh = rememberSaved(base, c.fresh, beginSave()); // views reopen on the new version
+    keepDraft(base, { base: c.base, mine: c.mine });
+    const { taskId, form: latest } = latestFormRef.current;
+    if (!mountedRef.current || taskId !== base.id) return;
+    prevTaskSnapshot.current = fresh;
+    sentRef.current = null;
+    setFormValues(rebaseForm(latest, c.mine, c.form));
+    setConflict({ taskId: base.id, fresh, base: c.base, fields: c.fields });
+    onSaveRef.current(fresh);
+  };
   // The last form the save on close sent, so ✕ then unmount sends it once even
   // when the pending copy can't show it (a cleared cost, deadline or area).
   const sentRef = useRef<{ taskId: number; form: TaskForm } | null>(null);
@@ -308,6 +366,22 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
     if (taskId == null || !base || base.id !== taskId) return;
     if (!isFormSavable(f) || !isFormDirty(f, base) || isDeleting(taskId, f)) return;
     if (sentRef.current?.taskId === taskId && formsEqual(sentRef.current.form, f)) return;
+    // An open conflict notice: leaving doesn't pick a side. The edit stays on
+    // the device, and the notice comes back when the task opens again.
+    const open = conflictRef.current;
+    if (open?.taskId === taskId) {
+      keepDraft(base, { base: open.base, mine: f });
+      return;
+    }
+    // The page is going: its answer may never be read, so keep the edit on the
+    // device until a save's answer says it landed (or the task's next opening does).
+    if (isUnloading()) keepDraft(base, { base: formFromTask(base), mine: f });
+    await saveFormNow(base, f);
+  };
+  /** Save the form `f` on `base`, showing it as saved meanwhile. A clash goes to
+   * the notice (or the device), not to the caller. */
+  const saveFormNow = async (base: Task, f: TaskForm) => {
+    const taskId = base.id;
     // Mark it saved now, so a second flush (✕ then unmount) doesn't send it
     // again, and remember the pending copy before the first await: a view that
     // reopens this task meanwhile reads the edit.
@@ -317,14 +391,16 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
     sentRef.current = { taskId, form: f };
     rememberPending(base, pending, seq);
     try {
-      const saved = await saveToHost(base, formToUpdate(f), seq);
+      const saved = await saveFormToHost(base, f, seq);
       if (prevTaskSnapshot.current === pending) prevTaskSnapshot.current = saved;
+      adoptSaved(f, saved);
       // After an unmount the parent may be gone or showing something else.
       if (mountedRef.current) onSaveRef.current(saved);
     } catch (e) {
       forgetPending(pending);
       if (prevTaskSnapshot.current === pending) prevTaskSnapshot.current = base;
       if (sentRef.current?.form === f) sentRef.current = null;
+      if (e instanceof TaskConflict) return onConflict(e, base);
       throw e;
     }
   };
@@ -369,7 +445,11 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
       setPreviousTaskId(task.id);
       prevTaskSnapshot.current = freshest(task);
       const sent = sentRef.current?.taskId === prevId && formsEqual(sentRef.current.form, form);
-      if (prev && prev.id === prevId && formTaskId === prevId && isFormSavable(form) && isFormDirty(form, prev)
+      const open = conflictRef.current;
+      if (prev && prev.id === prevId && formTaskId === prevId && open?.taskId === prevId) {
+        // An open conflict notice: keep the edit on the device for the next opening.
+        if (isFormDirty(form, prev)) keepDraft(prev, { base: open.base, mine: form });
+      } else if (prev && prev.id === prevId && formTaskId === prevId && isFormSavable(form) && isFormDirty(form, prev)
         && !isDeleting(prevId, form) && !sent) {
         setIsAutoSaving(true);
         const pending = applyForm(prev, form);
@@ -377,10 +457,11 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
         rememberPending(prev, pending, seq);
         try {
           // Save the old task (prev), not the one now open.
-          onSave(await saveToHost(prev, formToUpdate(form), seq));
+          onSave(await saveFormToHost(prev, form, seq));
         } catch (error) {
           forgetPending(pending);
-          console.error('Auto-save failed:', error);
+          if (error instanceof TaskConflict) onConflict(error, prev); // kept for its next opening
+          else console.error('Auto-save failed:', error);
         } finally {
           setIsAutoSaving(false);
         }
@@ -412,6 +493,19 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
     setFormTaskId(t.id); // batched with the values above: one render has both
     deletingRef.current = null;
     sentRef.current = null;
+    setConflict(null);
+    // An edit left on this device whose save wasn't settled (the page went away,
+    // or it clashed after the editor closed): settle it now.
+    const draft = readDraft(t);
+    if (draft) {
+      const r = resolveConflict(draft.base, draft.mine, seed);
+      if (r.kind === 'saved') dropDraft(t);
+      else {
+        setFormValues(r.form);
+        if (r.kind === 'conflict') setConflict({ taskId: t.id, fresh: t, base: draft.base, fields: r.fields });
+        else void saveFormNow(t, r.form).catch((e) => console.warn('Saving the kept edit failed:', e));
+      }
+    }
     // The parent's copy is older: hand it the newer one (title bar, lists).
     // Safe in this effect: the parent's new copy has the same id, so it
     // doesn't run again.
@@ -844,7 +938,7 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
 
   const handleOpenFile = async (attachment: FileAttachment) => {
     try {
-      await openPath(attachment.file_path);
+      await openPathHere(attachment.file_path);
     } catch (error) {
       console.error('Failed to open file:', error);
       alert(`Failed to open file: ${error}`);
@@ -898,15 +992,25 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
 
   const saveTask = async (descOverride?: string) => {
     if (!task) return;
+    // A paste or /file link while the conflict notice is open stays in the form:
+    // only the notice's answers (or Save) pick a version.
+    if (descOverride !== undefined && conflictRef.current?.taskId === task.id) return;
     setIsSaving(true);
     try {
       const base = prevTaskSnapshot.current?.id === task.id ? prevTaskSnapshot.current : task;
       const sentForm = { ...form, description: descOverride ?? description };
-      const updatedTask = await saveToHost(base, formToUpdate(sentForm));
+      const updatedTask = await saveFormToHost(base, sentForm);
       prevTaskSnapshot.current = updatedTask; // the save on close compares against this
       sentRef.current = { taskId: task.id, form: sentForm };
+      adoptSaved(sentForm, updatedTask);
+      setConflict(null); // saving while the notice shows keeps mine
       onSave(updatedTask);
     } catch (error) {
+      if (error instanceof TaskConflict) {
+        const base = prevTaskSnapshot.current?.id === task.id ? prevTaskSnapshot.current : task;
+        onConflict(error, base);
+        return;
+      }
       console.error('Failed to update task:', error);
       alert('Failed to update task');
     } finally {
@@ -915,6 +1019,28 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
   };
 
   const handleSave = () => saveTask();
+
+  // The conflict notice's two answers. Mine: save the form on the new version.
+  // The other: the clashing fields take its values; the rest of the edit stays.
+  const keepMine = () => {
+    const base = prevTaskSnapshot.current;
+    if (!task || !conflict || base?.id !== task.id) return;
+    // The notice goes once mine is saved; a new clash replaces it with its own.
+    saveFormNow(base, form).then(() => setConflict((c) => (c === conflict ? null : c))).catch((e) => {
+      console.error('Failed to update task:', e);
+      alert('Failed to update task');
+    });
+  };
+  const takeOther = () => {
+    if (!task || !conflict) return;
+    const theirs = formFromTask(conflict.fresh);
+    const next = takeFields(form, theirs, conflict.fields);
+    setFormValues(next);
+    setConflict(null);
+    // The rest of the edit isn't saved yet: keep it on the device until it is.
+    if (formsEqual(next, theirs)) dropDraft(task);
+    else keepDraft(task, { base: theirs, mine: next });
+  };
 
   /** Insert a `/file` option at the cursor and PERSIST immediately. The save is
    * the fix for the "pasted image / file link vanishes when the task is opened
@@ -929,15 +1055,21 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
     const { att, mode } = option;
     const text = safeLinkText(att.file_name);
     const link = mode === 'embed' ? `![${text}](/files/${att.id})` : `[${text}](/files/${att.id})`;
-    const next = ta.value.slice(0, slashIdx) + link + ta.value.slice(pos);
-    setDescription(next);
     setFilePicker(null);
-    await saveTask(next); // persist so the reference survives a view switch
+    await insertAndSave(insertAt(ta.value, slashIdx, pos, link));
+  };
+
+  /** Put inserted text into the description, persist it (so the reference survives a view switch), and leave the
+   * editor in edit mode with the caret right after the insertion. Shared by `/file` and pasting an image. */
+  const insertAndSave = async ({ value, caret }: Inserted) => {
+    setDescription(value);
     requestAnimationFrame(() => {
-      const caret = slashIdx + link.length;
+      const ta = descriptionRef.current;
+      if (!ta) return;
       ta.focus();
       ta.setSelectionRange(caret, caret);
     });
+    await saveTask(value);
   };
 
   /** Pick a `/file` option. If the attachment is LOCAL (not shared yet), prompt
@@ -1011,6 +1143,19 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
       {/* Content. overflow-x-hidden: wide pasted content (tables) scrolls
           inside its own box, never the whole app sideways. */}
       <div ref={contentRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-[22px] pt-5 pb-7">
+        {conflict?.taskId === task.id && (
+          <div role="alert" className="g-plain mb-4 p-3 flex flex-col gap-2 border-l-2 border-l-warning">
+            <p className="text-sm text-text">
+              <span className="text-warning font-semibold">This task was changed somewhere else.</span>{' '}
+              Both versions changed {conflict.fields.map((k) => FIELD_LABELS[k]).join(', ')}. You're seeing yours;
+              the rest is the other version.
+            </p>
+            <div className="flex gap-2">
+              <button type="button" className="g-btn g-btn-pri g-btn-sm" onClick={keepMine}>Keep mine</button>
+              <button type="button" className="g-btn g-btn-ghost g-btn-sm" onClick={takeOther}>Take the other</button>
+            </div>
+          </div>
+        )}
         {activeTab === 'comments' ? (
           <div className="h-full">
             <CommentList taskId={task.id} />
@@ -1177,16 +1322,25 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
                       e.preventDefault();
                       const file = item.getAsFile();
                       if (!file) return;
+                      // The caret at paste time: the image lands there, not at the end.
+                      const ta = e.currentTarget;
+                      const before = ta.value;
+                      let start = ta.selectionStart;
+                      let end = ta.selectionEnd;
                       try {
                         const att = await attachPastedImage(task.id, file);
-                        const next = `${description}${description && !description.endsWith('\n') ? '\n' : ''}![image](/files/${att.id})\n`;
-                        setDescription(next);
                         loadFiles();
-                        setIsDescriptionPreview(true); // show the embedded image right away
-                        // Persist immediately: without this, the ![image](/files/N)
-                        // reference lives only in local state and vanishes when the
-                        // task is opened in another view (Home vs Project > Tasks).
-                        await saveTask(next);
+                        // Stays in edit mode, and persists immediately: without the
+                        // save, the ![image](/files/N) reference lives only in local
+                        // state and vanishes when the task is opened in another view.
+                        const live = descriptionRef.current;
+                        const current = live?.value ?? description;
+                        // Typed on during the upload: the caret as it is now.
+                        if (live && current !== before) {
+                          start = live.selectionStart;
+                          end = live.selectionEnd;
+                        }
+                        await insertAndSave(insertLineAt(current, start, end, `![image](/files/${att.id})`));
                       } catch (err) {
                         alert(`Could not attach image: ${err instanceof Error ? err.message : String(err)}`);
                       }
@@ -1871,14 +2025,16 @@ export default function TaskEditor({ task, onSave, onDelete, width = 384, fill =
       {/* Description Modal */}
       <TaskDescriptionModal
         task={task}
+        initial={description}
         isOpen={isDescriptionModalOpen}
         onClose={() => setIsDescriptionModalOpen(false)}
-        onSave={(saved) => {
-          const updatedTask = task ? rememberSaved(task, saved, beginSave()) : saved;
-          prevTaskSnapshot.current = updatedTask;
-          onSave(updatedTask);
-          setDescription(updatedTask.description || '');
+        onSave={(text) => {
+          // The text goes into the form and saves with it, checked like any form
+          // save: a clash shows the notice. While the notice is open it just
+          // stays in the form (saveTask leaves it to the notice's answers).
+          setDescription(text);
           setIsDescriptionModalOpen(false);
+          void saveTask(text);
         }}
       />
 

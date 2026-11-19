@@ -14,6 +14,8 @@ export interface AndroidBuild {
   url?: string;
   /** The SHA-256 of its signing certificate, when the source says (absent: unknown). */
   certSha256?: string | null;
+  /** Its patch notes (markdown from CHANGELOG.md): the host build's manifest, or the GitHub release's body. */
+  notes?: string | null;
 }
 
 /** What the update looks like right now. `failed.during` says whether asking the
@@ -89,6 +91,8 @@ export interface GithubRelease {
   tag_name?: string;
   draft?: boolean;
   prerelease?: boolean;
+  /** The release's text: the version's patch notes (the release workflow writes them). */
+  body?: string | null;
   assets?: { name?: string; browser_download_url?: string; size?: number; digest?: string | null }[];
 }
 
@@ -135,6 +139,7 @@ export function githubApk(release: GithubRelease | null | undefined): GithubApk 
     // Android still refuses an APK signed by another key.
     sha256: m ? m[1].toLowerCase() : "",
     url: apk.browser_download_url!,
+    notes: typeof release.body === "string" && release.body.trim() ? release.body : null,
   };
 }
 

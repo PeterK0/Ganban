@@ -19,14 +19,29 @@ pub enum TextEncoding {
     Utf16Be,
     /// Western European (Windows-1252).
     Windows1252,
-    /// Greek (Windows-1253), as Greek banks export.
+    /// Central European (Windows-1250).
+    Windows1250,
+    /// Cyrillic (Windows-1251).
+    Windows1251,
+    /// Greek (Windows-1253).
     Windows1253,
+}
+
+impl TextEncoding {
+    fn codec(self) -> &'static encoding_rs::Encoding {
+        match self {
+            TextEncoding::Windows1250 => encoding_rs::WINDOWS_1250,
+            TextEncoding::Windows1251 => encoding_rs::WINDOWS_1251,
+            TextEncoding::Windows1253 => encoding_rs::WINDOWS_1253,
+            _ => encoding_rs::WINDOWS_1252,
+        }
+    }
 }
 
 /// Decodes CSV bytes to text: a BOM wins, then valid UTF-8, then a single-byte code
 /// page chosen by [`guess_single_byte`].
 pub fn decode_text(bytes: &[u8]) -> (String, TextEncoding) {
-    use encoding_rs::{UTF_16BE, UTF_16LE, WINDOWS_1252, WINDOWS_1253};
+    use encoding_rs::{UTF_16BE, UTF_16LE};
     if let Some(rest) = bytes.strip_prefix(b"\xEF\xBB\xBF") {
         return (String::from_utf8_lossy(rest).into_owned(), TextEncoding::Utf8);
     }
@@ -42,15 +57,20 @@ pub fn decode_text(bytes: &[u8]) -> (String, TextEncoding) {
         return (s.to_string(), TextEncoding::Utf8);
     }
     let enc = guess_single_byte(bytes);
-    let codec = if enc == TextEncoding::Windows1253 { WINDOWS_1253 } else { WINDOWS_1252 };
-    let (t, _) = codec.decode_without_bom_handling(bytes);
+    let (t, _) = enc.codec().decode_without_bom_handling(bytes);
     (t.into_owned(), enc)
 }
 
-/// Greek or Western for a non-UTF-8 file. Greek words are runs of high bytes
-/// (letters live at 0xC1–0xFE in cp1253), while Western text has a lone accented
-/// letter between ASCII ones. Three or more high bytes in a row, making up most of
-/// the high bytes, means Greek.
+/// The code page of a non-UTF-8 file.
+///
+/// - Greek and Cyrillic words are runs of high bytes (their letters live at 0xC0–0xFF),
+///   while Latin text has a lone accented letter between ASCII ones. Three or more high
+///   bytes in a row, making up most of the high bytes, means one of those two. Cyrillic's
+///   commonest letter, а/А (0xE0/0xC0), reads as ΰ/ΐ in Greek, which Greek text hardly
+///   uses, and т/Т's 0xD2 and я's 0xFF aren't Greek at all: enough of them means Cyrillic.
+/// - Otherwise a byte that is a letter in Central European but a symbol or nothing in
+///   Western, next to a lower-case ASCII letter ("Z\xb3ota" is "Złota", not "Z³ota"),
+///   means Central European. Else Western.
 pub fn guess_single_byte(bytes: &[u8]) -> TextEncoding {
     let (mut high, mut in_runs, mut run) = (0usize, 0usize, 0usize);
     for &b in bytes.iter().chain(std::iter::once(&b' ')) {
@@ -65,7 +85,23 @@ pub fn guess_single_byte(bytes: &[u8]) -> TextEncoding {
         }
     }
     if high > 0 && in_runs * 2 >= high {
-        TextEncoding::Windows1253
+        let cyrillic = bytes.iter().filter(|b| matches!(b, 0xC0 | 0xE0 | 0xD2 | 0xFF)).count();
+        return if cyrillic > 0 && cyrillic * 30 >= in_runs {
+            TextEncoding::Windows1251
+        } else {
+            TextEncoding::Windows1253
+        };
+    }
+    let letter = |enc: TextEncoding, b: u8| {
+        let byte = [b];
+        let (s, bad) = enc.codec().decode_without_bom_handling(&byte);
+        !bad && s.chars().all(char::is_alphabetic)
+    };
+    let central = |b: u8| b >= 0x80 && letter(TextEncoding::Windows1250, b) && !letter(TextEncoding::Windows1252, b);
+    let near_lower =
+        |w: &[u8]| (w[0].is_ascii_lowercase() && central(w[1])) || (w[1].is_ascii_lowercase() && central(w[0]));
+    if bytes.windows(2).any(near_lower) {
+        TextEncoding::Windows1250
     } else {
         TextEncoding::Windows1252
     }
@@ -143,10 +179,8 @@ pub fn detect_delimiter(text: &str) -> char {
 pub fn read_csv(bytes: &[u8]) -> (Vec<Vec<Cell>>, TextEncoding, char) {
     let (text, enc) = decode_text(bytes);
     let delim = detect_delimiter(&text);
-    let rows = split_records(&text, delim)
-        .into_iter()
-        .map(|r| r.into_iter().map(|f| Cell::text(&f)).collect())
-        .collect();
+    let rows =
+        split_records(&text, delim).into_iter().map(|r| r.into_iter().map(|f| Cell::text(&f)).collect()).collect();
     (rows, enc, delim)
 }
 
@@ -164,14 +198,17 @@ mod tests {
     #[test]
     fn encodings() {
         assert_eq!(decode_text(b"\xEF\xBB\xBFa,b").0, "a,b");
-        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("a;β".encode_utf16().flat_map(|u| u.to_le_bytes())).collect();
+        let utf16: Vec<u8> =
+            [0xFF, 0xFE].into_iter().chain("a;β".encode_utf16().flat_map(|u| u.to_le_bytes())).collect();
         assert_eq!(decode_text(&utf16), ("a;β".to_string(), TextEncoding::Utf16Le));
-        assert_eq!(decode_text("Ποσό;β".as_bytes()).1, TextEncoding::Utf8);
-        // "ΠΛΗΡΩΜΗ ΚΑΡΤΑΣ" in cp1253.
-        let greek = b"\xd0\xcb\xc7\xd1\xd9\xcc\xc7 \xca\xc1\xd1\xd4\xc1\xd3;-6,00";
-        let (t, e) = decode_text(greek);
-        assert_eq!(e, TextEncoding::Windows1253);
-        assert_eq!(t, "ΠΛΗΡΩΜΗ ΚΑΡΤΑΣ;-6,00");
+        assert_eq!(decode_text("Φάρος;β".as_bytes()).1, TextEncoding::Utf8);
+        // Made-up shop names in the legacy code pages.
+        let greek = b"\xd6\xc1\xd1\xcf\xd3 \xca\xc1\xd6\xc5;-6,00"; // "ΦΑΡΟΣ ΚΑΦΕ", cp1253
+        assert_eq!(decode_text(greek), ("ΦΑΡΟΣ ΚΑΦΕ;-6,00".to_string(), TextEncoding::Windows1253));
+        let cyrillic = b"\xce\xcf\xcb\xc0\xd2\xc0 \xca\xc0\xd4\xc5;-6,00"; // "ОПЛАТА КАФЕ", cp1251
+        assert_eq!(decode_text(cyrillic), ("ОПЛАТА КАФЕ;-6,00".to_string(), TextEncoding::Windows1251));
+        let central = b"Kawiarnia Z\xb3ota, \xa3\xf3d\x9f;-6,00"; // cp1250
+        assert_eq!(decode_text(central), ("Kawiarnia Złota, Łódź;-6,00".to_string(), TextEncoding::Windows1250));
         // "Café Müller" in cp1252.
         let (t, e) = decode_text(b"Caf\xe9 M\xfcller,1");
         assert_eq!(e, TextEncoding::Windows1252);

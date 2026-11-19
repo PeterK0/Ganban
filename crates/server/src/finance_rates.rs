@@ -20,7 +20,9 @@ pub async fn refresh(db: &Db) -> Result<Value, AppError> {
     }
     let stored = rates::store_rates(db, &rows, "ecb").await?;
     let latest = rows.iter().map(|r| r.0.as_str()).max().unwrap_or_default().to_string();
-    Ok(json!({ "feed": if url == rates::ECB_HIST_URL { "history" } else { "90 days" }, "rates": stored, "latest": latest }))
+    Ok(
+        json!({ "feed": if url == rates::ECB_HIST_URL { "history" } else { "90 days" }, "rates": stored, "latest": latest }),
+    )
 }
 
 /// Register the host's fetcher, so a translation that misses the cache (an import before

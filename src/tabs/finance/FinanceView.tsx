@@ -5,7 +5,8 @@ import ScrollArea from '../../components/ScrollArea';
 import { useRailShell } from '../../components/RailViews';
 import * as fin from './api';
 import { lockedThrough } from './reports.pure';
-import { FinanceContext, MUTED, errText, type FinanceData, type FinanceTab } from './shared';
+import { FinanceContext, MUTED, errText, type FinanceData, type FinanceTab, type TransactionsOpen } from './shared';
+import { usesFromPayees } from './sorting.pure';
 
 const Overview = lazy(() => import('./Overview'));
 const Transactions = lazy(() => import('./Transactions'));
@@ -43,7 +44,9 @@ export default function FinanceView() {
     const t = localStorage.getItem(TAB_KEY);
     return TABS.some((x) => x.id === t) ? (t as FinanceTab) : 'overview';
   });
-  const [accountFilter, setAccountFilter] = useState<number | undefined>(undefined);
+  const [txOpen, setTxOpen] = useState<TransactionsOpen | undefined>(undefined);
+  const [summary, setSummary] = useState<fin.InboxSummary | null>(null);
+  const [categoryUses, setCategoryUses] = useState<Map<number, number>>(new Map());
   const [entity, setEntity] = useState<fin.Entity | null>(null);
   const [accounts, setAccounts] = useState<fin.FinAccount[]>([]);
   const [ledger, setLedger] = useState<fin.LedgerAccount[]>([]);
@@ -56,17 +59,18 @@ export default function FinanceView() {
     try {
       // The entity first: the host makes it and its chart on first use.
       const e = await fin.getEntity();
-      const [acc, led, inbox, review, per] = await Promise.all([
+      const [acc, led, sum, review, per] = await Promise.all([
         fin.listAccounts(true),
         fin.listLedgerAccounts(true),
-        fin.listEntries({ status: 'draft' }, 1),
+        fin.inboxSummary().catch(() => null),
         fin.listPairs('review').catch(() => [] as fin.Pair[]),
         fin.listPeriods().catch(() => [] as fin.Period[]),
       ]);
       setEntity(e);
       setAccounts(acc);
       setLedger(led);
-      setInboxCount(inbox.total);
+      setSummary(sum);
+      setInboxCount(sum ? sum.decisions : (await fin.listEntries({ status: 'draft' }, 1)).total);
       setReviewCount(review.length);
       setPeriods(per);
       setError(null);
@@ -77,6 +81,8 @@ export default function FinanceView() {
 
   useEffect(() => {
     void reload();
+    // The picker's order: the categories the payees file most lines under. Read once per visit.
+    fin.listPayees({}, 500).then((r) => setCategoryUses(usesFromPayees(r.payees))).catch(() => {});
   }, [reload]);
 
   // Keep the chosen section's chip in view (Finance reopens on the last section), also once the
@@ -85,9 +91,9 @@ export default function FinanceView() {
     chips.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [tab, inboxCount, reviewCount]);
 
-  const go = (t: FinanceTab, opts?: { accountId?: number }) => {
+  const go = (t: FinanceTab, opts?: TransactionsOpen) => {
     setTab(t);
-    setAccountFilter(opts?.accountId);
+    setTxOpen(opts);
     localStorage.setItem(TAB_KEY, t);
   };
 
@@ -101,6 +107,8 @@ export default function FinanceView() {
       accountByLedger: new Map(accounts.map((a) => [a.ledger_account_id, a])),
       inboxCount,
       reviewCount,
+      summary,
+      categoryUses,
       periods,
       lockedThrough: lockedThrough(periods),
       locale: undefined,
@@ -108,7 +116,7 @@ export default function FinanceView() {
       goto: go,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entity, accounts, ledger, inboxCount, reviewCount, periods, reload]);
+  }, [entity, accounts, ledger, inboxCount, reviewCount, summary, categoryUses, periods, reload]);
 
   const badge = (t: FinanceTab, cls = '') =>
     t === 'transactions' && inboxCount > 0 ? (
@@ -165,7 +173,7 @@ export default function FinanceView() {
           <FinanceContext.Provider value={data}>
             <Suspense fallback={<p className={`text-sm ${MUTED}`}>Loading…</p>}>
               {tab === 'overview' && <Overview />}
-              {tab === 'transactions' && <Transactions key={accountFilter ?? 'all'} initialAccountId={accountFilter} />}
+              {tab === 'transactions' && <Transactions key={JSON.stringify(txOpen ?? {})} open={txOpen} />}
               {tab === 'accounts' && <Accounts />}
               {tab === 'import' && <ImportView />}
               {tab === 'budgets' && <Budgets />}

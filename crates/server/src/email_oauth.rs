@@ -45,7 +45,10 @@ pub enum FlowState {
     /// Got a refresh token; the account can now be created with it. The refresh
     /// token stays server-side — the UI only learns the resolved email + that
     /// it's ready.
-    Done { email: String, refresh_token: String },
+    Done {
+        email: String,
+        refresh_token: String,
+    },
     Error(String),
 }
 
@@ -109,7 +112,12 @@ pub struct Begun {
 /// Start a sign-in: bind a loopback listener on an ephemeral port, build the
 /// PKCE auth URL pointing back at it, and spawn the catcher. Returns
 /// immediately; the browser dance completes in the background.
-pub async fn begin(flows: SharedFlows, user_id: i64, client_id: String, client_secret: Option<String>) -> Result<Begun, String> {
+pub async fn begin(
+    flows: SharedFlows,
+    user_id: i64,
+    client_id: String,
+    client_secret: Option<String>,
+) -> Result<Begun, String> {
     flows.cancel_pending(user_id);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -135,7 +143,8 @@ pub async fn begin(flows: SharedFlows, user_id: i64, client_id: String, client_s
     let flow_id_bg = flow_id.clone();
     let flows_bg = flows.clone();
     let task = tokio::spawn(async move {
-        let outcome = run_callback(listener, &redirect_uri, &client_id, client_secret.as_deref(), &verifier, &state).await;
+        let outcome =
+            run_callback(listener, &redirect_uri, &client_id, client_secret.as_deref(), &verifier, &state).await;
         flows_bg.update(
             &flow_id_bg,
             match outcome {
@@ -216,7 +225,11 @@ async fn exchange_code(
     let status = resp.status();
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let detail = v.get("error_description").or_else(|| v.get("error")).and_then(|e| e.as_str()).unwrap_or("token exchange failed");
+        let detail = v
+            .get("error_description")
+            .or_else(|| v.get("error"))
+            .and_then(|e| e.as_str())
+            .unwrap_or("token exchange failed");
         return Err(format!("Google: {detail}"));
     }
     let refresh_token = v
@@ -246,11 +259,7 @@ async fn fetch_email(access_token: &str) -> Option<String> {
 /// connect — Google access tokens last ~1h; refresh tokens don't expire for a
 /// published client).
 pub async fn access_token(client_id: &str, client_secret: Option<&str>, refresh_token: &str) -> Result<String, String> {
-    let mut form = vec![
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", client_id),
-    ];
+    let mut form = vec![("grant_type", "refresh_token"), ("refresh_token", refresh_token), ("client_id", client_id)];
     if let Some(secret) = client_secret {
         form.push(("client_secret", secret));
     }
@@ -258,10 +267,17 @@ pub async fn access_token(client_id: &str, client_secret: Option<&str>, refresh_
     let status = resp.status();
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let detail = v.get("error_description").or_else(|| v.get("error")).and_then(|e| e.as_str()).unwrap_or("token refresh failed");
+        let detail = v
+            .get("error_description")
+            .or_else(|| v.get("error"))
+            .and_then(|e| e.as_str())
+            .unwrap_or("token refresh failed");
         return Err(format!("Google: {detail} (the account may need to be reconnected)"));
     }
-    v.get("access_token").and_then(|t| t.as_str()).map(String::from).ok_or_else(|| "no access token in refresh response".to_string())
+    v.get("access_token")
+        .and_then(|t| t.as_str())
+        .map(String::from)
+        .ok_or_else(|| "no access token in refresh response".to_string())
 }
 
 /// The UI's poll view of a flow.

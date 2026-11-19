@@ -2,9 +2,19 @@
 // category picker.
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { Entity, Entry, FinAccount, LedgerAccount, Period } from './api';
+import type { Entity, Entry, FinAccount, InboxSummary, LedgerAccount, Period, TransferTarget } from './api';
 import { formatMoney } from './money.pure';
+import { moveLabel, pickerCategories } from './sorting.pure';
 import ScrollArea from '../../components/ScrollArea';
+
+/** Where Transactions opens: a view, and optionally one import's lines. */
+export interface TransactionsOpen {
+  accountId?: number;
+  view?: 'tosort' | 'all' | 'transfers' | 'history' | 'payees';
+  importBatchId?: number;
+  /** With `importBatchId` on All: only what the import filed (posted, not a transfer, not history). */
+  filedOnly?: boolean;
+}
 
 export type FinanceTab = 'overview' | 'transactions' | 'budgets' | 'forecast' | 'statements' | 'accounts' | 'import' | 'accounting' | 'settings';
 
@@ -15,8 +25,13 @@ export interface FinanceData {
   ledgerById: Map<number, LedgerAccount>;
   /** Financial accounts by their ledger account, to find an entry's bank line. */
   accountByLedger: Map<number, FinAccount>;
+  /** Lines that need the user ("To sort"), from the host's inbox summary. */
   inboxCount: number;
   reviewCount: number;
+  /** The inbox summary (null until it loads, or on a host without it). */
+  summary: InboxSummary | null;
+  /** Lines filed per category, read from the payees: the picker lists the most used first. */
+  categoryUses: Map<number, number>;
   /** The months from the first entry to now, open or closed. */
   periods: Period[];
   /** The latest closed month: dates in or before it are locked (corrections are reversals). */
@@ -24,7 +39,7 @@ export interface FinanceData {
   /** The user's locale for numbers and dates (undefined: the browser's). */
   locale: string | undefined;
   reload: () => Promise<void>;
-  goto: (tab: FinanceTab, opts?: { accountId?: number }) => void;
+  goto: (tab: FinanceTab, opts?: TransactionsOpen) => void;
 }
 
 export const FinanceContext = createContext<FinanceData | null>(null);
@@ -69,11 +84,10 @@ export function splitEntry(entry: Entry, accountByLedger: Map<number, FinAccount
 /** Is this ledger account one of the "not sorted yet" buckets? */
 export const isUncategorised = (la: LedgerAccount | undefined) => !!la && (la.system_key === 'uncategorised_expense' || la.system_key === 'uncategorised_income');
 
-/** The categories a bank line can go to: income and expense accounts, live, by name. */
-export function categories(ledger: LedgerAccount[]): LedgerAccount[] {
-  return ledger
-    .filter((l) => (l.class === 'income' || l.class === 'expense') && !l.archived)
-    .sort((a, b) => (a.class === b.class ? a.name.localeCompare(b.name) : a.class === 'expense' ? -1 : 1));
+/** The categories a bank line can go to: live spending and income categories, without the system
+ * accounts (Bank fees aside); the most used first when `uses` is given, else by name. */
+export function categories(ledger: LedgerAccount[], uses?: Map<number, number>): LedgerAccount[] {
+  return pickerCategories(ledger, uses);
 }
 
 /** A ledger account's label: its code and name. */
@@ -91,6 +105,7 @@ export function AccountPicker({
   label,
   className = '',
   showCode = false,
+  moves,
 }: {
   value: number | null;
   onChange: (id: number) => void;
@@ -99,25 +114,42 @@ export function AccountPicker({
   label: string;
   className?: string;
   showCode?: boolean;
+  /** Also offer "A move between my accounts": his accounts (not `exclude`, the line's own) and a new one. */
+  moves?: {
+    /** The accounts the line (or the payee's lines) are already in: a move there means nothing. */
+    exclude?: number[];
+    current?: number | null;
+    /** Money coming in reads "From Savings"; going out, "To Savings". */
+    direction?: 'in' | 'out';
+    onMove: (t: TransferTarget) => void;
+  };
 }) {
-  const { ledger, ledgerById } = useFinance();
-  const list = useMemo(() => options ?? categories(ledger), [options, ledger]);
+  const { ledger, ledgerById, categoryUses, accounts } = useFinance();
+  const list = useMemo(() => options ?? categories(ledger, categoryUses), [options, ledger, categoryUses]);
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [hi, setHi] = useState(0);
+  // "A new account…": the search box asks for its name instead.
+  const [naming, setNaming] = useState(false);
+  const [newKind, setNewKind] = useState<'savings' | 'current'>('savings');
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; width: number; up: boolean } | null>(null);
+  const coarse = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
 
-  const shown = useMemo(() => {
+  type Item = { kind: 'c'; l: LedgerAccount } | { kind: 'a'; a: FinAccount } | { kind: 'new' };
+  const shown = useMemo<Item[]>(() => {
     const s = q.trim().toLowerCase();
-    return s ? list.filter((l) => l.name.toLowerCase().includes(s) || l.code.toLowerCase().startsWith(s)) : list;
-  }, [q, list]);
+    const cats = (s ? list.filter((l) => l.name.toLowerCase().includes(s) || l.code.toLowerCase().startsWith(s)) : list).map((l): Item => ({ kind: 'c', l }));
+    if (!moves) return cats;
+    const own = accounts.filter((a) => !a.archived && !(moves.exclude ?? []).includes(a.id) && (!s || a.name.toLowerCase().includes(s))).map((a): Item => ({ kind: 'a', a }));
+    return [...cats, ...own, { kind: 'new' }];
+  }, [q, list, moves, accounts]);
 
   useLayoutEffect(() => {
     if (!open || !btn.current) return;
     const r = btn.current.getBoundingClientRect();
-    const width = Math.max(r.width, 240);
+    const width = Math.max(r.width, 260);
     const up = r.bottom + 320 > window.innerHeight && r.top > 320;
     setPos({ left: Math.min(r.left, window.innerWidth - width - 8), top: up ? r.top - 4 : r.bottom + 4, width, up });
   }, [open]);
@@ -138,14 +170,33 @@ export function AccountPicker({
     };
   }, [open]);
 
-  const pick = (id: number) => {
-    onChange(id);
+  const close = () => {
     setOpen(false);
     setQ('');
+    setNaming(false);
     btn.current?.focus();
+  };
+  const choose = (it: Item) => {
+    if (it.kind === 'new') {
+      setNaming(true);
+      setQ('');
+      return;
+    }
+    if (it.kind === 'c') onChange(it.l.id);
+    else moves?.onMove({ accountId: it.a.id });
+    close();
+  };
+  const createNamed = () => {
+    const name = q.trim();
+    if (!name || !moves) return;
+    moves.onMove({ create: { name, kind: newKind } });
+    close();
   };
 
   const current = value != null ? ledgerById.get(value) : undefined;
+  const currentMove = moves?.current != null ? accounts.find((a) => a.id === moves.current) : undefined;
+  const dir = moves?.direction ?? 'out';
+  const firstMove = shown.findIndex((it) => it.kind !== 'c');
   return (
     <>
       <button
@@ -154,13 +205,14 @@ export function AccountPicker({
         onClick={() => {
           setOpen((o) => !o);
           setHi(0);
+          setNaming(false);
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`${label}: ${current ? current.name : 'none'}`}
-        className={`g-field g-field-sm text-left truncate ${current && !isUncategorised(current) ? '' : MUTED} ${className}`}
+        aria-label={`${label}: ${currentMove ? moveLabel(currentMove.name, dir) : current ? current.name : 'none'}`}
+        className={`g-field g-field-sm text-left truncate ${currentMove || (current && !isUncategorised(current)) ? '' : MUTED} ${className}`}
       >
-        {current ? (showCode ? ledgerLabel(current) : current.name) : placeholder}
+        {currentMove ? moveLabel(currentMove.name, dir) : current ? (showCode ? ledgerLabel(current) : current.name) : placeholder}
       </button>
       {open &&
         pos &&
@@ -171,13 +223,26 @@ export function AccountPicker({
             style={{ left: pos.left, width: pos.width, ...(pos.up ? { bottom: window.innerHeight - pos.top } : { top: pos.top }) }}
           >
             <input
-              autoFocus
+              // On a touch screen the keyboard would cover the list: the search waits for a tap.
+              autoFocus={!coarse || naming}
+              key={naming ? 'naming' : 'search'}
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
                 setHi(0);
               }}
               onKeyDown={(e) => {
+                if (naming) {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    createNamed();
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    setNaming(false);
+                    setQ('');
+                  }
+                  return;
+                }
                 if (e.key === 'ArrowDown') {
                   e.preventDefault();
                   setHi((h) => Math.min(h + 1, shown.length - 1));
@@ -186,37 +251,62 @@ export function AccountPicker({
                   setHi((h) => Math.max(h - 1, 0));
                 } else if (e.key === 'Enter' && shown[hi]) {
                   e.preventDefault();
-                  pick(shown[hi].id);
+                  choose(shown[hi]);
                 } else if (e.key === 'Escape') {
                   e.stopPropagation();
-                  setOpen(false);
-                  btn.current?.focus();
+                  close();
                 }
               }}
-              placeholder="Search…"
-              aria-label={`Search ${label.toLowerCase()}`}
+              placeholder={naming ? 'Name of the new account, then Enter' : 'Search…'}
+              aria-label={naming ? 'Name of the new account' : `Search ${label.toLowerCase()}`}
               className="g-field g-field-sm mb-1"
             />
-            <div role="listbox" aria-label={label} style={{ height: Math.min(Math.max(shown.length, 1) * 32 + 4, 260) }}>
-              <ScrollArea className="h-full">
-              {shown.length === 0 && <div className={`px-2 py-2 text-sm ${MUTED}`}>No match.</div>}
-              {shown.map((l, i) => (
-                <button
-                  key={l.id}
-                  type="button"
-                  role="option"
-                  aria-selected={l.id === value}
-                  onMouseEnter={() => setHi(i)}
-                  onClick={() => pick(l.id)}
-                  className={`w-full flex items-center gap-2 min-h-[32px] px-2 rounded text-left text-sm ${i === hi ? 'bg-surface-0 text-text' : 'text-subtext-1'}`}
-                >
-                  {showCode && <span className={`tabular-nums text-xs ${MUTED}`}>{l.code}</span>}
-                  <span className="flex-1 min-w-0 truncate">{l.name}</span>
-                  <span className={`g-cap !tracking-[.12em] ${MUTED}`}>{l.class}</span>
+            {naming ? (
+              <div className="flex flex-wrap items-center gap-2 px-1 pb-1">
+                <select className="g-field g-field-sm !w-auto" value={newKind} onChange={(e) => setNewKind(e.target.value as 'savings' | 'current')} aria-label="Kind of the new account">
+                  <option value="savings">Savings</option>
+                  <option value="current">Current account</option>
+                </select>
+                <span className={`flex-1 text-xs ${MUTED}`}>Money moved there counts as yours, not as spending. Import its statement later to see where it went.</span>
+                <button type="button" className="g-btn g-btn-gilt g-btn-sm" disabled={!q.trim()} onClick={createNamed}>
+                  Create
                 </button>
-              ))}
-              </ScrollArea>
-            </div>
+              </div>
+            ) : (
+              <div role="listbox" aria-label={label} style={{ height: Math.min(Math.max(shown.length, 1) * 32 + 4 + (firstMove >= 0 ? 28 : 0), 300) }}>
+                <ScrollArea className="h-full">
+                  {shown.length === 0 && <div className={`px-2 py-2 text-sm ${MUTED}`}>No match.</div>}
+                  {shown.map((it, i) => (
+                    <div key={it.kind === 'c' ? `c${it.l.id}` : it.kind === 'a' ? `a${it.a.id}` : 'new'}>
+                      {i === firstMove && <div className={`g-cap px-2 pt-2 pb-1 ${MUTED}`}>A move between my accounts</div>}
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={it.kind === 'c' ? it.l.id === value : it.kind === 'a' ? it.a.id === moves?.current : false}
+                        onMouseEnter={() => setHi(i)}
+                        onClick={() => choose(it)}
+                        className={`w-full flex items-center gap-2 min-h-[32px] px-2 rounded text-left text-sm ${i === hi ? 'bg-surface-0 text-text' : 'text-subtext-1'}`}
+                      >
+                        {it.kind === 'c' ? (
+                          <>
+                            {showCode && <span className={`tabular-nums text-xs ${MUTED}`}>{it.l.code}</span>}
+                            <span className="flex-1 min-w-0 truncate">{it.l.name}</span>
+                            <span className={`text-xs ${MUTED}`}>{it.l.class === 'income' ? 'money in' : it.l.class === 'expense' ? 'spending' : it.l.class}</span>
+                          </>
+                        ) : it.kind === 'a' ? (
+                          <>
+                            <span className="flex-1 min-w-0 truncate">{moveLabel(it.a.name, dir)}</span>
+                            <span className={`text-xs ${MUTED}`}>{it.a.currency}</span>
+                          </>
+                        ) : (
+                          <span className="flex-1 min-w-0 truncate">A new account…</span>
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </ScrollArea>
+              </div>
+            )}
           </div>,
           document.body,
         )}

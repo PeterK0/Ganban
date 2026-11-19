@@ -18,7 +18,8 @@ use crate::daemon_control::DaemonState;
 /// result filter applies; authorship is the profile id the app sends in `args`.
 ///
 /// An error is its message, or `{ error, code }` for a refusal with a code
-/// (`AppError::Refused`), the same shape the HTTP surface sends.
+/// (`AppError::Refused`, and `current` for a conflict), the same shape the HTTP
+/// surface sends.
 #[tauri::command]
 pub async fn run_command(
     pool: State<'_, Db>,
@@ -28,9 +29,11 @@ pub async fn run_command(
     args: Option<Value>,
 ) -> Result<Value, Value> {
     let args = args.unwrap_or(Value::Null);
-    ganban_server::run_in_process(pool.inner(), &root.0, daemon.shares(), &command, args).await.map_err(|e| match e.code() {
-        Some(code) => serde_json::json!({ "error": e.to_string(), "code": code }),
-        None => Value::String(e.to_string()),
+    ganban_server::run_in_process(pool.inner(), &root.0, daemon.shares(), &command, args).await.map_err(|e| {
+        match e.code() {
+            Some(_) => ganban_server::error_body(&e),
+            None => Value::String(e.to_string()),
+        }
     })
 }
 
@@ -38,10 +41,7 @@ pub async fn run_command(
 /// before) and open it through core. The daemon owns the *shared* DB; this is
 /// the desktop app's own local file.
 pub async fn init_desktop_db(app: &tauri::AppHandle) -> Result<Db, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let db_path = app_dir.join("gansty.db");
     // The desktop app is the conflict-producing replica: open with change-capture
     // so a `sync_now` can collect what changed locally and reconcile with the host.
@@ -84,7 +84,11 @@ pub fn get_storage_paths(app: tauri::AppHandle) -> Result<StoragePaths, String> 
 /// Replace a user's profile blob. The desktop is the owner, so it may edit any local
 /// profile; networked users edit their own through the host's `set_my_profile`.
 #[tauri::command]
-pub async fn set_user_profile(pool: State<'_, Db>, user_id: i64, profile_json: Option<String>) -> Result<ganban_core::models::User, String> {
+pub async fn set_user_profile(
+    pool: State<'_, Db>,
+    user_id: i64,
+    profile_json: Option<String>,
+) -> Result<ganban_core::models::User, String> {
     Ok(ops::set_user_profile(pool.inner(), user_id, profile_json.as_deref()).await?)
 }
 
@@ -104,8 +108,7 @@ pub async fn export_database(app: tauri::AppHandle, export_path: String) -> Resu
         return Err("Database file not found".to_string());
     }
 
-    std::fs::copy(&db_path, &export_path)
-        .map_err(|e| format!("Failed to export database: {}", e))?;
+    std::fs::copy(&db_path, &export_path).map_err(|e| format!("Failed to export database: {}", e))?;
 
     Ok(())
 }
@@ -122,8 +125,7 @@ pub async fn import_database(app: tauri::AppHandle, import_path: String) -> Resu
     // Create backup of current database before importing
     let backup_path = app_dir.join("gansty.db.backup");
     if db_path.exists() {
-        std::fs::copy(&db_path, &backup_path)
-            .map_err(|e| format!("Failed to create backup: {}", e))?;
+        std::fs::copy(&db_path, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
     }
 
     // Copy import file to database location
@@ -197,7 +199,8 @@ mod tests {
         // The owner: an owner-only command runs, with no signed-in user behind it.
         let project = invoke_local(&webview, "create_project", json!({ "input": { "name": "Local" } })).unwrap();
         let pid = project["id"].as_i64().unwrap();
-        let user = invoke_local(&webview, "create_user", json!({ "input": { "username": "mia", "full_name": "Mia" } })).unwrap();
+        let user = invoke_local(&webview, "create_user", json!({ "input": { "username": "mia", "full_name": "Mia" } }))
+            .unwrap();
         let task = invoke_local(
             &webview,
             "create_task",
@@ -223,7 +226,8 @@ mod tests {
             json!({ "input": { "task_id": task["id"], "file_path": local.to_string_lossy(), "file_name": "original.txt" } }),
         )
         .unwrap();
-        let shared = invoke_local(&webview, "share_file_attachment", json!({ "attachmentId": attachment["id"] })).unwrap();
+        let shared =
+            invoke_local(&webview, "share_file_attachment", json!({ "attachmentId": attachment["id"] })).unwrap();
         assert_eq!(shared["is_shared"], true);
         assert_eq!(invoke_local(&webview, "shared_builds", json!({})).unwrap()["android"], Value::Null);
 

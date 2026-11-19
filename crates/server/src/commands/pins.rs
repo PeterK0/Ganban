@@ -31,13 +31,18 @@ pub(super) const COMMANDS: &[Command] = &[
         Box::pin(async move {
             let position = a.get("position").and_then(Value::as_f64).unwrap_or(0.0);
             let sub = a.opt_str("subView");
-            reply(ops::set_tab_pin(cx.db, a.author()?, a.id(PROJECT)?, &a.req_str("tabId")?, sub.as_deref(), position).await?)
+            reply(
+                ops::set_tab_pin(cx.db, a.author()?, a.id(PROJECT)?, &a.req_str("tabId")?, sub.as_deref(), position)
+                    .await?,
+            )
         })
     }),
     // Only ever the caller's own row, so no project rule: a member who has left can still
     // clear a pin.
     command("unpin_tab").access(Access::AnyMember).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(ops::unpin_tab(cx.db, a.author()?, a.req_i64("projectId")?, &a.req_str("tabId")?).await?) })
+        Box::pin(async move {
+            reply(ops::unpin_tab(cx.db, a.author()?, a.req_i64("projectId")?, &a.req_str("tabId")?).await?)
+        })
     }),
 ];
 

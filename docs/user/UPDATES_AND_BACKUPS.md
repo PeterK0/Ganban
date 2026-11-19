@@ -4,16 +4,20 @@ How to keep Ganban current, and how to keep a copy of your data.
 
 ## Updates
 
-How Ganban updates depends on where your app came from: GitHub's Releases page, or your host.
+How Ganban updates depends on where your app came from: GitHub's Releases page, or your host. Either way, the app
+only checks for a new version: nothing downloads or installs until you say so.
 
 ### Apps downloaded from GitHub
 
-An app you downloaded from the project's GitHub **Releases** page updates itself from there:
+An app you downloaded from the project's GitHub **Releases** page updates from there:
 
-- **Desktop app:** it checks GitHub when it starts, every 6 hours, and when you open **Settings → Updates**. A new
-  version downloads in the background, then **Update ready · Restart** appears in the top bar. Press **Restart**.
-- **Android app:** it shows **Update available**. Tap **Update**, wait for the download, and answer Android's install
-  prompt, as below.
+- **Desktop app:** it checks GitHub when it starts, every 6 hours, and when you open **Settings → Updates**. When
+  there's a new version, a quiet **Ganban 1.0.12 is available** appears in the top bar. Click it to read its
+  **Patch notes**, then choose **Download and install**, **Later** (it asks again at the next launch) or **Skip this
+  version** (it stays quiet until a newer one; **Check for updates** in Settings still shows it). Once it's
+  downloaded, press **Restart to finish**.
+- **Android app:** it shows **Update available**, with **See what changed** for the patch notes. Tap **Update**, wait
+  for the download, and answer Android's install prompt, as below.
 
 To check, the app asks github.com for the latest release, without an account. GitHub sees your IP address. To turn
 it off, open **Settings → Updates** (on a phone, **Settings → App update**) and switch off **Check GitHub for new
@@ -21,7 +25,7 @@ versions**. Then the app never contacts GitHub, and you update by hand: download
 page and install it over the old one, as in [Getting started](GETTING_STARTED.md#1-install). Your data folder isn't
 touched. To be safe, [export a backup](#backups) first.
 
-Version 1.0.1 and older can't update themselves: install the next version by hand once.
+Version 1.0.1 and older can't update in the app: install the next version by hand once.
 
 ### Apps you built yourself
 
@@ -30,26 +34,34 @@ doesn't update itself.
 
 ### With a host
 
-Apps your host built update from the host, never from GitHub. The host updates first, then builds new apps for its devices. Each device then updates itself from the host, not from
+Apps your host built update from the host, never from GitHub. The host updates first, then builds new apps for its devices. Each device then offers the update from the host, not from
 the internet:
 
 - **Desktop app:** it checks the host when it starts, every 6 hours, and when you open **Settings → Updates**. A
-  new version downloads in the background. When it's ready, **Update ready · Restart** appears in the top bar.
-  Press **Restart**: it saves the task you have open and restarts on the new version.
-
-  ![The "Update ready · Restart" notice in the top bar](../img/faq/update-ready.png)
+  new version shows as **Ganban 1.0.1234 is available** in the top bar. Click it to read what it brings, then
+  **Download and install**, **Later** or **Skip this version**. When it's downloaded, **Restart to finish** saves the
+  task you have open and restarts on the new version.
 
 - **Android app:** it shows **Update available**. Tap **Update**, wait for the download, and answer Android's install
   prompt. The first time, Android asks you to allow installs from Ganban: turn on **Allow from this source** and go
   back.
 - **A browser or an iPhone Home Screen app:** it loads the new version from the host. If a page was open during the
-  update, a banner says **A newer Ganban is on the host** with **Reload**.
+  update, a banner says **A newer Ganban is on the host** with **See what changed** (the new version's patch notes)
+  and **Reload**. It never reloads by itself.
 
   <img src="../img/faq/phone-stale-banner.png" alt="The &quot;A newer Ganban is on the host&quot; banner on a phone" width="300">
 
+### Patch notes and What's new
+
+**Settings → Updates → Patch notes** lists what each version fixed and added, with your version marked (on a phone:
+**Settings → Patch notes**). After an update, a quiet **What's new** in the top bar (on a phone, above the tab bar)
+opens the new notes, marked **New**. Close it and it's gone for good. A fresh install shows none.
+
 ### Updating the host
 
-The host's owner opens **Settings → Updates** on the host and presses **Update the server**. The card shows each step
+The host's owner opens **Settings → Updates** on the host and presses **Update the server**. Before it starts, it
+says how far behind the host is and lists the patch notes the update brings (or, offline, that it can't tell), and
+asks. The card then shows each step
 and a live log. It fetches the latest code, checks and builds it, backs up the database, restarts the server and then,
 if the host builds them, builds the desktop and Android apps. Apps downloaded from GitHub Releases update from GitHub
 instead. If the new server doesn't start, the update rolls back by itself.

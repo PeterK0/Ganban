@@ -12,6 +12,9 @@
 pub mod decode;
 pub mod dedupe;
 pub mod jobs;
+#[cfg(finance_pack)]
+#[rustfmt::skip]
+mod pack;
 pub mod pipeline;
 pub mod profiles;
 pub mod sniff;
@@ -22,7 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
 pub use decode::DecimalStyle;
-pub use profiles::{builtin_profiles, detect_profile, BuiltinProfile, ColRef, Mapping, ProfileSpec};
+pub use profiles::{
+    builtin_formats, builtin_profiles, detect_profile, BuiltinFormat, BuiltinProfile, ColRef, Mapping, ProfileSpec,
+};
 
 /// Largest file the import accepts (1.5 MB): a year of a bank's export is a few hundred
 /// KB, and the upload rides the command table's JSON body as base64.
@@ -134,8 +139,9 @@ pub struct ParsedRow {
     pub booked_date: NaiveDate,
     /// The booking time, when the file has one (FX legs pair on it).
     pub booked_at: Option<NaiveDateTime>,
-    /// When the transaction happened, to the second, when the file says (Revolut's
-    /// Started Date). Dedupe tells identical lines on one day apart by it.
+    /// When the transaction happened, to the second, when the file says (the bank's
+    /// own timestamp, apart from the booking). Dedupe tells identical lines on one day
+    /// apart by it.
     pub occurred_at: Option<NaiveDateTime>,
     pub value_date: Option<NaiveDate>,
     pub description: String,
@@ -198,6 +204,8 @@ pub struct ParseResult {
     pub warnings: Vec<String>,
     /// The file's first rows as text, for the mapping wizard.
     pub sample: Vec<Vec<String>>,
+    /// The wizard's guess at the columns, when no layout was recognised.
+    pub suggested_mapping: Option<Mapping>,
 }
 
 /// A decoded file: its format and its first sheet as a grid.
@@ -249,6 +257,7 @@ pub fn parse(bytes: &[u8], profile: Option<&ProfileSpec>) -> Result<ParseResult>
             accounts: Vec::new(),
             warnings: vec!["no known bank layout recognised: map the columns".into()],
             sample,
+            suggested_mapping: profiles::mapping::guess(&grid.rows),
         });
     };
     let out = spec.parse(&grid.rows)?;
@@ -261,12 +270,13 @@ pub fn parse(bytes: &[u8], profile: Option<&ProfileSpec>) -> Result<ParseResult>
         accounts: out.accounts,
         warnings: out.warnings,
         sample,
+        suggested_mapping: None,
     })
 }
 
 #[cfg(test)]
-mod tests;
+mod dedupe_tests;
 #[cfg(test)]
 mod pipeline_tests;
 #[cfg(test)]
-mod dedupe_tests;
+mod tests;

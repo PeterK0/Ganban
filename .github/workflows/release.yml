@@ -32,8 +32,17 @@ on:
   push:
     tags:
       - 'v*'
-  # Allow a manual run from the Actions tab.
+  # Allow a manual run from the Actions tab. Its installers are the run's artifacts; nothing is
+  # published. `only: linux` builds just the Linux desktop (AppImage, .deb, .rpm, and the Arch
+  # package check), to test a branch on a Linux PC:
+  #   gh workflow run release.yml --ref <branch> -f only=linux
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'What to build: all, or linux alone (a test build of a branch)'
+        type: choice
+        options: [all, linux]
+        default: all
 
 # The update channel, read by the frontend (import.meta.env) and by src-tauri (option_env!). The repo
 # is this one, so a fork's apps update from the fork's releases.
@@ -50,8 +59,29 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_id: ${{ steps.draft.outputs.id }}
+      desktop: ${{ steps.desktop.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+
+      # The desktop builds: Apple Silicon only (Intel Macs aren't built since 1.0.7: one macOS runner
+      # per release instead of two; GitHub's macOS runners are often slow to be acquired), and Linux
+      # on the oldest supported Ubuntu, so the AppImage and .deb run on older glibc too. A manual run
+      # with only=linux builds Linux alone.
+      - name: Pick the desktop builds
+        id: desktop
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          mac='{"name":"macos-arm64","platform":"macos-latest","args":"--target aarch64-apple-darwin"}'
+          linux='{"name":"linux","platform":"ubuntu-22.04","args":""}'
+          windows='{"name":"windows","platform":"windows-latest","args":""}'
+          if [ "$ONLY" = linux ]; then echo "matrix=[$linux]"; else echo "matrix=[$mac,$linux,$windows]"; fi >> "$GITHUB_OUTPUT"
+
+      # Node that loads the patch-notes parser (src/lib/patchNotes.pure.ts) as it is.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
 
       # The apps' version is package.json's (scripts/release.sh bumps it and tauri.conf.json together),
       # and a tag must name it: the updater compares it with latest.json's.
@@ -69,6 +99,16 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # The version's patch notes from CHANGELOG.md: the release's text, and what the apps show before
+      # the user accepts the update. A tag without them stops here, before any build.
+      - name: Check the patch notes
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node scripts/patch-notes.mjs release "$VERSION" > "$RUNNER_TEMP/notes.md" || {
+            echo "::error::CHANGELOG.md has no patch notes for $VERSION: add a '## [$VERSION] - <date>' section with its entries"; exit 1; }
+
       # One draft per tag (a re-run reuses it), made before the builds so they never race to make it.
       - name: Make the draft release
         id: draft
@@ -78,10 +118,16 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\")) | .[0].id // empty")"
+          # The body: the patch notes, then how to install (the apps read only the notes' sections).
+          {
+            cat "$RUNNER_TEMP/notes.md"
+            printf '\n---\n\n%s\n' 'Download the installer for your OS below. Builds are not notarised, so your OS asks once. On a Mac, if it says Ganban is damaged or can'\''t be opened, run xattr -cr /Applications/Ganban.app in Terminal and open it again. Ganban downloaded from here checks for new releases and asks before it installs one (Settings → Updates).'
+          } > "$RUNNER_TEMP/body.md"
           if [ -z "$id" ]; then
             id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="Ganban $TAG" \
-              -f body='Download the installer for your OS below. Builds are not notarised, so your OS asks once. On a Mac, if it says Ganban is damaged or can'\''t be opened, run xattr -cr /Applications/Ganban.app in Terminal and open it again. Ganban downloaded from here updates itself from new releases (Settings → Updates).' \
-              -F draft=true -F prerelease=false --jq .id)"
+              -F body=@"$RUNNER_TEMP/body.md" -F draft=true -F prerelease=false --jq .id)"
+          else
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F body=@"$RUNNER_TEMP/body.md" > /dev/null
           fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
@@ -93,19 +139,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Apple Silicon only: Intel Macs aren't built since 1.0.7 (one macOS runner per release
-          # instead of two; GitHub's macOS runners are often slow to be acquired).
-          - name: macos-arm64 # Apple Silicon .dmg
-            platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-          # The oldest supported Ubuntu, so the AppImage and .deb run on older glibc too.
-          - name: linux
-            platform: 'ubuntu-22.04'
-            args: ''
-          - name: windows
-            platform: 'windows-latest'
-            args: ''
+        # name, platform and args for each build: see `Pick the desktop builds` in prepare.
+        include: ${{ fromJSON(needs.prepare.outputs.desktop) }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -327,6 +362,7 @@ jobs:
             target/**/release/bundle/**/*.msi
             target/**/release/bundle/**/*.AppImage
             target/**/release/bundle/**/*.deb
+            target/**/release/bundle/**/*.rpm
           if-no-files-found: warn
 
   # ──────────────── The Arch package (manual runs) ────────────────
@@ -375,6 +411,7 @@ jobs:
   # ───────────────────────── Android ─────────────────────────
   android:
     needs: prepare
+    if: inputs.only != 'linux'
     permissions:
       contents: write
     runs-on: ubuntu-22.04
@@ -497,6 +534,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
       - name: Write latest.json and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -506,6 +548,8 @@ jobs:
           HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          # The version's patch notes go into latest.json, for the desktop app's update offer.
+          node scripts/patch-notes.mjs release "${TAG#v}" > "$RUNNER_TEMP/notes.md"
           if [ "$HAS_KEY" = true ]; then
             mkdir -p "$RUNNER_TEMP/sigs"
             # Draft assets download through the API (their browser URLs need a session).
@@ -514,7 +558,7 @@ jobs:
                 gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$RUNNER_TEMP/sigs/$name"
               done
             node scripts/updater-json.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --assets "$RUNNER_TEMP/assets.json" \
-              --sigs "$RUNNER_TEMP/sigs" --out "$RUNNER_TEMP/latest.json" \
+              --sigs "$RUNNER_TEMP/sigs" --out "$RUNNER_TEMP/latest.json" --notes-file "$RUNNER_TEMP/notes.md" \
               --require darwin-aarch64,linux-x86_64,windows-x86_64
             gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber
           else
@@ -528,7 +572,7 @@ jobs:
   # ─────────────────────────── iOS ───────────────────────────
   # iOS isn't a supported platform yet: build it only when asked (Actions → Release → Run workflow).
   ios:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.only != 'linux'
     continue-on-error: true
     permissions:
       contents: write

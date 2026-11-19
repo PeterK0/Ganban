@@ -108,11 +108,14 @@ pub async fn execute_tool(
     match name {
         // Scope forced server-side: the model gets no say in which project.
         "get_tasks" => {
-            let v = dispatch_read(db, viewer, "get_tasks", json!({ "projectId": project_id, "archived": false })).await?;
+            let v =
+                dispatch_read(db, viewer, "get_tasks", json!({ "projectId": project_id, "archived": false })).await?;
             Ok(cap(v.to_string()))
         }
         "get_project_events" => {
-            let v = dispatch_read(db, viewer, "get_project_events", json!({ "projectId": project_id, "archived": false })).await?;
+            let v =
+                dispatch_read(db, viewer, "get_project_events", json!({ "projectId": project_id, "archived": false }))
+                    .await?;
             Ok(cap(v.to_string()))
         }
         "get_task_comments" => {
@@ -422,11 +425,7 @@ pub const REGISTRY_OPS_READ: &[&str] = &["get_tasks", "get_areas", "get_project_
 
 /// Is `name` already a built-in (or tab) tool? Registry names must not shadow.
 fn is_builtin_tool_name(name: &str) -> bool {
-    ollama_tools(true, true)
-        .iter()
-        .chain(ollama_write_tools().iter())
-        .filter_map(tool_name)
-        .any(|n| n == name)
+    ollama_tools(true, true).iter().chain(ollama_write_tools().iter()).filter_map(tool_name).any(|n| n == name)
         || crate::tabs::is_tab_read_tool(name)
         || crate::finance_tools::is_finance_tool(name)
         || crate::tabs::is_tab_write_tool(name)
@@ -455,7 +454,8 @@ pub fn validate_new_registry_tool(t: &NewRegistryTool) -> Result<(), String> {
     if t.class.as_deref().unwrap_or("read") != "read" {
         return Err("only read tools are supported in this version".into());
     }
-    let binding: Value = serde_json::from_str(&t.binding_json).map_err(|_| "binding_json is not valid JSON".to_string())?;
+    let binding: Value =
+        serde_json::from_str(&t.binding_json).map_err(|_| "binding_json is not valid JSON".to_string())?;
     match t.binding_kind.as_str() {
         // ops: an allowlisted read command, scope-forced to the project.
         "ops" => {
@@ -487,7 +487,8 @@ pub fn validate_new_registry_tool(t: &NewRegistryTool) -> Result<(), String> {
         // OWNER-ONLY in chat (see registry_tool_defs) — it can reach any mounted
         // collection, so it's gated to the owner, who already has full access.
         "mcp" => {
-            let mount = binding.get("mount").and_then(Value::as_str).ok_or("mcp binding needs a 'mount' (e.g. /mcp/)")?;
+            let mount =
+                binding.get("mount").and_then(Value::as_str).ok_or("mcp binding needs a 'mount' (e.g. /mcp/)")?;
             if !mount.starts_with("/mcp/") {
                 return Err("mcp 'mount' must be an MCP path like /mcp/ or /mcp/<collection>/".into());
             }
@@ -546,7 +547,9 @@ pub fn validate_new_registry_tool(t: &NewRegistryTool) -> Result<(), String> {
                 }
             }
         }
-        _ => return Err("only the 'ops', 'rag', 'mcp', 'http' and 'fetch' bindings are supported in this version".into()),
+        _ => {
+            return Err("only the 'ops', 'rag', 'mcp', 'http' and 'fetch' bindings are supported in this version".into())
+        }
     }
     Ok(())
 }
@@ -569,7 +572,8 @@ pub async fn registry_tool_defs(db: &Db, rag_on: bool, is_owner: bool) -> Vec<Va
             _ => true,
         })
         .map(|t| {
-            let params = serde_json::from_str(&t.params_json).unwrap_or_else(|_| json!({ "type": "object", "properties": {} }));
+            let params =
+                serde_json::from_str(&t.params_json).unwrap_or_else(|_| json!({ "type": "object", "properties": {} }));
             tool_def(&t.name, &t.description, params)
         })
         .collect()
@@ -583,12 +587,8 @@ pub async fn unknown_tool_names(db: &Db, names: &[String]) -> Vec<String> {
     let tab_ids: Vec<String> = crate::tabs::available_tabs().iter().map(|t| t.id.to_string()).collect();
     let mut known: std::collections::HashSet<String> = tool_catalog(&tab_ids).into_iter().map(|t| t.name).collect();
     known.extend(ops::list_registry_tools(db).await.unwrap_or_default().into_iter().map(|t| t.name));
-    let mut unknown: Vec<String> = names
-        .iter()
-        .map(|n| n.trim())
-        .filter(|n| !n.is_empty() && !known.contains(*n))
-        .map(str::to_string)
-        .collect();
+    let mut unknown: Vec<String> =
+        names.iter().map(|n| n.trim()).filter(|n| !n.is_empty() && !known.contains(*n)).map(str::to_string).collect();
     unknown.sort();
     unknown.dedup();
     unknown
@@ -1063,7 +1063,8 @@ pub async fn prepare_write(
                 if q["questionText"].as_str().map(str::trim).filter(|t| !t.is_empty()).is_none() {
                     return Err("question missing questionText".into());
                 }
-                ganban_core::quiz::validate_question(ty, diff, points, &q["data"].to_string()).map_err(|e| e.to_string())?;
+                ganban_core::quiz::validate_question(ty, diff, points, &q["data"].to_string())
+                    .map_err(|e| e.to_string())?;
             }
             let place = if let Some(t) = topic_id {
                 let label: Option<(String, String)> = sqlx::query_as(
@@ -1085,10 +1086,8 @@ pub async fn prepare_write(
             };
             // Per-question topics (multi-topic import) surface in the summary
             // so the approver sees the whole shape before saying yes.
-            let named: std::collections::BTreeSet<&str> = questions
-                .iter()
-                .filter_map(|q| q["topic"].as_str().map(str::trim).filter(|t| !t.is_empty()))
-                .collect();
+            let named: std::collections::BTreeSet<&str> =
+                questions.iter().filter_map(|q| q["topic"].as_str().map(str::trim).filter(|t| !t.is_empty())).collect();
             let spread = if named.is_empty() {
                 String::new()
             } else {
@@ -1098,7 +1097,11 @@ pub async fn prepare_write(
             Ok(PreparedWrite {
                 command: "create_quiz_questions_batch",
                 args: args.clone(),
-                summary: format!("Add {} AI-drafted quiz question{} to {place}{spread}", questions.len(), if questions.len() == 1 { "" } else { "s" }),
+                summary: format!(
+                    "Add {} AI-drafted quiz question{} to {place}{spread}",
+                    questions.len(),
+                    if questions.len() == 1 { "" } else { "s" }
+                ),
                 details,
             })
         }
@@ -1111,7 +1114,12 @@ pub async fn prepare_write(
                 input["description"] = json!(d);
             }
             let details = json!({ "after": input });
-            Ok(PreparedWrite { command: "create_task", args: json!({ "input": input }), summary: format!("Create task “{title}” ({status})"), details })
+            Ok(PreparedWrite {
+                command: "create_task",
+                args: json!({ "input": input }),
+                summary: format!("Create task “{title}” ({status})"),
+                details,
+            })
         }
         "update_task" => {
             let task_id = arg_i64(args, "task_id")?;
@@ -1128,7 +1136,9 @@ pub async fn prepare_write(
             let fields = input.keys().cloned().collect::<Vec<_>>().join(", ");
             // Snapshot only the fields the write would touch, so the diff is signal.
             let before = task_snapshot(db, task_id).await.map(|snap| {
-                Value::Object(input.keys().filter_map(|k| snap.get(k.as_str()).map(|v| (k.clone(), v.clone()))).collect())
+                Value::Object(
+                    input.keys().filter_map(|k| snap.get(k.as_str()).map(|v| (k.clone(), v.clone()))).collect(),
+                )
             });
             let details = json!({ "before": before, "after": Value::Object(input.clone()) });
             let label = task_label(db, task_id).await;
@@ -1144,7 +1154,12 @@ pub async fn prepare_write(
             ensure_task_in_project(db, task_id, project_id, viewer).await?;
             let details = json!({ "before": task_snapshot(db, task_id).await });
             let label = task_label(db, task_id).await;
-            Ok(PreparedWrite { command: "delete_task", args: json!({ "taskId": task_id }), summary: format!("Delete (archive) task {label}"), details })
+            Ok(PreparedWrite {
+                command: "delete_task",
+                args: json!({ "taskId": task_id }),
+                summary: format!("Delete (archive) task {label}"),
+                details,
+            })
         }
         "link_event_to_project" => {
             let event_id = arg_i64(args, "event_id")?;
@@ -1206,7 +1221,12 @@ pub async fn prepare_write(
             let input = json!({ "task_id": task_id, "content": content, "user_id": user_id });
             let details = json!({ "after": { "content": content } });
             let label = task_label(db, task_id).await;
-            Ok(PreparedWrite { command: "create_comment", args: json!({ "input": input }), summary: format!("Comment on task {label}"), details })
+            Ok(PreparedWrite {
+                command: "create_comment",
+                args: json!({ "input": input }),
+                summary: format!("Comment on task {label}"),
+                details,
+            })
         }
         "assign_task" | "unassign_task" => {
             let task_id = arg_i64(args, "task_id")?;
@@ -1301,21 +1321,27 @@ pub async fn apply_write(
 pub async fn recheck_scope(db: &Db, command: &str, args: &Value, project_id: i64, proposer: i64) -> Result<(), String> {
     let viewer = viewer_for(db, proposer).await;
     if !viewer.is_owner {
-        let member: Option<i64> = sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
-            .bind(project_id)
-            .bind(proposer)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| e.to_string())?;
+        let member: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
+                .bind(project_id)
+                .bind(proposer)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?;
         if member.is_none() {
             return Err("the proposer is no longer a member of this project".into());
         }
     }
-    let task_id = args.get("taskId").and_then(Value::as_i64).or_else(|| args.pointer("/input/task_id").and_then(Value::as_i64));
+    let task_id =
+        args.get("taskId").and_then(Value::as_i64).or_else(|| args.pointer("/input/task_id").and_then(Value::as_i64));
     if let Some(task_id) = task_id {
         ensure_task_in_project(db, task_id, project_id, viewer).await?;
     }
-    if let Some(p) = args.get("projectId").and_then(Value::as_i64).or_else(|| args.pointer("/input/project_id").and_then(Value::as_i64)) {
+    if let Some(p) = args
+        .get("projectId")
+        .and_then(Value::as_i64)
+        .or_else(|| args.pointer("/input/project_id").and_then(Value::as_i64))
+    {
         if p != project_id {
             return Err("that write targets another project".into());
         }
@@ -1336,12 +1362,13 @@ pub async fn recheck_scope(db: &Db, command: &str, args: &Value, project_id: i64
         }
         "assign_task" => {
             let target = args.get("userId").and_then(Value::as_i64).ok_or("malformed proposal")?;
-            let member: Option<i64> = sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
-                .bind(project_id)
-                .bind(target)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| e.to_string())?;
+            let member: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
+                    .bind(project_id)
+                    .bind(target)
+                    .fetch_optional(db)
+                    .await
+                    .map_err(|e| e.to_string())?;
             if member.is_none() {
                 return Err("that user is not a member of this project".into());
             }
@@ -1466,7 +1493,10 @@ pub async fn run_tool_loop(
                 if !used.contains(&tc.name) {
                     used.push(tc.name.clone());
                 }
-                let result = match (rag, tc.arguments.get("question").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())) {
+                let result = match (
+                    rag,
+                    tc.arguments.get("question").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()),
+                ) {
                     (Some(rc), Some(question)) => {
                         let answer = crate::librarian::ask_atlas(db, rc, ollama, params, question).await;
                         usage.add(answer.usage);
@@ -1484,7 +1514,16 @@ pub async fn run_tool_loop(
                 // turn's proposals (one gate, one inbox, chain-attributed);
                 // its tokens bill into this turn's usage.
                 let outcome = crate::delegate::run_delegate(
-                    db, rag, ollama, tools, project_id, user_id, is_owner, None, &tc.arguments, agent_run,
+                    db,
+                    rag,
+                    ollama,
+                    tools,
+                    project_id,
+                    user_id,
+                    is_owner,
+                    None,
+                    &tc.arguments,
+                    agent_run,
                 )
                 .await;
                 usage.add(outcome.usage);
@@ -1520,7 +1559,15 @@ pub async fn run_tool_loop(
                     if tools.iter().any(|d| tool_name(d).as_deref() == Some(tc.name.as_str())) {
                         let today = chrono::Local::now().date_naive();
                         crate::finance_tools::execute(
-                            db, user_id, project_id, runner, params, &ollama.config().base_url, &tc.name, &tc.arguments, today,
+                            db,
+                            user_id,
+                            project_id,
+                            runner,
+                            params,
+                            &ollama.config().base_url,
+                            &tc.name,
+                            &tc.arguments,
+                            today,
                         )
                         .await
                     } else {
@@ -1534,7 +1581,16 @@ pub async fn run_tool_loop(
             }
         }
     }
-    crate::delegate::ledger_delegating_turn(db, user_id, project_id, &params.model, own_usage, &delegated_to, &delegations).await;
+    crate::delegate::ledger_delegating_turn(
+        db,
+        user_id,
+        project_id,
+        &params.model,
+        own_usage,
+        &delegated_to,
+        &delegations,
+    )
+    .await;
     (used, proposals, usage)
 }
 
@@ -1610,7 +1666,10 @@ mod tests {
         let db = test_db("loadout_names").await;
         let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(unknown_tool_names(&db, &names(&["get_tasks", "create_task", "delegate", " "])).await.is_empty());
-        assert_eq!(unknown_tool_names(&db, &names(&["get_taks", "get_tasks", "nope", "nope"])).await, names(&["get_taks", "nope"]));
+        assert_eq!(
+            unknown_tool_names(&db, &names(&["get_taks", "get_tasks", "nope", "nope"])).await,
+            names(&["get_taks", "nope"])
+        );
     }
 
     // ---- registry ----------------------------------------------------------
@@ -1703,7 +1762,9 @@ mod tests {
         let rag = NewRegistryTool {
             name: "search_pdfs".into(),
             description: "Search the project's PDFs.".into(),
-            params_json: Some(r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#.into()),
+            params_json: Some(
+                r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#.into(),
+            ),
             class: None,
             binding_kind: "rag".into(),
             binding_json: r#"{"limit":5,"filters":{"format":"pdf"}}"#.into(),
@@ -1721,7 +1782,9 @@ mod tests {
         let mcp = NewRegistryTool {
             name: "ask_msc".into(),
             description: "Search the msc-stf corpus via ragrat.".into(),
-            params_json: Some(r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#.into()),
+            params_json: Some(
+                r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#.into(),
+            ),
             class: None,
             binding_kind: "mcp".into(),
             binding_json: r#"{"mount":"/mcp/msc-stf/","tool":"search_corpus"}"#.into(),
@@ -1739,10 +1802,14 @@ mod tests {
         let http = NewRegistryTool {
             name: "weather".into(),
             description: "Look up the weather.".into(),
-            params_json: Some(r#"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#.into()),
+            params_json: Some(
+                r#"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#.into(),
+            ),
             class: None,
             binding_kind: "http".into(),
-            binding_json: r#"{"url":"https://api.example.com/w","query":{"q":"{city}","key":"{secret}"},"secret_name":"weather"}"#.into(),
+            binding_json:
+                r#"{"url":"https://api.example.com/w","query":{"q":"{city}","key":"{secret}"},"secret_name":"weather"}"#
+                    .into(),
             enabled: true,
         };
         assert!(validate_new_registry_tool(&http).is_ok());
@@ -1817,16 +1884,34 @@ mod tests {
         let a = ops::create_project(&db, CreateProjectInput { name: "A".into(), description: None }).await.unwrap();
         let b = ops::create_project(&db, CreateProjectInput { name: "B".into(), description: None }).await.unwrap();
         let mk = |pid: i64, title: &str| CreateTaskInput {
-            project_id: pid, area_id: None, title: title.into(), description: None,
-            status: "todo".into(), priority: "normal".into(), prefix: None, cost: None, currency: None, deadline: None,
+            project_id: pid,
+            area_id: None,
+            title: title.into(),
+            description: None,
+            status: "todo".into(),
+            priority: "normal".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
         };
         ops::create_task(&db, mk(a.id, "in-A")).await.unwrap();
         ops::create_task(&db, mk(b.id, "in-B")).await.unwrap();
 
-        ops::create_registry_tool(&db, NewRegistryTool {
-            name: "open_tasks".into(), description: "tasks".into(), params_json: None, class: None,
-            binding_kind: "ops".into(), binding_json: r#"{"command":"get_tasks"}"#.into(), enabled: true,
-        }).await.unwrap();
+        ops::create_registry_tool(
+            &db,
+            NewRegistryTool {
+                name: "open_tasks".into(),
+                description: "tasks".into(),
+                params_json: None,
+                class: None,
+                binding_kind: "ops".into(),
+                binding_json: r#"{"command":"get_tasks"}"#.into(),
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
 
         // The tool appears in the assembled defs...
         assert!(registry_tool_defs(&db, true, true).await.iter().any(|d| d["function"]["name"] == "open_tasks"));
@@ -1843,11 +1928,25 @@ mod tests {
     #[tokio::test]
     async fn get_tasks_tool_reflects_live_data_for_its_project() {
         let db = test_db("reads").await;
-        let proj = ops::create_project(&db, CreateProjectInput { name: "Alpha".into(), description: None }).await.unwrap();
-        ops::create_task(&db, CreateTaskInput {
-            project_id: proj.id, area_id: None, title: "Wire the tool layer".into(), description: None,
-            status: "To Do".into(), priority: "High".into(), prefix: None, cost: None, currency: None, deadline: None,
-        }).await.unwrap();
+        let proj =
+            ops::create_project(&db, CreateProjectInput { name: "Alpha".into(), description: None }).await.unwrap();
+        ops::create_task(
+            &db,
+            CreateTaskInput {
+                project_id: proj.id,
+                area_id: None,
+                title: "Wire the tool layer".into(),
+                description: None,
+                status: "To Do".into(),
+                priority: "High".into(),
+                prefix: None,
+                cost: None,
+                currency: None,
+                deadline: None,
+            },
+        )
+        .await
+        .unwrap();
 
         let out = execute_tool(&db, None, proj.id, "get_tasks", &j!({}), OWNER).await.unwrap();
         assert!(out.contains("Wire the tool layer"), "tool result should reflect live data: {out}");
@@ -1858,13 +1957,27 @@ mod tests {
         let db = test_db("scope").await;
         let a = ops::create_project(&db, CreateProjectInput { name: "A".into(), description: None }).await.unwrap();
         let b = ops::create_project(&db, CreateProjectInput { name: "B".into(), description: None }).await.unwrap();
-        let task_b = ops::create_task(&db, CreateTaskInput {
-            project_id: b.id, area_id: None, title: "B task".into(), description: None,
-            status: "To Do".into(), priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
-        }).await.unwrap();
+        let task_b = ops::create_task(
+            &db,
+            CreateTaskInput {
+                project_id: b.id,
+                area_id: None,
+                title: "B task".into(),
+                description: None,
+                status: "To Do".into(),
+                priority: "Low".into(),
+                prefix: None,
+                cost: None,
+                currency: None,
+                deadline: None,
+            },
+        )
+        .await
+        .unwrap();
 
         // A chat scoped to project A must not read project B's task comments.
-        let err = execute_tool(&db, None, a.id, "get_task_comments", &j!({ "task_id": task_b.id }), OWNER).await.unwrap_err();
+        let err =
+            execute_tool(&db, None, a.id, "get_task_comments", &j!({ "task_id": task_b.id }), OWNER).await.unwrap_err();
         assert!(err.contains("not in this project"), "expected scope rejection, got: {err}");
     }
 
@@ -1873,9 +1986,18 @@ mod tests {
         let db = test_db("validate").await;
         let p = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap();
         assert!(execute_tool(&db, None, p.id, "get_task_comments", &j!({}), OWNER).await.is_err(), "missing task_id");
-        assert!(execute_tool(&db, None, p.id, "search_corpus", &j!({ "query": "  " }), OWNER).await.is_err(), "blank query");
-        assert!(execute_tool(&db, None, p.id, "delete_task", &j!({ "task_id": 1 }), OWNER).await.is_err(), "write tool not callable");
-        assert!(execute_tool(&db, None, p.id, "search_corpus", &j!({ "query": "x" }), OWNER).await.is_err(), "RAG disabled");
+        assert!(
+            execute_tool(&db, None, p.id, "search_corpus", &j!({ "query": "  " }), OWNER).await.is_err(),
+            "blank query"
+        );
+        assert!(
+            execute_tool(&db, None, p.id, "delete_task", &j!({ "task_id": 1 }), OWNER).await.is_err(),
+            "write tool not callable"
+        );
+        assert!(
+            execute_tool(&db, None, p.id, "search_corpus", &j!({ "query": "x" }), OWNER).await.is_err(),
+            "RAG disabled"
+        );
     }
 
     // ---- CRUD round-trips at the /invoke command level (the Phase 2 gate) ----
@@ -1904,7 +2026,9 @@ mod tests {
         let db = test_db("crud_area").await;
         let proj = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Has areas" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let area = crate::dispatch(&db, "create_area", &j!({ "input": { "project_id": pid, "name": "Backend" } })).await.unwrap();
+        let area = crate::dispatch(&db, "create_area", &j!({ "input": { "project_id": pid, "name": "Backend" } }))
+            .await
+            .unwrap();
         let aid = area["id"].as_i64().unwrap();
         let listed = crate::dispatch(&db, "get_areas", &j!({ "projectId": pid })).await.unwrap();
         assert!(listed.as_array().unwrap().iter().any(|x| x["id"] == aid && x["name"] == "Backend"));
@@ -1923,14 +2047,22 @@ mod tests {
         let db = test_db("crud_task").await;
         let proj = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Tasks" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let task = crate::dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "First", "status": "To Do", "priority": "Medium" }
-        })).await.unwrap();
+        let task = crate::dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "First", "status": "To Do", "priority": "Medium" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
         let listed = crate::dispatch(&db, "get_tasks", &j!({ "projectId": pid, "archived": false })).await.unwrap();
         assert!(listed.as_array().unwrap().iter().any(|t| t["id"] == tid && t["title"] == "First"));
 
-        crate::dispatch(&db, "update_task", &j!({ "taskId": tid, "input": { "title": "First (edited)" } })).await.unwrap();
+        crate::dispatch(&db, "update_task", &j!({ "taskId": tid, "input": { "title": "First (edited)" } }))
+            .await
+            .unwrap();
         let after = crate::dispatch(&db, "get_tasks", &j!({ "projectId": pid, "archived": false })).await.unwrap();
         assert!(after.as_array().unwrap().iter().any(|t| t["id"] == tid && t["title"] == "First (edited)"));
 
@@ -1949,13 +2081,18 @@ mod tests {
         let read = crate::dispatch(&db, "get_event", &j!({ "eventId": eid })).await.unwrap();
         assert_eq!(read["title"], "Kickoff");
 
-        crate::dispatch(&db, "update_event", &j!({ "eventId": eid, "input": { "title": "Kickoff (moved)" } })).await.unwrap();
+        crate::dispatch(&db, "update_event", &j!({ "eventId": eid, "input": { "title": "Kickoff (moved)" } }))
+            .await
+            .unwrap();
         let after = crate::dispatch(&db, "get_event", &j!({ "eventId": eid })).await.unwrap();
         assert_eq!(after["title"], "Kickoff (moved)");
 
         crate::dispatch(&db, "delete_event", &j!({ "eventId": eid })).await.unwrap(); // soft delete (archived)
         let active = crate::dispatch(&db, "get_events", &j!({ "archived": false })).await.unwrap();
-        assert!(!active.as_array().unwrap().iter().any(|e| e["id"] == eid), "archived event should leave the active list");
+        assert!(
+            !active.as_array().unwrap().iter().any(|e| e["id"] == eid),
+            "archived event should leave the active list"
+        );
     }
 
     // ---- Phase 2: write proposals are validated but NEVER auto-executed -------
@@ -1966,8 +2103,12 @@ mod tests {
         let db = test_db("no_autoexec").await;
         let p = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap();
         for name in ["create_task", "update_task", "delete_task", "create_comment"] {
-            assert!(execute_tool(&db, None, p.id, name, &j!({ "title": "x", "task_id": 1, "content": "x" }), OWNER).await.is_err(),
-                "read executor must never run write tool {name}");
+            assert!(
+                execute_tool(&db, None, p.id, name, &j!({ "title": "x", "task_id": 1, "content": "x" }), OWNER)
+                    .await
+                    .is_err(),
+                "read executor must never run write tool {name}"
+            );
         }
     }
 
@@ -1977,9 +2118,15 @@ mod tests {
         let a = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "A" } })).await.unwrap();
         let b = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "B" } })).await.unwrap();
         let (aid, bid) = (a["id"].as_i64().unwrap(), b["id"].as_i64().unwrap());
-        let task_b = crate::dispatch(&db, "create_task", &j!({
-            "input": { "project_id": bid, "title": "B task", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task_b = crate::dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": bid, "title": "B task", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tb = task_b["id"].as_i64().unwrap();
 
         // Valid create_task → a runnable command, project forced, NOT executed.
@@ -1994,7 +2141,10 @@ mod tests {
         assert!(prepare_write(&db, 1, aid, "create_task", &j!({})).await.is_err());
         // Cross-project task → rejected (no scope widening) for every task-bearing write.
         for name in ["update_task", "delete_task"] {
-            assert!(prepare_write(&db, 1, aid, name, &j!({ "task_id": tb, "title": "x" })).await.is_err(), "{name} cross-project");
+            assert!(
+                prepare_write(&db, 1, aid, name, &j!({ "task_id": tb, "title": "x" })).await.is_err(),
+                "{name} cross-project"
+            );
         }
         assert!(prepare_write(&db, 1, aid, "create_comment", &j!({ "task_id": tb, "content": "hi" })).await.is_err());
     }
@@ -2005,7 +2155,9 @@ mod tests {
         let proj = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Apply" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
 
-        let pw = prepare_write(&db, 1, pid, "create_task", &j!({ "title": "Approved task", "status": "In Progress" })).await.unwrap();
+        let pw = prepare_write(&db, 1, pid, "create_task", &j!({ "title": "Approved task", "status": "In Progress" }))
+            .await
+            .unwrap();
         let res = apply_write(&db, &std::env::temp_dir(), pw.command, &pw.args).await.unwrap();
         assert_eq!(res["title"], "Approved task");
         let list = crate::dispatch(&db, "get_tasks", &j!({ "projectId": pid, "archived": false })).await.unwrap();
@@ -2032,10 +2184,20 @@ mod event_link_tests {
     async fn imported_events_can_be_found_then_linked_through_the_gate() {
         let db = test_db("link").await;
         ganban_core::auth::ensure_owner(&db).await.unwrap(); // the proposer, user 1, is the owner
-        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "SMM283" } })).await.unwrap()["id"].as_i64().unwrap();
-        let tid = crate::dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "Week 2 prep", "status": "To Do", "priority": "Medium" }
-        })).await.unwrap()["id"].as_i64().unwrap();
+        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "SMM283" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let tid = crate::dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "Week 2 prep", "status": "To Do", "priority": "Medium" }
+            }),
+        )
+        .await
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
         // Dynamic future date — get_unlinked_events filters on
         // event_date >= now-1day, so a hardcoded fixture date rots into a
         // false failure once the calendar passes it (it did: 2026-06-20).
@@ -2061,17 +2223,33 @@ mod event_link_tests {
         assert!(!listing.contains("SMM283 Lecture W2"));
 
         // Task links: validated against THIS project; cross-project refused.
-        let pw = prepare_write(&db, 1, pid, "link_event_to_task", &j!({ "event_id": eid, "task_id": tid })).await.unwrap();
+        let pw =
+            prepare_write(&db, 1, pid, "link_event_to_task", &j!({ "event_id": eid, "task_id": tid })).await.unwrap();
         apply_write(&db, &std::env::temp_dir(), pw.command, &pw.args).await.unwrap();
         let tasks = crate::dispatch(&db, "get_event_tasks", &j!({ "eventId": eid })).await.unwrap();
         assert!(tasks.as_array().unwrap().iter().any(|t| t["id"] == tid));
 
-        let other = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Other" } })).await.unwrap()["id"].as_i64().unwrap();
-        let foreign = crate::dispatch(&db, "create_task", &j!({
-            "input": { "project_id": other, "title": "X", "status": "To Do", "priority": "Low" }
-        })).await.unwrap()["id"].as_i64().unwrap();
-        assert!(prepare_write(&db, 1, pid, "link_event_to_task", &j!({ "event_id": eid, "task_id": foreign })).await.is_err());
-        assert!(prepare_write(&db, 1, pid, "link_event_to_project", &j!({ "event_id": 9999 })).await.is_err(), "nonexistent event refused");
+        let other = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Other" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let foreign = crate::dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": other, "title": "X", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert!(prepare_write(&db, 1, pid, "link_event_to_task", &j!({ "event_id": eid, "task_id": foreign }))
+            .await
+            .is_err());
+        assert!(
+            prepare_write(&db, 1, pid, "link_event_to_project", &j!({ "event_id": 9999 })).await.is_err(),
+            "nonexistent event refused"
+        );
     }
 }
 
@@ -2091,12 +2269,19 @@ mod event_delete_tests {
     #[tokio::test]
     async fn event_deletion_respects_project_scope() {
         let db = test_db("scope").await;
-        let mine = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Mine" } })).await.unwrap()["id"].as_i64().unwrap();
-        let theirs = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Theirs" } })).await.unwrap()["id"].as_i64().unwrap();
+        let mine = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Mine" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let theirs = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Theirs" } })).await.unwrap()
+            ["id"]
+            .as_i64()
+            .unwrap();
         let make_event = |title: &str| j!({ "input": { "title": title, "event_date": "2026-06-20T13:00:00Z", "all_day": false, "notification_enabled": false } });
-        let orphan = crate::dispatch(&db, "create_event", &make_event("Imported 13:00")).await.unwrap()["id"].as_i64().unwrap();
+        let orphan =
+            crate::dispatch(&db, "create_event", &make_event("Imported 13:00")).await.unwrap()["id"].as_i64().unwrap();
         let ours = crate::dispatch(&db, "create_event", &make_event("Our lab")).await.unwrap()["id"].as_i64().unwrap();
-        let foreign = crate::dispatch(&db, "create_event", &make_event("Their kickoff")).await.unwrap()["id"].as_i64().unwrap();
+        let foreign =
+            crate::dispatch(&db, "create_event", &make_event("Their kickoff")).await.unwrap()["id"].as_i64().unwrap();
         crate::dispatch(&db, "link_event_to_project", &j!({ "eventId": ours, "projectId": mine })).await.unwrap();
         crate::dispatch(&db, "link_event_to_project", &j!({ "eventId": foreign, "projectId": theirs })).await.unwrap();
 
@@ -2137,11 +2322,20 @@ mod visibility_tests {
         let db = ganban_core::init_db(&path).await.unwrap();
         auth::ensure_owner(&db).await.unwrap();
         sqlx::query("INSERT INTO users (id, username, full_name) VALUES (7, 'bo', 'Bo')").execute(&db).await.unwrap();
-        let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
+        let pid =
+            ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
         auth::add_project_member(&db, pid, 7, auth::ROLE_MEMBER).await.unwrap();
         let task = |title: &str| CreateTaskInput {
-            project_id: pid, area_id: None, title: title.into(), description: None, status: "To Do".into(),
-            priority: "Low".into(), prefix: None, cost: None, currency: None, deadline: None,
+            project_id: pid,
+            area_id: None,
+            title: title.into(),
+            description: None,
+            status: "To Do".into(),
+            priority: "Low".into(),
+            prefix: None,
+            cost: None,
+            currency: None,
+            deadline: None,
         };
         let open = ops::create_task(&db, task("Open")).await.unwrap().id;
         let secret = ops::create_task(&db, task("Reorg")).await.unwrap().id;
@@ -2156,7 +2350,8 @@ mod visibility_tests {
         assert_eq!(rename.err().as_deref(), Some("that task is not in this project"));
         assert!(prepare_write(&db, 7, pid, "update_task", &j!({ "task_id": open, "title": "Fine" })).await.is_ok());
 
-        let owners = execute_tool(&db, None, pid, "get_tasks", &j!({}), Viewer { user_id: 1, is_owner: true }).await.unwrap();
+        let owners =
+            execute_tool(&db, None, pid, "get_tasks", &j!({}), Viewer { user_id: 1, is_owner: true }).await.unwrap();
         assert!(owners.contains("Reorg"), "the owner's assistant sees everything");
     }
 }

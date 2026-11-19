@@ -1,6 +1,6 @@
 // Tests scripts/appimage-system-graphics.sh (strip and verify) on a fake AppDir laid out like
 // Tauri's AppImage: the graphics client libraries go, WebKitGTK and the rest stay, and the GTK hook
-// no longer forces GDK_BACKEND=x11.
+// no longer forces GDK_BACKEND=x11, and the build machine's xdg-open and xdg-mime are gone.
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,6 +20,8 @@ try {
   const kept = ['libwebkit2gtk-4.1.so.0', 'libgtk-3.so.0', 'libepoxy.so.0', 'libxkbcommon.so.0', 'libgstgl-1.0.so.0', 'libgdk-3.so.0'];
   for (const f of [...graphics, ...kept]) writeFileSync(join(lib, f), '');
   symlinkSync('libdrm.so.2', join(lib, 'libdrm.so'));
+  const bin = join(dir, 'usr/bin');
+  for (const f of ['gansty', 'xdg-open', 'xdg-mime']) writeFileSync(join(bin, f), '#!/bin/sh\n');
   const hook = join(dir, 'apprun-hooks/linuxdeploy-plugin-gtk.sh');
   writeFileSync(hook, '#! /usr/bin/env bash\nexport GTK_DATA_PREFIX="$APPDIR"\nexport GDK_BACKEND=x11 # Crash with Wayland backend\nexport GTK_PATH="$APPDIR//usr/lib/gtk-3.0"\n');
 
@@ -37,6 +39,16 @@ try {
   assert.ok(!h.includes('GDK_BACKEND'), 'the forced backend is gone');
   assert.ok(h.includes('GTK_PATH') && h.includes('GTK_DATA_PREFIX'), 'the rest of the hook stays');
   assert.match(out, /unset the forced GDK_BACKEND/);
+  for (const f of ['xdg-open', 'xdg-mime']) {
+    assert.ok(!existsSync(join(bin, f)), `${f} removed`);
+    assert.match(out, new RegExp(`removed usr/bin/${f}`));
+  }
+  assert.ok(existsSync(join(bin, 'gansty')), 'the app stays');
+
+  // verify refuses a bundled xdg-open on its own.
+  writeFileSync(join(bin, 'xdg-open'), '#!/bin/sh\n');
+  assert.throws(() => run('verify', dir), /usr\/bin\/xdg-open is still bundled/);
+  run('strip', dir);
 
   // verify passes now and lists what's bundled.
   const v = run('verify', dir);

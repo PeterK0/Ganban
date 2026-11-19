@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppStore } from '../store/appStore';
 import { getTasks, createTask, getTaskTotalTime, getAreas } from '../lib/api';
 import DetailPane, { useDetailStack, type DetailTarget } from './DetailPane';
@@ -28,6 +29,32 @@ export default function TaskList() {
   // Collapsed area sections (by area id; -1 = the "No area" bucket). Empty = all open.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // The Filter & sort popover hangs in a portal, fixed under its button: the list pane is overflow-hidden and can be
+  // narrower than the popover, which used to clip it. Clamped to the viewport, re-placed on resize and scroll.
+  const filterAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [filterPos, setFilterPos] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(
+    null,
+  );
+  useLayoutEffect(() => {
+    if (!filtersOpen) return;
+    const place = () => {
+      const el = filterAnchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const margin = 12;
+      const width = Math.min(288, window.innerWidth - 2 * margin);
+      const left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
+      const top = r.bottom + 8;
+      setFilterPos({ left, top, width, maxHeight: Math.max(160, window.innerHeight - top - margin) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [filtersOpen]);
   const [groupBy, setGroupBy] = useState<'status' | 'area' | 'none'>(() => {
     const v = localStorage.getItem('taskList.groupBy');
     return v === 'area' || v === 'none' ? v : 'status';
@@ -293,7 +320,7 @@ export default function TaskList() {
               )}
             </button>
           </div>
-          <div className="relative flex gap-2">
+          <div ref={filterAnchorRef} className="relative flex gap-2">
             <button
               onClick={() => setFiltersOpen((o) => !o)}
               aria-expanded={filtersOpen}
@@ -316,11 +343,14 @@ export default function TaskList() {
               </svg>
             </button>
 
-            {filtersOpen && (
+            {filtersOpen && filterPos && createPortal(
               <>
                 {/* click-away backdrop */}
-                <div className="fixed inset-0 z-10" onClick={() => setFiltersOpen(false)} />
-                <div className="g-card absolute left-0 top-full mt-2 z-20 w-72 shadow-xl px-4 pt-4 pb-4 space-y-3">
+                <div className="fixed inset-0 z-40" onClick={() => setFiltersOpen(false)} />
+                <div
+                  className="g-card fixed z-50 shadow-xl px-4 pt-4 pb-4 space-y-3 overflow-y-auto"
+                  style={{ left: filterPos.left, top: filterPos.top, width: filterPos.width, maxHeight: filterPos.maxHeight }}
+                >
                   <div className="g-deco text-center text-[11px] font-semibold text-gold">Filter & sort</div>
                   <div>
                     <div className="g-flbl">Status</div>
@@ -372,7 +402,8 @@ export default function TaskList() {
                     </select>
                   </div>
                 </div>
-              </>
+              </>,
+              document.body,
             )}
           </div>
 

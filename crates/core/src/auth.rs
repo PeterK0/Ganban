@@ -143,9 +143,8 @@ pub struct DeviceInfo {
 /// (the migration's default user) and backfill them as owner-member of every
 /// existing project. Returns the owner's user id.
 pub async fn ensure_owner(db: &Db) -> Result<i64> {
-    if let Some((id,)) = sqlx::query_as::<_, (i64,)>("SELECT id FROM users WHERE is_owner = 1 LIMIT 1")
-        .fetch_optional(db)
-        .await?
+    if let Some((id,)) =
+        sqlx::query_as::<_, (i64,)>("SELECT id FROM users WHERE is_owner = 1 LIMIT 1").fetch_optional(db).await?
     {
         return Ok(id);
     }
@@ -155,10 +154,7 @@ pub async fn ensure_owner(db: &Db) -> Result<i64> {
         .await?
         .ok_or_else(|| AppError::NotFound("no users to bootstrap as owner".into()))?;
 
-    sqlx::query("UPDATE users SET is_owner = 1 WHERE id = ?")
-        .bind(owner_id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE users SET is_owner = 1 WHERE id = ?").bind(owner_id).execute(db).await?;
 
     // Backfill owner membership on all existing projects.
     let project_ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM projects").fetch_all(db).await?;
@@ -200,11 +196,10 @@ pub async fn bootstrap(db: &Db) -> Result<Option<String>> {
     let owner_id = ensure_owner(db).await?;
     ensure_owner_memberships(db, owner_id).await?;
 
-    let has_device: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM device_tokens WHERE user_id = ? LIMIT 1")
-            .bind(owner_id)
-            .fetch_optional(db)
-            .await?;
+    let has_device: Option<(i64,)> = sqlx::query_as("SELECT id FROM device_tokens WHERE user_id = ? LIMIT 1")
+        .bind(owner_id)
+        .fetch_optional(db)
+        .await?;
     let has_pending: Option<(i64,)> = sqlx::query_as(
         "SELECT id FROM enrollment_tokens WHERE target_user_id = ? AND kind = 'new_device' AND consumed_at IS NULL AND expires_at > ? LIMIT 1",
     )
@@ -216,7 +211,8 @@ pub async fn bootstrap(db: &Db) -> Result<Option<String>> {
     if has_device.is_none() && has_pending.is_none() {
         // Short-lived: it's a full-owner credential printed to logs; the desktop
         // owner normally mints the phone invite from the UI instead.
-        let raw = create_enrollment_token(db, "new_device", Some(owner_id), None, None, None, ENROLLMENT_TTL_SECS).await?;
+        let raw =
+            create_enrollment_token(db, "new_device", Some(owner_id), None, None, None, ENROLLMENT_TTL_SECS).await?;
         Ok(Some(raw))
     } else {
         Ok(None)
@@ -287,15 +283,14 @@ pub async fn enroll(
 
     // Everything is one transaction: if any step fails, the token claim rolls
     // back (retryable) and no orphan user/device is left behind.
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
 
-    let token = sqlx::query_as::<_, crate::models::EnrollmentToken>(
-        "SELECT * FROM enrollment_tokens WHERE token_hash = ?",
-    )
-    .bind(&hash)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| AppError::InvalidInput("invalid enrollment token".into()))?;
+    let token =
+        sqlx::query_as::<_, crate::models::EnrollmentToken>("SELECT * FROM enrollment_tokens WHERE token_hash = ?")
+            .bind(&hash)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::InvalidInput("invalid enrollment token".into()))?;
 
     if token.expires_at < Utc::now() {
         return Err(AppError::InvalidInput("enrollment token expired".into()));
@@ -313,9 +308,9 @@ pub async fn enroll(
 
     let now = Utc::now();
     let user_id = match token.kind.as_str() {
-        "new_device" => token
-            .target_user_id
-            .ok_or_else(|| AppError::InvalidInput("enrollment token missing user".into()))?,
+        "new_device" => {
+            token.target_user_id.ok_or_else(|| AppError::InvalidInput("enrollment token missing user".into()))?
+        }
         "invite" => {
             if let Some(uid) = token.target_user_id {
                 uid
@@ -397,10 +392,7 @@ pub async fn enroll(
     .execute(&mut *tx)
     .await?;
 
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?").bind(user_id).fetch_one(&mut *tx).await?;
 
     tx.commit().await?;
     Ok(EnrollResult { device_token: raw_device, user })
@@ -421,12 +413,14 @@ async fn stamp_last_seen(db: &Db, device_id: i64) {
     let stamp = tokio::spawn(async move {
         let now = Utc::now();
         let due = now - chrono::Duration::seconds(LAST_SEEN_EVERY_SECS);
-        let r = sqlx::query("UPDATE device_tokens SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)")
-            .bind(now)
-            .bind(device_id)
-            .bind(due)
-            .execute(&db)
-            .await;
+        let r = sqlx::query(
+            "UPDATE device_tokens SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)",
+        )
+        .bind(now)
+        .bind(device_id)
+        .bind(due)
+        .execute(&db)
+        .await;
         if let Err(e) = r {
             eprintln!("device last-seen skipped: {e}");
         }
@@ -463,10 +457,7 @@ pub async fn validate_device_token(db: &Db, raw: &str) -> Result<Option<(User, i
 /// Whose device token is this? (`None` if it doesn't exist.) The permission
 /// check behind "a member may revoke their OWN devices".
 pub async fn device_token_user(db: &Db, token_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT user_id FROM device_tokens WHERE id = ?")
-        .bind(token_id)
-        .fetch_optional(db)
-        .await?)
+    Ok(sqlx::query_scalar("SELECT user_id FROM device_tokens WHERE id = ?").bind(token_id).fetch_optional(db).await?)
 }
 
 #[derive(sqlx::FromRow)]
@@ -476,10 +467,7 @@ struct DeviceTokenRow {
 }
 
 pub async fn revoke_device_token(db: &Db, id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM device_tokens WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("DELETE FROM device_tokens WHERE id = ?").bind(id).execute(db).await?;
     Ok(())
 }
 
@@ -617,11 +605,10 @@ pub async fn create_contact_invite(db: &Db, contact_id: i64, project_id: i64, ro
     }
     // No account yet: create + link a fresh one and target the invite at it.
     let uid = ensure_user_for_contact(db, contact_id).await?;
-    let name: Option<String> = sqlx::query_scalar("SELECT full_name FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .fetch_optional(db)
-        .await?;
-    create_enrollment_token(db, "invite", Some(uid), Some(project_id), Some(role), name.as_deref(), INVITE_TTL_SECS).await
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT full_name FROM contacts WHERE id = ?").bind(contact_id).fetch_optional(db).await?;
+    create_enrollment_token(db, "invite", Some(uid), Some(project_id), Some(role), name.as_deref(), INVITE_TTL_SECS)
+        .await
 }
 
 /// Lifecycle of an enrollment/invite token, for the inviter's diagnostics panel.
@@ -730,22 +717,17 @@ pub async fn list_invites(db: &Db, project_id: Option<i64>) -> Result<Vec<Invite
 
 /// Fetch a single enrollment token by id (for authorization before revoke).
 pub async fn get_invite_token(db: &Db, id: i64) -> Result<Option<crate::models::EnrollmentToken>> {
-    Ok(
-        sqlx::query_as::<_, crate::models::EnrollmentToken>("SELECT * FROM enrollment_tokens WHERE id = ?")
-            .bind(id)
-            .fetch_optional(db)
-            .await?,
-    )
+    Ok(sqlx::query_as::<_, crate::models::EnrollmentToken>("SELECT * FROM enrollment_tokens WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await?)
 }
 
 /// Revoke (delete) an enrollment token so a stale/leaked invite can no longer be
 /// redeemed. Already-joined members keep their access — their device token is a
 /// separate, independent credential. Authorized at the dispatch layer.
 pub async fn revoke_invite(db: &Db, id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM enrollment_tokens WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("DELETE FROM enrollment_tokens WHERE id = ?").bind(id).execute(db).await?;
     Ok(())
 }
 
@@ -755,12 +737,11 @@ pub async fn revoke_invite(db: &Db, id: i64) -> Result<()> {
 /// a mistyped/expired-and-purged link reads cleanly in the UI.
 pub async fn invite_status(db: &Db, raw_token: &str) -> Result<InviteStatus> {
     let hash = hash_token(raw_token);
-    let token = sqlx::query_as::<_, crate::models::EnrollmentToken>(
-        "SELECT * FROM enrollment_tokens WHERE token_hash = ?",
-    )
-    .bind(&hash)
-    .fetch_optional(db)
-    .await?;
+    let token =
+        sqlx::query_as::<_, crate::models::EnrollmentToken>("SELECT * FROM enrollment_tokens WHERE token_hash = ?")
+            .bind(&hash)
+            .fetch_optional(db)
+            .await?;
     let Some(t) = token else {
         return Ok(InviteStatus {
             state: "unknown".into(),
@@ -781,10 +762,12 @@ pub async fn invite_status(db: &Db, raw_token: &str) -> Result<InviteStatus> {
     };
     let joined_name = if t.consumed_at.is_some() {
         match t.enrolled_user_id.or(t.target_user_id) {
-            Some(uid) => sqlx::query_scalar::<_, String>("SELECT full_name FROM users WHERE id = ?")
-                .bind(uid)
-                .fetch_optional(db)
-                .await?,
+            Some(uid) => {
+                sqlx::query_scalar::<_, String>("SELECT full_name FROM users WHERE id = ?")
+                    .bind(uid)
+                    .fetch_optional(db)
+                    .await?
+            }
             None => None,
         }
     } else {
@@ -844,10 +827,8 @@ pub async fn covisible_user_ids(db: &Db, user_id: i64) -> Result<Vec<i64>> {
 
 /// The project ids a user is a member of.
 pub async fn accessible_project_ids(db: &Db, user_id: i64) -> Result<Vec<i64>> {
-    let rows: Vec<(i64,)> = sqlx::query_as("SELECT project_id FROM project_members WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_all(db)
-        .await?;
+    let rows: Vec<(i64,)> =
+        sqlx::query_as("SELECT project_id FROM project_members WHERE user_id = ?").bind(user_id).fetch_all(db).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -891,12 +872,11 @@ pub async fn accessible_contact_ids(db: &Db, user_id: i64) -> Result<Vec<i64>> {
 /// Whether the user is an admin or owner of any project — a "workspace admin"
 /// who may manage shared resources (the calendar, the address book).
 pub async fn is_admin_anywhere(db: &Db, user_id: i64) -> Result<bool> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM project_members WHERE user_id = ? AND role IN ('owner', 'admin')",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await?;
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM project_members WHERE user_id = ? AND role IN ('owner', 'admin')")
+            .bind(user_id)
+            .fetch_one(db)
+            .await?;
     Ok(n > 0)
 }
 
@@ -950,43 +930,30 @@ pub async fn list_memberships(db: &Db, user_id: i64) -> Result<Vec<MembershipInf
 // ---- Entity → project resolvers (for scope enforcement) ----
 
 pub async fn task_project_id(db: &Db, task_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_optional(db)
-        .await?)
+    Ok(sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?").bind(task_id).fetch_optional(db).await?)
 }
 
 /// The project a model kit belongs to (for access checks on kit-scoped ops).
 pub async fn model_kit_project_id(db: &Db, kit_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT project_id FROM model_kits WHERE id = ?")
-        .bind(kit_id)
-        .fetch_optional(db)
-        .await?)
+    Ok(sqlx::query_scalar("SELECT project_id FROM model_kits WHERE id = ?").bind(kit_id).fetch_optional(db).await?)
 }
 
 pub async fn area_project_id(db: &Db, area_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT project_id FROM areas WHERE id = ?")
-        .bind(area_id)
+    Ok(sqlx::query_scalar("SELECT project_id FROM areas WHERE id = ?").bind(area_id).fetch_optional(db).await?)
+}
+
+pub async fn time_entry_project_id(db: &Db, entry_id: i64) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar("SELECT t.project_id FROM time_entries te JOIN tasks t ON t.id = te.task_id WHERE te.id = ?")
+        .bind(entry_id)
         .fetch_optional(db)
         .await?)
 }
 
-pub async fn time_entry_project_id(db: &Db, entry_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar(
-        "SELECT t.project_id FROM time_entries te JOIN tasks t ON t.id = te.task_id WHERE te.id = ?",
-    )
-    .bind(entry_id)
-    .fetch_optional(db)
-    .await?)
-}
-
 pub async fn comment_project_id(db: &Db, comment_id: i64) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar(
-        "SELECT t.project_id FROM comments c JOIN tasks t ON t.id = c.task_id WHERE c.id = ?",
-    )
-    .bind(comment_id)
-    .fetch_optional(db)
-    .await?)
+    Ok(sqlx::query_scalar("SELECT t.project_id FROM comments c JOIN tasks t ON t.id = c.task_id WHERE c.id = ?")
+        .bind(comment_id)
+        .fetch_optional(db)
+        .await?)
 }
 
 pub async fn attachment_project_id(db: &Db, attachment_id: i64) -> Result<Option<i64>> {

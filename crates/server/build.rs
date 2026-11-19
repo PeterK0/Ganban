@@ -35,10 +35,7 @@ fn main() {
     if git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty()) {
         hash.push('+'); // built from uncommitted changes
     }
-    let built = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let built = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     println!("cargo:rustc-env=GANBAN_SERVER_BUILD={hash}");
     println!("cargo:rustc-env=GANBAN_SERVER_BUILT_AT={built}");
 }

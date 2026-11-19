@@ -39,9 +39,9 @@ pub(super) const COMMANDS: &[Command] = &[
     command("restore_contact")
         .access(Access::AdminAnywhere)
         .run(|cx, a| Box::pin(async move { reply(ops::restore_contact(cx.db, a.req_i64(CONTACT)?).await?) })),
-    command("permanently_delete_contact")
-        .access(Access::AdminAnywhere)
-        .run(|cx, a| Box::pin(async move { reply(ops::permanently_delete_contact(cx.db, a.req_i64(CONTACT)?).await?) })),
+    command("permanently_delete_contact").access(Access::AdminAnywhere).run(|cx, a| {
+        Box::pin(async move { reply(ops::permanently_delete_contact(cx.db, a.req_i64(CONTACT)?).await?) })
+    }),
     // ----- Links to tasks -----
     command("link_contact_to_task").access(Access::Member(TASK)).run(|cx, a| {
         Box::pin(async move { reply(ops::link_contact_to_task(cx.db, a.id(TASK)?, a.req_i64(CONTACT)?).await?) })
@@ -70,7 +70,8 @@ mod tests {
         owner(&db).await;
         let a = seed(&db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
         let b = seed(&db, "create_project", json!({ "input": { "name": "B" } })).await["id"].as_i64().unwrap();
-        let task = |pid: i64| json!({ "input": { "project_id": pid, "title": "t", "status": "To Do", "priority": "Low" } });
+        let task =
+            |pid: i64| json!({ "input": { "project_id": pid, "title": "t", "status": "To Do", "priority": "Low" } });
         let ta = seed(&db, "create_task", task(a)).await["id"].as_i64().unwrap();
         let tb = seed(&db, "create_task", task(b)).await["id"].as_i64().unwrap();
         let contact = |name: &str| json!({ "input": { "full_name": name } });
@@ -86,7 +87,10 @@ mod tests {
         let absent = http(&db, mia, "get_contact", json!({ "contactId": 999 })).await.unwrap_err();
         assert!(hidden.is_not_found(), "{hidden}");
         assert_eq!(hidden.to_string(), absent.to_string(), "a hidden contact and a missing one look the same");
-        assert_eq!(ids(&http(&db, mia, "get_contact_tasks", json!({ "contactId": cb })).await.unwrap()), Vec::<i64>::new());
+        assert_eq!(
+            ids(&http(&db, mia, "get_contact_tasks", json!({ "contactId": cb })).await.unwrap()),
+            Vec::<i64>::new()
+        );
         assert!(http(&db, mia, "get_task_contacts", json!({ "taskId": tb })).await.unwrap_err().is_not_found());
         let link_b = json!({ "taskId": tb, "contactId": ca });
         assert!(http(&db, mia, "link_contact_to_task", link_b).await.unwrap_err().is_not_found());
@@ -102,7 +106,10 @@ mod tests {
         let new = json!({ "input": { "full_name": "Cat" } });
         assert!(http(&db, mia, "create_contact", new.clone()).await.unwrap_err().is_forbidden());
         let c = http(&db, ana, "create_contact", new).await.unwrap()["id"].as_i64().unwrap();
-        assert!(http(&db, mia, "update_contact", json!({ "contactId": c, "input": { "full_name": "Kat" } })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, mia, "update_contact", json!({ "contactId": c, "input": { "full_name": "Kat" } }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
         assert!(http(&db, ana, "delete_contact", json!({ "contactId": c })).await.is_ok());
     }
 }

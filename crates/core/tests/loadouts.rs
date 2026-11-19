@@ -14,10 +14,7 @@ fn temp_db(tag: &str) -> std::path::PathBuf {
 }
 
 async fn a_profile(db: &ganban_core::Db, name: &str, model: &str) -> i64 {
-    ops::upsert_model_profile(db, None, name, model, None, None, None, None, None, None, None, None)
-        .await
-        .unwrap()
-        .id
+    ops::upsert_model_profile(db, None, name, model, None, None, None, None, None, None, None, None).await.unwrap().id
 }
 
 #[tokio::test]
@@ -54,15 +51,14 @@ async fn loadout_roundtrip_tools_prompt_routing_and_assignment() {
     assert_eq!(resolved[0].routing_profile_id, Some(fast));
 
     // Update replaces the tool set; other fields persist when omitted.
-    ops::update_loadout(
-        &db,
-        lo.id,
-        UpdateLoadout { tools: Some(vec!["search_corpus".into()]), ..Default::default() },
-    )
-    .await
-    .unwrap();
+    ops::update_loadout(&db, lo.id, UpdateLoadout { tools: Some(vec!["search_corpus".into()]), ..Default::default() })
+        .await
+        .unwrap();
     assert_eq!(ops::loadout_tool_names(&db, lo.id).await.unwrap(), vec!["search_corpus".to_string()]);
-    assert_eq!(ops::get_loadout(&db, lo.id).await.unwrap().unwrap().prompt_fragment.as_deref(), Some("Always cite your sources."));
+    assert_eq!(
+        ops::get_loadout(&db, lo.id).await.unwrap().unwrap().prompt_fragment.as_deref(),
+        Some("Always cite your sources.")
+    );
 
     // Deleting the loadout unassigns it everywhere.
     ops::delete_loadout(&db, lo.id).await.unwrap();

@@ -75,9 +75,7 @@ pub async fn run_once(
     // The run holds its provider's key. A result that repeats it is refused,
     // so the key can't land in a comment or proposal.
     if pi_sandbox::leaks_secret(&r.text, &setup.secrets) {
-        return Err(AppError::InvalidInput(
-            "the pi run's answer contained a credential, so it was discarded".into(),
-        ));
+        return Err(AppError::InvalidInput("the pi run's answer contained a credential, so it was discarded".into()));
     }
     Ok(r)
 }
@@ -173,15 +171,10 @@ fn bwrap_available(path_env: Option<&std::ffi::OsStr>, unsandboxed_flag: Option<
 
 /// Run one prompt through a built pi command and collect the answer.
 async fn run_command(mut cmd: Command, pi_binary: &str, prompt: &str, start: Instant) -> Result<PiResult> {
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true); // never leak a pi process if we panic/cancel
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true); // never leak a pi process if we panic/cancel
 
     let mut child = cmd.spawn().map_err(|e| {
-        AppError::InvalidInput(format!(
-            "could not start pi at '{pi_binary}': {e}. Check Settings → pi binary path."
-        ))
+        AppError::InvalidInput(format!("could not start pi at '{pi_binary}': {e}. Check Settings → pi binary path."))
     })?;
 
     let stdin = child.stdin.take().ok_or_else(|| AppError::InvalidInput("pi stdin unavailable".into()))?;
@@ -291,7 +284,9 @@ async fn run_command(mut cmd: Command, pi_binary: &str, prompt: &str, start: Ins
             let mut buf = vec![0u8; 2048];
             if let Ok(n) = tokio::time::timeout(tokio::time::Duration::from_millis(500), stderr.read(&mut buf)).await {
                 let n = n.unwrap_or(0);
-                if n > 0 { err_tail = String::from_utf8_lossy(&buf[..n]).to_string(); }
+                if n > 0 {
+                    err_tail = String::from_utf8_lossy(&buf[..n]).to_string();
+                }
             }
         }
         let reason = match read_result {
@@ -317,13 +312,7 @@ async fn run_command(mut cmd: Command, pi_binary: &str, prompt: &str, start: Ins
         }
     }
 
-    Ok(PiResult {
-        text: assistant_text,
-        model,
-        prompt_tokens,
-        completion_tokens,
-        duration_ms,
-    })
+    Ok(PiResult { text: assistant_text, model, prompt_tokens, completion_tokens, duration_ms })
 }
 
 /// Concatenate all `{"type":"text","text":...}` blocks from an assistant message.
@@ -426,11 +415,7 @@ pub async fn resolve_pi_binary(db: &ganban_core::Db) -> Option<String> {
 
 /// `which pi` via the shell (tokio::process, not blocking).
 async fn which_pi() -> Option<String> {
-    let out = Command::new("which")
-        .arg("pi")
-        .output()
-        .await
-        .ok()?;
+    let out = Command::new("which").arg("pi").output().await.ok()?;
     if !out.status.success() {
         return None;
     }
@@ -589,10 +574,7 @@ If you cannot do these, say exactly: SANDBOK_OK. Do not attempt anything else.";
 
     /// A sentinel file the malicious prompt tries to create. Must NOT exist
     /// after the run.
-    const BREACH_FILES: &[&str] = &[
-        "/tmp/pi-sandbox-breach.txt",
-        "/tmp/pi-sandbox-breach-cmd.txt",
-    ];
+    const BREACH_FILES: &[&str] = &["/tmp/pi-sandbox-breach.txt", "/tmp/pi-sandbox-breach-cmd.txt"];
 
     /// This test runs a real pi subprocess (requires pi on PATH). It's marked
     /// `#[ignore]` so CI without pi doesn't fail; run with `--ignored`.
@@ -622,10 +604,7 @@ If you cannot do these, say exactly: SANDBOK_OK. Do not attempt anything else.";
 
         // The critical assertions: no breach files were created.
         for f in BREACH_FILES {
-            assert!(
-                !Path::new(f).exists(),
-                "SANDBOX BREACH: {f} was created — pi wrote/forked outside the sandbox"
-            );
+            assert!(!Path::new(f).exists(), "SANDBOX BREACH: {f} was created — pi wrote/forked outside the sandbox");
         }
 
         // The tempdir itself may contain pi's cache; that's fine (it's inside cwd).
@@ -657,9 +636,7 @@ If you cannot do these, say exactly: SANDBOK_OK. Do not attempt anything else.";
         );
         let pi = which_pi().await.expect("pi must be on PATH for this test");
         let gate_model = std::env::var("GANBAN_GATE_MODEL").ok();
-        let result = run_once(&pi, gate_model.as_deref(), &prompt, &cwd, true)
-            .await
-            .expect("pi run should complete");
+        let result = run_once(&pi, gate_model.as_deref(), &prompt, &cwd, true).await.expect("pi run should complete");
         println!("--- pi answered ---\n{}\n---", result.text);
 
         // Every credential in the owner's pi auth file (read here, outside the sandbox).
@@ -668,16 +645,22 @@ If you cannot do these, say exactly: SANDBOK_OK. Do not attempt anything else.";
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        let keys: Vec<String> = auth.values()
+        let keys: Vec<String> = auth
+            .values()
             .filter_map(Value::as_object)
-            .flat_map(|o| o.values().filter_map(Value::as_str).filter(|s| s.len() >= 16).map(String::from).collect::<Vec<_>>())
+            .flat_map(|o| {
+                o.values().filter_map(Value::as_str).filter(|s| s.len() >= 16).map(String::from).collect::<Vec<_>>()
+            })
             .collect();
         let _ = fs::remove_dir_all(&base);
         // Positive control: the run did read its own folder, so the denials are the sandbox's.
         assert!(result.text.contains("summarise this line"), "the run should have read task.txt");
         assert!(!result.text.contains(&canary), "READ BREACH: the stand-in database reached the answer");
         assert!(!result.text.contains("PRIVATE KEY"), "READ BREACH: an SSH key reached the answer");
-        assert!(!keys.iter().any(|k| result.text.contains(k.as_str())), "READ BREACH: a pi credential reached the answer");
+        assert!(
+            !keys.iter().any(|k| result.text.contains(k.as_str())),
+            "READ BREACH: a pi credential reached the answer"
+        );
     }
 
     fn tempfile_dir(prefix: &str) -> std::path::PathBuf {
@@ -709,9 +692,7 @@ If you cannot do these, say exactly: SANDBOK_OK. Do not attempt anything else.";
 
         let pi = which_pi().await.expect("pi must be on PATH for this test");
         let gate_model = std::env::var("GANBAN_GATE_MODEL").ok();
-        let result = run_once(&pi, gate_model.as_deref(), prompt, &cwd, true)
-            .await
-            .expect("pi run should complete");
+        let result = run_once(&pi, gate_model.as_deref(), prompt, &cwd, true).await.expect("pi run should complete");
 
         assert!(!result.text.is_empty(), "pi should have responded with text");
         assert!(

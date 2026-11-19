@@ -4,12 +4,14 @@
 // overwrite each other's platforms (tauri-action's own latest.json is read-modify-write per job).
 //
 //   node scripts/updater-json.mjs --repo owner/name --tag v1.0.2 --assets assets.json --sigs <dir> \
-//        --out latest.json [--require darwin-aarch64,linux-x86_64,windows-x86_64]
+//        --out latest.json [--require darwin-aarch64,linux-x86_64,windows-x86_64] [--notes-file notes.md]
 //
 // assets.json is GitHub's asset list (`[{name}]`, or `{assets: [{name}]}`); <dir> holds the release's
 // downloaded *.sig files. Each signed bundle gets `<os>-<arch>-<installer>` (the updater picks the one
 // matching how the app was installed) and the first per platform also `<os>-<arch>`: the .app on macOS,
 // the MSI on Windows (tauri-action's updaterJsonPreferNsis default) and the AppImage on Linux.
+// --notes-file holds the version's patch notes (scripts/patch-notes.mjs release <version>), which the
+// desktop app shows before the user accepts the update.
 // Exits 1 when a required platform has no signed bundle, so the release stays a draft.
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -83,7 +85,7 @@ function main(argv) {
     repo: opt.repo,
     tag: opt.tag,
     version: opt.tag.replace(/^v/, ''),
-    notes: opt.notes ?? `Ganban ${opt.tag}`,
+    notes: opt['notes-file'] ? readFileSync(opt['notes-file'], 'utf8').trim() : opt.notes ?? `Ganban ${opt.tag}`,
     pubDate: new Date().toISOString(),
     assetNames,
     sigs,

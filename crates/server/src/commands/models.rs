@@ -31,16 +31,17 @@ const KIT_FILE: Target = Target::arg("linkId", |db, id| {
 });
 
 async fn kit_project(db: &Db, kit_id: i64) -> Result<Option<i64>, AppError> {
-    Ok(Some(auth::model_kit_project_id(db, kit_id).await?.ok_or_else(|| AppError::NotFound(format!("model kit {kit_id}")))?))
+    Ok(Some(
+        auth::model_kit_project_id(db, kit_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("model kit {kit_id}")))?,
+    ))
 }
 
 /// The project of the kit a kit-owned row (`kit_of`: its `SELECT kit_id …`) belongs to.
 async fn via_kit(db: &Db, kit_of: &'static str, id: i64, what: &'static str) -> Result<Option<i64>, AppError> {
-    let kit: i64 = sqlx::query_scalar(kit_of)
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| AppError::NotFound(what.into()))?;
+    let kit: i64 =
+        sqlx::query_scalar(kit_of).bind(id).fetch_optional(db).await?.ok_or_else(|| AppError::NotFound(what.into()))?;
     kit_project(db, kit).await
 }
 
@@ -77,9 +78,9 @@ pub(super) const COMMANDS: &[Command] = &[
     command("create_model_section")
         .access(Access::Member(INPUT_KIT))
         .run(|cx, a| Box::pin(async move { reply(ops::create_model_section(cx.db, a.input()?).await?) })),
-    command("update_model_section")
-        .access(Access::Member(SECTION))
-        .run(|cx, a| Box::pin(async move { reply(ops::update_model_section(cx.db, a.id(SECTION)?, a.input()?).await?) })),
+    command("update_model_section").access(Access::Member(SECTION)).run(|cx, a| {
+        Box::pin(async move { reply(ops::update_model_section(cx.db, a.id(SECTION)?, a.input()?).await?) })
+    }),
     command("delete_model_section")
         .access(Access::Member(SECTION))
         .run(|cx, a| Box::pin(async move { reply(ops::delete_model_section(cx.db, a.id(SECTION)?).await?) })),
@@ -100,8 +101,14 @@ pub(super) const COMMANDS: &[Command] = &[
     command("link_model_kit_file").access(Access::Member(KIT)).run(|cx, a| {
         Box::pin(async move {
             reply(
-                ops::link_model_kit_file(cx.db, a.id(KIT)?, a.req_i64("fileId")?, &a.req_str("kind")?, a.opt_str("caption").as_deref())
-                    .await?,
+                ops::link_model_kit_file(
+                    cx.db,
+                    a.id(KIT)?,
+                    a.req_i64("fileId")?,
+                    &a.req_str("kind")?,
+                    a.opt_str("caption").as_deref(),
+                )
+                .await?,
             )
         })
     }),
@@ -133,9 +140,15 @@ mod tests {
 
     /// A kit in `project` with a board, a section and a part marked; returns (kit, board, section).
     async fn kit(db: &ganban_core::Db, project: i64) -> (i64, i64, i64) {
-        let kit = seed(db, "create_model_kit", json!({ "input": { "project_id": project, "name": "RX-78", "kind": "gundam" } })).await;
+        let kit = seed(
+            db,
+            "create_model_kit",
+            json!({ "input": { "project_id": project, "name": "RX-78", "kind": "gundam" } }),
+        )
+        .await;
         let kit = kit["id"].as_i64().unwrap();
-        let board = seed(db, "create_model_board", json!({ "input": { "kit_id": kit, "name": "A", "max_parts": 10 } })).await;
+        let board =
+            seed(db, "create_model_board", json!({ "input": { "kit_id": kit, "name": "A", "max_parts": 10 } })).await;
         let section = seed(db, "create_model_section", json!({ "input": { "kit_id": kit, "name": "Head" } })).await;
         (kit, board["id"].as_i64().unwrap(), section["id"].as_i64().unwrap())
     }
@@ -155,7 +168,10 @@ mod tests {
                 ("get_model_kit_detail", json!({ "kitId": k })),
                 ("update_model_board", json!({ "boardId": board, "input": { "name": "B2" } })),
                 ("update_model_section", json!({ "sectionId": section, "input": { "name": "Torso" } })),
-                ("mark_model_part", json!({ "input": { "kit_id": k, "board_name": "A", "part_number": 1, "section_id": section } })),
+                (
+                    "mark_model_part",
+                    json!({ "input": { "kit_id": k, "board_name": "A", "part_number": 1, "section_id": section } }),
+                ),
                 ("create_model_board", json!({ "input": { "kit_id": k, "name": "C", "max_parts": 5 } })),
             ]
         };
@@ -167,7 +183,10 @@ mod tests {
         }
         assert_eq!(ids(&http(&db, mia, "list_model_kits", json!({ "projectId": a })).await.unwrap()), vec![ka]);
         assert!(http(&db, mia, "list_model_kits", json!({ "projectId": b })).await.unwrap_err().is_not_found());
-        assert!(http(&db, mia, "update_model_board", json!({ "boardId": 999, "input": {} })).await.unwrap_err().is_not_found());
+        assert!(http(&db, mia, "update_model_board", json!({ "boardId": 999, "input": {} }))
+            .await
+            .unwrap_err()
+            .is_not_found());
     }
 
     #[tokio::test]
@@ -179,8 +198,14 @@ mod tests {
         kit(&db, a).await;
         let mia = member(&db, 7, &[(a, "member")]).await;
 
-        let space = http(&db, mia, "ensure_personal_space", json!({ "userId": 1 })).await.unwrap()["projectId"].as_i64().unwrap();
-        assert_eq!(ganban_core::auth::member_role(&db, space, 7).await.unwrap().as_deref(), Some("admin"), "hers, not user 1's");
+        let space = http(&db, mia, "ensure_personal_space", json!({ "userId": 1 })).await.unwrap()["projectId"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            ganban_core::auth::member_role(&db, space, 7).await.unwrap().as_deref(),
+            Some("admin"),
+            "hers, not user 1's"
+        );
 
         let moved = http(&db, mia, "adopt_model_kits", json!({ "projectId": a })).await.unwrap();
         assert_eq!((moved["moved"].as_i64(), moved["projectId"].as_i64()), (Some(1), Some(space)));

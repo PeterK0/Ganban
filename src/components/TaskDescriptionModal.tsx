@@ -1,24 +1,28 @@
 import { useState, useEffect } from 'react';
-import { updateTask as updateTaskApi } from '../lib/api';
-import type { Task, UpdateTaskInput } from '../types';
+import type { Task } from '../types';
 import MarkdownPreview from './MarkdownPreview';
 import { Modal } from './gilt';
 
 interface TaskDescriptionModalProps {
   task: Task;
+  /** The description as the editor holds it, edits included: the dialogue opens on it. */
+  initial: string;
   isOpen: boolean;
   onClose: () => void;
-  onSave: (task: Task) => void;
+  /** Save & close hands the text back. The editor saves it the way it saves its
+   * form, checked against the version it's based on (lib/taskConflict.ts), so a
+   * clash shows the editor's notice instead of writing over the other edit. */
+  onSave: (description: string) => void;
 }
 
 export default function TaskDescriptionModal({
   task,
+  initial,
   isOpen,
   onClose,
   onSave,
 }: TaskDescriptionModalProps) {
-  const [description, setDescription] = useState(task.description || '');
-  const [isSaving, setIsSaving] = useState(false);
+  const [description, setDescription] = useState(initial);
 
   // Escape saves and closes. A window capture listener runs before the
   // Modal's own (document, capture), and stops it, so the Modal's onClose is
@@ -37,33 +41,14 @@ export default function TaskDescriptionModal({
     }
   }, [isOpen, description]);
 
-  // Update description when task changes
+  // Open on the editor's text, for this task.
   useEffect(() => {
-    setDescription(task.description || '');
-  }, [task.id]);
+    if (isOpen) setDescription(initial);
+  }, [isOpen, task.id]);
 
-  const handleSaveAndClose = async () => {
-    setIsSaving(true);
-    try {
-      const input: UpdateTaskInput = {
-        description: description || undefined,
-      };
+  const handleSaveAndClose = () => onSave(description);
 
-      const updatedTask = await updateTaskApi(task.id, input);
-      onSave(updatedTask);
-      onClose();
-    } catch (error) {
-      console.error('Failed to update task description:', error);
-      alert(`Failed to update description: ${error}`);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const discardAndClose = () => {
-    setDescription(task.description || '');
-    onClose();
-  };
+  const discardAndClose = () => onClose();
 
   if (!isOpen) return null;
 
@@ -77,12 +62,8 @@ export default function TaskDescriptionModal({
             <p className="font-semibold text-text truncate">{task.title}</p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleSaveAndClose}
-              disabled={isSaving}
-              className="g-btn g-btn-pri g-glint"
-            >
-              {isSaving ? 'Saving…' : 'Save & close'}
+            <button onClick={handleSaveAndClose} className="g-btn g-btn-pri g-glint">
+              Save & close
             </button>
             <button
               onClick={discardAndClose}

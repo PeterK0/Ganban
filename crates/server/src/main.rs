@@ -28,33 +28,22 @@ async fn main() {
     // plus stdout. Keep the guard alive for the whole process.
     let log_dir = std::env::var("GANBAN_LOG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            db_path
-                .parent()
-                .map(|p| p.join("logs"))
-                .unwrap_or_else(|| PathBuf::from("logs"))
-        });
+        .unwrap_or_else(|_| db_path.parent().map(|p| p.join("logs")).unwrap_or_else(|| PathBuf::from("logs")));
     let _log_guard = ganban_server::init_logging(&log_dir);
 
     tracing::info!("Ganban daemon starting");
     tracing::info!("  DB:   {}", db_path.display());
 
-    let db = ganban_core::init_db(&db_path)
-        .await
-        .expect("Failed to open database");
+    let db = ganban_core::init_db(&db_path).await.expect("Failed to open database");
 
-    let listener = ganban_server::bind(addr)
-        .await
-        .unwrap_or_else(|e| panic!("Failed to bind {addr}: {e}"));
+    let listener = ganban_server::bind(addr).await.unwrap_or_else(|e| panic!("Failed to bind {addr}: {e}"));
 
     tracing::info!(
         "Listening on http://{addr}  (tailnet-only; loopback = owner, remote clients enroll for a device token; CORS permissive)"
     );
 
     // Optional: a headless server can also offer native builds at /download.
-    let slot = |var: &str| {
-        std::sync::Arc::new(std::sync::Mutex::new(std::env::var(var).ok().map(PathBuf::from)))
-    };
+    let slot = |var: &str| std::sync::Arc::new(std::sync::Mutex::new(std::env::var(var).ok().map(PathBuf::from)));
     let shares = ganban_server::Shares {
         android: slot("GANBAN_ANDROID"),
         windows: slot("GANBAN_WINDOWS"),
@@ -67,9 +56,7 @@ async fn main() {
     let storage_root = std::env::var("GANBAN_STORAGE").map(PathBuf::from).unwrap_or_else(|_| {
         db_path.parent().map(|p| p.join("shared")).unwrap_or_else(|| PathBuf::from("ganban-shared"))
     });
-    ganban_server::serve(listener, db, shares, storage_root, std::future::pending())
-        .await
-        .expect("server error");
+    ganban_server::serve(listener, db, shares, storage_root, std::future::pending()).await.expect("server error");
 }
 
 /// Resolve the canonical database path. `GANBAN_DB` wins; otherwise mirror the
@@ -79,7 +66,6 @@ fn resolve_db_path() -> PathBuf {
     if let Ok(p) = std::env::var("GANBAN_DB") {
         return PathBuf::from(p);
     }
-    let base = dirs::data_dir()
-        .expect("could not resolve a platform data directory; set GANBAN_DB explicitly");
+    let base = dirs::data_dir().expect("could not resolve a platform data directory; set GANBAN_DB explicitly");
     base.join("com.scs.gansty").join("gansty.db")
 }

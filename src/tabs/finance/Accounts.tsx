@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { DecoHeading, Modal } from '../../components/gilt';
 import { confirmDialog } from '../../lib/confirm';
 import * as fin from './api';
+import { groupByBank, UNCONFIRMED_NOTE } from './sorting.pure';
 import { parseMoney, todayIso } from './money.pure';
 import { MUTED, Money, Empty, errText, useFinance } from './shared';
 
@@ -47,8 +48,11 @@ export default function Accounts() {
       {shown.length === 0 ? (
         <Empty title="No accounts yet">Add your first one, or import a statement and let the import create them.</Empty>
       ) : (
+        groupByBank(shown).map((bank) => (
+        <section key={bank.bank} className="space-y-2">
+        <div className="g-cap">{bank.bank}</div>
         <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
-          {shown.map((a) => (
+          {bank.accounts.map((a) => (
             <div key={a.id} className={`g-card p-5 space-y-2 ${a.archived ? 'opacity-60' : ''}`}>
               <div className="flex items-start gap-2">
                 <div className="flex-1 min-w-0">
@@ -56,8 +60,10 @@ export default function Accounts() {
                   <div className={`text-xs ${MUTED} truncate`}>{[KINDS.find((k) => k.id === a.kind)?.label, a.institution, a.iban_mask].filter(Boolean).join(' · ')}</div>
                 </div>
                 {a.archived && <span className="g-tag">Archived</span>}
+                {a.unconfirmed && <span className="g-tag g-tag-warn" title={UNCONFIRMED_NOTE}>No statement yet</span>}
               </div>
               <Money minor={a.balance_minor} currency={a.currency} className="block text-2xl text-text" />
+              {a.unconfirmed && <p className={`text-xs ${MUTED}`}>{UNCONFIRMED_NOTE}</p>}
               <div className="flex gap-2 pt-1">
                 <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => goto('transactions', { accountId: a.id })}>
                   Transactions
@@ -71,6 +77,8 @@ export default function Accounts() {
             </div>
           ))}
         </div>
+        </section>
+        ))
       )}
       {creating && <NewAccount onClose={() => setCreating(false)} />}
     </div>

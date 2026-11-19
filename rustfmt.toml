@@ -1,0 +1,3 @@
+# The house width: code, comments and docs wrap at 120. "Max" lets short expressions stay on one line up to that width.
+max_width = 120
+use_small_heuristics = "Max"

@@ -17,8 +17,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
 /// The filename prefix our daily-rotated server logs start with. The files are
@@ -64,18 +64,10 @@ pub fn init_logging(dir: &Path) -> Option<WorkerGuard> {
         .or_else(|_| EnvFilter::try_new("info,ganban_server=debug,ganban_core=debug"))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file_layer = fmt::layer()
-        .with_ansi(false)
-        .with_target(true)
-        .with_writer(Scrubbed(non_blocking));
+    let file_layer = fmt::layer().with_ansi(false).with_target(true).with_writer(Scrubbed(non_blocking));
     let stdout_layer = fmt::layer().with_target(false).with_writer(Scrubbed(io::stdout));
 
-    let installed = tracing_subscriber::registry()
-        .with(filter)
-        .with(file_layer)
-        .with(stdout_layer)
-        .try_init()
-        .is_ok();
+    let installed = tracing_subscriber::registry().with(filter).with(file_layer).with(stdout_layer).try_init().is_ok();
 
     if !installed {
         return None;
@@ -88,14 +80,29 @@ pub fn init_logging(dir: &Path) -> Option<WorkerGuard> {
 /// Query parameters whose value is a credential. Matched only right after a
 /// `?` or `&`, i.e. inside a URL, so "exit code=1" in prose stays.
 const SECRET_PARAMS: &[&str] = &[
-    "api_key", "apikey", "api-key", "key", "token", "access_token", "refresh_token", "id_token", "client_secret",
-    "secret", "password", "passwd", "pass", "sig", "signature", "code", "code_verifier", "auth",
+    "api_key",
+    "apikey",
+    "api-key",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "secret",
+    "password",
+    "passwd",
+    "pass",
+    "sig",
+    "signature",
+    "code",
+    "code_verifier",
+    "auth",
 ];
 /// Names that mean a credential even outside a URL ("password=hunter2" in a
 /// formatted error). Ambiguous words ("code", "key") are left to URLs.
-const SECRET_WORDS: &[&str] = &[
-    "api_key", "apikey", "token", "access_token", "refresh_token", "client_secret", "secret", "password", "passwd",
-];
+const SECRET_WORDS: &[&str] =
+    &["api_key", "apikey", "token", "access_token", "refresh_token", "client_secret", "secret", "password", "passwd"];
 const REDACTED: &str = "\u{2039}redacted\u{203a}";
 
 /// Blank credentials in a log line: secret-named URL query values (an API key
@@ -111,14 +118,16 @@ pub fn scrub_secrets(line: &str) -> Cow<'_, str> {
         return Cow::Borrowed(line);
     }
     let bytes = line.as_bytes();
-    let ends_value = |b: u8| b.is_ascii_whitespace() || matches!(b, b'&' | b'"' | b'\'' | b')' | b'>' | b'<' | b',' | b'#' | 0x01);
+    let ends_value =
+        |b: u8| b.is_ascii_whitespace() || matches!(b, b'&' | b'"' | b'\'' | b')' | b'>' | b'<' | b',' | b'#' | 0x01);
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     let is_name = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-';
     while i < line.len() {
         // `name=value` after `?`/`&` (a URL) or at a word start (prose).
         let in_url = bytes[i] == b'?' || bytes[i] == b'&';
-        let word_start = (i == 0 || matches!(bytes[i - 1], b' ' | b'\t' | b'(' | b'"' | b'\'' | b',')) && is_name(&bytes[i]);
+        let word_start =
+            (i == 0 || matches!(bytes[i - 1], b' ' | b'\t' | b'(' | b'"' | b'\'' | b',')) && is_name(&bytes[i]);
         if in_url || word_start {
             let name_at = if in_url { i + 1 } else { i };
             let rest = &lower[name_at..];
@@ -154,9 +163,9 @@ pub fn scrub_secrets(line: &str) -> Cow<'_, str> {
         }
         // Bearer anywhere; Basic only as an Authorization header's value, as
         // "basic" is an ordinary word.
-        let scheme = ["bearer ", "basic "]
-            .into_iter()
-            .find(|p| lower[i..].starts_with(p) && (*p == "bearer " || lower[..i].trim_end().ends_with("authorization:")));
+        let scheme = ["bearer ", "basic "].into_iter().find(|p| {
+            lower[i..].starts_with(p) && (*p == "bearer " || lower[..i].trim_end().ends_with("authorization:"))
+        });
         if let Some(scheme) = scheme {
             let token_at = i + scheme.len();
             out.push_str(&line[i..token_at]);
@@ -207,10 +216,8 @@ impl<W: io::Write> io::Write for ScrubWriter<W> {
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let location =
+            info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "<unknown>".to_string());
         let message = info
             .payload()
             .downcast_ref::<&str>()
@@ -239,9 +246,14 @@ mod tests {
         assert!(!out.contains("tok_123"), "{out}");
         let out = scrub_secrets("login failed: password=hunter2 token=abc (refresh_token=rt1)");
         assert!(!out.contains("hunter2") && !out.contains("abc") && !out.contains("rt1"), "{out}");
-        let out = scrub_secrets("could not reach https://ann:s3cret@mail.example.com/x and Authorization: Basic YW5uOnMzY3JldA==");
+        let out = scrub_secrets(
+            "could not reach https://ann:s3cret@mail.example.com/x and Authorization: Basic YW5uOnMzY3JldA==",
+        );
         assert!(!out.contains("s3cret") && !out.contains("YW5u"), "{out}");
-        assert!(out.contains("https://ann:") && out.contains("@mail.example.com/x"), "the rest of the URL stays: {out}");
+        assert!(
+            out.contains("https://ann:") && out.contains("@mail.example.com/x"),
+            "the rest of the URL stays: {out}"
+        );
     }
 
     #[test]

@@ -66,7 +66,10 @@ async fn old_links_keep_their_files_through_the_rebuild() {
         sqlx::query_as("SELECT id, task_id, project_id, download_count FROM share_links").fetch_one(&db).await.unwrap();
     assert_eq!(link, (5, Some(tid), pid, 3));
     let file: (String, i64, String, Option<i64>) =
-        sqlx::query_as("SELECT kind, file_id, name, crc32 FROM share_link_files WHERE link_id = 5").fetch_one(&db).await.unwrap();
+        sqlx::query_as("SELECT kind, file_id, name, crc32 FROM share_link_files WHERE link_id = 5")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(file, ("attachment".into(), 42, "x.pdf".into(), Some(7)));
 
     // A link made from the project has no task, and deleting the link still takes its files.

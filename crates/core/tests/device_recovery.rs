@@ -71,9 +71,10 @@ async fn self_service_pairing_from_a_signed_in_device_lands_on_the_same_account(
     let db = init_db_role(&temp_db("self_service"), Role::Server).await.unwrap();
     let (misha, _) = member_on_one_device(&db).await;
     // What `create_device_enrollment` does server-side for the caller.
-    let raw = auth::create_enrollment_token(&db, "new_device", Some(misha), None, None, None, auth::ENROLLMENT_TTL_SECS)
-        .await
-        .unwrap();
+    let raw =
+        auth::create_enrollment_token(&db, "new_device", Some(misha), None, None, None, auth::ENROLLMENT_TTL_SECS)
+            .await
+            .unwrap();
     let laptop = auth::enroll(&db, &raw, Some("Chrome on Windows"), None).await.unwrap();
     assert_eq!(laptop.user.id, misha);
     // Single use.
@@ -120,13 +121,15 @@ async fn migration_drops_expiry_and_revives_expired_devices() {
         .execute(&db)
         .await
         .unwrap();
-    let cols: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('device_tokens')").fetch_all(&db).await.unwrap();
+    let cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('device_tokens')").fetch_all(&db).await.unwrap();
     assert!(cols.iter().any(|c| c == "expires_at"), "old shape in place");
     db.close().await;
 
     // Reopen = the host upgrading.
     let db = init_db_role(&path, Role::Server).await.unwrap();
-    let cols: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('device_tokens')").fetch_all(&db).await.unwrap();
+    let cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('device_tokens')").fetch_all(&db).await.unwrap();
     assert!(!cols.iter().any(|c| c == "expires_at"), "column dropped");
     let (user, _) = auth::validate_device_token(&db, &token).await.unwrap().expect("the 'expired' device signs in");
     assert_eq!(user.id, misha);
@@ -142,7 +145,11 @@ async fn migration_drops_expiry_and_revives_expired_devices() {
 async fn signing_in_while_the_database_is_busy_defers_the_last_seen_stamp() {
     let db = init_db_role(&temp_db("busy"), Role::Server).await.unwrap();
     let (misha, token) = member_on_one_device(&db).await;
-    sqlx::query("UPDATE device_tokens SET last_seen_at = '2020-01-01T00:00:00Z' WHERE user_id = ?").bind(misha).execute(&db).await.unwrap();
+    sqlx::query("UPDATE device_tokens SET last_seen_at = '2020-01-01T00:00:00Z' WHERE user_id = ?")
+        .bind(misha)
+        .execute(&db)
+        .await
+        .unwrap();
     let mut writer = db.acquire().await.unwrap();
     sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
     let t = std::time::Instant::now();
@@ -150,14 +157,18 @@ async fn signing_in_while_the_database_is_busy_defers_the_last_seen_stamp() {
     assert_eq!(user.id, misha);
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "waited {:?}", t.elapsed());
     let devices = auth::list_user_devices(&db, misha).await.unwrap();
-    assert!(devices[0].last_seen_at.unwrap() < chrono::DateTime::parse_from_rfc3339("2021-01-01T00:00:00Z").unwrap(), "not yet");
+    assert!(
+        devices[0].last_seen_at.unwrap() < chrono::DateTime::parse_from_rfc3339("2021-01-01T00:00:00Z").unwrap(),
+        "not yet"
+    );
     sqlx::query("ROLLBACK").execute(&mut *writer).await.unwrap();
     drop(writer);
     // Free again: the deferred stamp lands.
     let landed = async {
         loop {
             let devices = auth::list_user_devices(&db, misha).await.unwrap();
-            if devices[0].last_seen_at.unwrap() > chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap() {
+            if devices[0].last_seen_at.unwrap() > chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap()
+            {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

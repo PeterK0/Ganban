@@ -128,7 +128,11 @@ pub async fn synthesize(
 
     let slug = {
         let s = crate::delegate::slugify(name);
-        if s.is_empty() { "demonstration".to_string() } else { s }
+        if s.is_empty() {
+            "demonstration".to_string()
+        } else {
+            s
+        }
     };
     let task_class = format!("user.web-{slug}");
 
@@ -163,13 +167,7 @@ pub async fn synthesize(
     // The same door as every other author: validated, stored as a DRAFT.
     let (_pid, version, content_hash) =
         protocols::upsert_protocol_version(db, &slug, name, &fm_str, &briefing, created_by, false).await?;
-    Ok(SynthesizedDraft {
-        slug,
-        version,
-        content_hash,
-        frontmatter: fm,
-        briefing,
-    })
+    Ok(SynthesizedDraft { slug, version, content_hash, frontmatter: fm, briefing })
 }
 
 #[cfg(test)]

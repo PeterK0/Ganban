@@ -22,20 +22,25 @@ async fn entity(cx: &Ctx<'_>, a: &Args<'_>) -> Result<Entity, AppError> {
 fn arg<T: DeserializeOwned + Default>(a: &Args<'_>, key: &str) -> Result<T, AppError> {
     match a.get(key) {
         None | Some(serde_json::Value::Null) => Ok(T::default()),
-        Some(v) => serde_json::from_value(v.clone()).map_err(|e| AppError::InvalidInput(format!("invalid '{key}': {e}"))),
+        Some(v) => {
+            serde_json::from_value(v.clone()).map_err(|e| AppError::InvalidInput(format!("invalid '{key}': {e}")))
+        }
     }
 }
 
 /// Runs a bulk action on its own task, so it finishes on the host even when the client stops
 /// waiting (a timeout on a slow machine): every batch it starts is committed.
-async fn run_to_end<T: Send + 'static>(work: impl std::future::Future<Output = Result<T, AppError>> + Send + 'static) -> Result<T, AppError> {
+async fn run_to_end<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, AppError>> + Send + 'static,
+) -> Result<T, AppError> {
     tokio::spawn(work).await.map_err(|_| AppError::Io(std::io::Error::other("the bulk action stopped")))?
 }
 
 pub(super) const COMMANDS: &[Command] = &[
-    command("fin_get_entity").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(entity(cx, a).await?) })
-    }),
+    command("fin_get_entity")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(entity(cx, a).await?) })),
     command("fin_update_entity").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(finance::update_entity(cx.db, &entity(cx, a).await?, a.input()?).await?) })
     }),
@@ -100,8 +105,17 @@ pub(super) const COMMANDS: &[Command] = &[
     command("fin_categorise").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             let id = a.req_i64("entryId")?;
+            // "Just this one, or change the default?": `payeeDefault` is `once` or `change`.
+            let choice: finance::payees::DefaultChoice = arg(a, "payeeDefault")?;
+            let ent = entity(cx, a).await?;
+            // A move to one of the user's own accounts instead of a category.
+            if let Some(to) = a.get("transferTo").filter(|v| !v.is_null()) {
+                let to: finance::payees::TransferTo = serde_json::from_value(to.clone())
+                    .map_err(|e| AppError::InvalidInput(format!("invalid 'transferTo': {e}")))?;
+                return reply(finance::payees::categorise_move(cx.db, &ent, id, to, choice).await?);
+            }
             let splits: Vec<finance::Split> = arg(a, "splits")?;
-            reply(finance::categorise(cx.db, &entity(cx, a).await?, id, splits).await?)
+            reply(finance::payees::categorise(cx.db, &ent, id, splits, choice).await?)
         })
     }),
     command("fin_post_entries").access(Access::OwnFinance).author(USER).run(|cx, a| {
@@ -115,7 +129,12 @@ pub(super) const COMMANDS: &[Command] = &[
         Box::pin(async move {
             let filter: finance::EntryFilter = arg(a, "filter")?;
             let (db, ent) = (cx.db.clone(), entity(cx, a).await?);
-            reply(run_to_end(async move { inbox::post_matching(&db, &ent, filter, &inbox::BulkOptions::default()).await }).await?)
+            reply(
+                run_to_end(
+                    async move { inbox::post_matching(&db, &ent, filter, &inbox::BulkOptions::default()).await },
+                )
+                .await?,
+            )
         })
     }),
     command("fin_categorise_matching").access(Access::OwnFinance).author(USER).run(|cx, a| {
@@ -123,7 +142,12 @@ pub(super) const COMMANDS: &[Command] = &[
             let filter: finance::EntryFilter = arg(a, "filter")?;
             let (la, rule) = (a.req_i64("ledgerAccountId")?, a.opt_bool("createRule").unwrap_or(false));
             let (db, ent) = (cx.db.clone(), entity(cx, a).await?);
-            reply(run_to_end(async move { inbox::categorise_matching(&db, &ent, filter, la, rule, &inbox::BulkOptions::default()).await }).await?)
+            reply(
+                run_to_end(async move {
+                    inbox::categorise_matching(&db, &ent, filter, la, rule, &inbox::BulkOptions::default()).await
+                })
+                .await?,
+            )
         })
     }),
     command("fin_inbox_groups").access(Access::OwnFinance).author(USER).run(|cx, a| {
@@ -156,9 +180,10 @@ pub(super) const COMMANDS: &[Command] = &[
     }),
     // Start over: delete all of the caller's finance data (FINANCE.md § Starting over). A
     // background job, followed with `fin_reset_status`.
-    command("fin_reset_preview").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(reset::preview(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_reset_preview")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(reset::preview(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_reset").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
             let confirm = a.opt_str("confirm").unwrap_or_default();
@@ -211,19 +236,32 @@ mod tests {
         let ana = member(&db, 8, &[]).await;
 
         // Mia names the owner as the author; the host stamps her own id.
-        let account = http(&db, mia, "fin_create_account", json!({ "userId": owner.id, "input": {
-            "kind": "current", "name": "Everyday", "currency": "EUR",
-            "openingBalanceMinor": 50_000, "openingDate": "2026-01-01"
-        }}))
+        let account = http(
+            &db,
+            mia,
+            "fin_create_account",
+            json!({ "userId": owner.id, "input": {
+                "kind": "current", "name": "Everyday", "currency": "EUR",
+                "openingBalanceMinor": 50_000, "openingDate": "2026-01-01"
+            }}),
+        )
         .await
         .unwrap();
         let mine = http(&db, mia, "fin_list_accounts", json!({})).await.unwrap();
         assert_eq!((ids(&mine), mine[0]["balance_minor"].as_i64()), (vec![id(&account)], Some(50_000)));
-        let entries = http(&db, mia, "fin_list_entries", json!({ "filter": { "accountId": id(&account) } })).await.unwrap();
+        let entries =
+            http(&db, mia, "fin_list_entries", json!({ "filter": { "accountId": id(&account) } })).await.unwrap();
         assert_eq!(entries["total"], 1);
         let entry = id(&entries["entries"][0]);
-        let groceries = http(&db, mia, "fin_list_ledger_accounts", json!({})).await.unwrap().as_array().unwrap().iter()
-            .find(|a| a["name"] == "Groceries").map(id).unwrap();
+        let groceries = http(&db, mia, "fin_list_ledger_accounts", json!({}))
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "Groceries")
+            .map(id)
+            .unwrap();
 
         // The owner and Ana see none of it, and Mia's row ids are "not found" to both.
         for user in [owner, ana] {
@@ -232,7 +270,10 @@ mod tests {
                 ("fin_archive_account", json!({ "accountId": id(&account) })),
                 ("fin_list_entries", json!({ "filter": { "accountId": id(&account) } })),
                 ("fin_update_entry", json!({ "entryId": entry, "input": { "description": "x" } })),
-                ("fin_categorise", json!({ "entryId": entry, "splits": [{ "ledgerAccountId": groceries, "amountMinor": 1 }] })),
+                (
+                    "fin_categorise",
+                    json!({ "entryId": entry, "splits": [{ "ledgerAccountId": groceries, "amountMinor": 1 }] }),
+                ),
                 ("fin_delete_entry", json!({ "entryId": entry })),
                 ("fin_reverse_entry", json!({ "entryId": entry, "date": "2026-02-01" })),
                 ("fin_post_entries", json!({ "entryIds": [entry] })),
@@ -242,7 +283,8 @@ mod tests {
                 let err = http(&db, user, name, args).await.unwrap_err();
                 assert!(err.is_not_found(), "{name} as user {}: {err}", user.id);
             }
-            assert!(ids(&http(&db, user, "fin_list_accounts", json!({ "includeArchived": true })).await.unwrap()).is_empty());
+            assert!(ids(&http(&db, user, "fin_list_accounts", json!({ "includeArchived": true })).await.unwrap())
+                .is_empty());
             assert_eq!(http(&db, user, "fin_list_entries", json!({})).await.unwrap()["total"], 0);
             assert_eq!(http(&db, user, "fin_trial_balance", json!({ "asOf": "2030-01-01" })).await.unwrap(), json!([]));
             let theirs = http(&db, user, "fin_get_entity", json!({ "userId": mia.id })).await.unwrap();
@@ -286,7 +328,9 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(ids(&http(&db, owner, "fin_list_accounts", json!({ "includeArchived": true })).await.unwrap()).is_empty());
+        assert!(
+            ids(&http(&db, owner, "fin_list_accounts", json!({ "includeArchived": true })).await.unwrap()).is_empty()
+        );
         assert_eq!(http(&db, mia, "fin_list_accounts", json!({})).await.unwrap().as_array().unwrap().len(), 1);
         assert_eq!(http(&db, mia, "fin_list_entries", json!({})).await.unwrap()["total"], 1);
     }
@@ -295,23 +339,37 @@ mod tests {
     async fn a_journal_round_trip_over_the_table() {
         let db = test_db("finance_journal").await;
         let mia = member(&db, 7, &[]).await;
-        let account = http(&db, mia, "fin_create_account", json!({ "input": { "kind": "current", "name": "Everyday", "currency": "EUR" } }))
-            .await
-            .unwrap();
+        let account = http(
+            &db,
+            mia,
+            "fin_create_account",
+            json!({ "input": { "kind": "current", "name": "Everyday", "currency": "EUR" } }),
+        )
+        .await
+        .unwrap();
         let chart = http(&db, mia, "fin_list_ledger_accounts", json!({})).await.unwrap();
         let salary = chart.as_array().unwrap().iter().find(|a| a["name"] == "Salary").map(id).unwrap();
         let la = account["ledger_account_id"].as_i64().unwrap();
-        let entry = http(&db, mia, "fin_create_entry", json!({ "input": { "date": "2026-03-01", "description": "Pay", "lines": [
-            { "ledgerAccountId": la, "amountMinor": 200_000, "currency": "EUR" },
-            { "ledgerAccountId": salary, "amountMinor": -200_000, "currency": "eur" }
-        ]}}))
+        let entry = http(
+            &db,
+            mia,
+            "fin_create_entry",
+            json!({ "input": { "date": "2026-03-01", "description": "Pay", "lines": [
+                { "ledgerAccountId": la, "amountMinor": 200_000, "currency": "EUR" },
+                { "ledgerAccountId": salary, "amountMinor": -200_000, "currency": "eur" }
+            ]}}),
+        )
         .await
         .unwrap();
         assert_eq!(entry["status"], "posted");
-        let rev = http(&db, mia, "fin_reverse_entry", json!({ "entryId": id(&entry), "date": "2026-03-02" })).await.unwrap();
+        let rev =
+            http(&db, mia, "fin_reverse_entry", json!({ "entryId": id(&entry), "date": "2026-03-02" })).await.unwrap();
         assert_eq!(rev["reverses_id"].as_i64(), Some(id(&entry)));
         let accounts = http(&db, mia, "fin_list_accounts", json!({})).await.unwrap();
         assert_eq!(accounts[0]["balance_minor"], 0);
-        assert_eq!(http(&db, mia, "fin_rate", json!({ "currency": "EUR", "date": "2026-03-01" })).await.unwrap()["rate"], 1.0);
+        assert_eq!(
+            http(&db, mia, "fin_rate", json!({ "currency": "EUR", "date": "2026-03-01" })).await.unwrap()["rate"],
+            1.0
+        );
     }
 }

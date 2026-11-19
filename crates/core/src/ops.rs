@@ -22,11 +22,10 @@ use crate::models::*;
 pub async fn get_projects(db: &Db) -> Result<Vec<Project>> {
     // Personal containers never appear in listings — they're surfaced only
     // through Atlas, and no board/bin/settings flow should ever touch one.
-    let projects = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE personal_user_id IS NULL ORDER BY created_at DESC",
-    )
-    .fetch_all(db)
-    .await?;
+    let projects =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE personal_user_id IS NULL ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?;
 
     Ok(projects)
 }
@@ -91,11 +90,13 @@ pub async fn get_app_setting(db: &Db, key: &str) -> Result<Option<String>> {
 }
 
 pub async fn set_app_setting(db: &Db, key: &str, value: &str) -> Result<()> {
-    sqlx::query("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(key)
-        .bind(value)
-        .execute(db)
-        .await?;
+    sqlx::query(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -122,10 +123,8 @@ pub async fn create_project(db: &Db, input: CreateProjectInput) -> Result<Projec
 
     let project_id = result.last_insert_rowid();
 
-    let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?").bind(project_id).fetch_one(db).await?;
 
     Ok(project)
 }
@@ -133,10 +132,7 @@ pub async fn create_project(db: &Db, input: CreateProjectInput) -> Result<Projec
 pub async fn delete_project(db: &Db, project_id: i64) -> Result<()> {
     println!("delete_project called with project_id: {}", project_id);
 
-    let result = sqlx::query("DELETE FROM projects WHERE id = ?")
-        .bind(project_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM projects WHERE id = ?").bind(project_id).execute(db).await?;
 
     println!("delete_project affected {} rows", result.rows_affected());
     Ok(())
@@ -152,10 +148,8 @@ pub async fn archive_project(db: &Db, project_id: i64, archived: bool) -> Result
         .execute(db)
         .await?;
 
-    let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?").bind(project_id).fetch_one(db).await?;
 
     Ok(project)
 }
@@ -164,10 +158,8 @@ pub async fn update_project(db: &Db, project_id: i64, input: UpdateProjectInput)
     let now = Utc::now();
 
     // Get current project
-    let current_project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
+    let current_project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?").bind(project_id).fetch_one(db).await?;
 
     // Update with provided values or keep existing ones
     sqlx::query(
@@ -188,10 +180,8 @@ pub async fn update_project(db: &Db, project_id: i64, input: UpdateProjectInput)
     .execute(db)
     .await?;
 
-    let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?").bind(project_id).fetch_one(db).await?;
 
     Ok(project)
 }
@@ -250,11 +240,12 @@ pub async fn get_project_stats_among(
             .bind(&ids)
             .fetch_one(db)
             .await?;
-    let total_files: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM file_attachments WHERE task_id IN ({LIVE})"))
-        .bind(project_id)
-        .bind(&ids)
-        .fetch_one(db)
-        .await?;
+    let total_files: i64 =
+        sqlx::query_scalar(&format!("SELECT COUNT(*) FROM file_attachments WHERE task_id IN ({LIVE})"))
+            .bind(project_id)
+            .bind(&ids)
+            .fetch_one(db)
+            .await?;
     let total_cost: Option<f64> =
         sqlx::query_scalar(&format!("SELECT COALESCE(SUM(cost), 0.0) FROM tasks WHERE id IN ({LIVE})"))
             .bind(project_id)
@@ -274,11 +265,10 @@ pub async fn get_project_stats_among(
 // ============== Area Operations ==============
 
 pub async fn get_areas(db: &Db, project_id: i64) -> Result<Vec<Area>> {
-    let areas =
-        sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE project_id = ? ORDER BY created_at ASC")
-            .bind(project_id)
-            .fetch_all(db)
-            .await?;
+    let areas = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE project_id = ? ORDER BY created_at ASC")
+        .bind(project_id)
+        .fetch_all(db)
+        .await?;
 
     Ok(areas)
 }
@@ -286,32 +276,25 @@ pub async fn get_areas(db: &Db, project_id: i64) -> Result<Vec<Area>> {
 pub async fn create_area(db: &Db, input: CreateAreaInput) -> Result<Area> {
     let now = Utc::now();
 
-    let result = sqlx::query(
-        "INSERT INTO areas (project_id, name, description, created_at) VALUES (?, ?, ?, ?)",
-    )
-    .bind(input.project_id)
-    .bind(&input.name)
-    .bind(&input.description)
-    .bind(now)
-    .execute(db)
-    .await?;
+    let result = sqlx::query("INSERT INTO areas (project_id, name, description, created_at) VALUES (?, ?, ?, ?)")
+        .bind(input.project_id)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(now)
+        .execute(db)
+        .await?;
 
     let area_id = result.last_insert_rowid();
 
-    let area = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?")
-        .bind(area_id)
-        .fetch_one(db)
-        .await?;
+    let area = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?").bind(area_id).fetch_one(db).await?;
 
     Ok(area)
 }
 
 pub async fn update_area(db: &Db, area_id: i64, input: UpdateAreaInput) -> Result<Area> {
     // Get current area
-    let current_area = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?")
-        .bind(area_id)
-        .fetch_one(db)
-        .await?;
+    let current_area =
+        sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?").bind(area_id).fetch_one(db).await?;
 
     // Update with provided values or keep existing ones
     sqlx::query("UPDATE areas SET name = ?, description = ? WHERE id = ?")
@@ -321,10 +304,7 @@ pub async fn update_area(db: &Db, area_id: i64, input: UpdateAreaInput) -> Resul
         .execute(db)
         .await?;
 
-    let area = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?")
-        .bind(area_id)
-        .fetch_one(db)
-        .await?;
+    let area = sqlx::query_as::<_, Area>("SELECT * FROM areas WHERE id = ?").bind(area_id).fetch_one(db).await?;
 
     Ok(area)
 }
@@ -336,16 +316,10 @@ pub async fn delete_area(db: &Db, area_id: i64) -> Result<()> {
     crate::visibility::keep_audience_of_area(db, area_id).await?;
 
     // First, unset area_id for all tasks in this area (set to NULL)
-    sqlx::query("UPDATE tasks SET area_id = NULL WHERE area_id = ?")
-        .bind(area_id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE tasks SET area_id = NULL WHERE area_id = ?").bind(area_id).execute(db).await?;
 
     // Then delete the area
-    let result = sqlx::query("DELETE FROM areas WHERE id = ?")
-        .bind(area_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM areas WHERE id = ?").bind(area_id).execute(db).await?;
 
     println!("delete_area affected {} rows", result.rows_affected());
     Ok(())
@@ -356,13 +330,12 @@ pub async fn delete_area(db: &Db, area_id: i64) -> Result<()> {
 pub async fn get_tasks(db: &Db, project_id: i64, archived: Option<bool>) -> Result<Vec<Task>> {
     let archived_filter = archived.unwrap_or(false);
 
-    let tasks = sqlx::query_as::<_, Task>(
-        "SELECT * FROM tasks WHERE project_id = ? AND archived = ? ORDER BY created_at DESC",
-    )
-    .bind(project_id)
-    .bind(archived_filter as i32)
-    .fetch_all(db)
-    .await?;
+    let tasks =
+        sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE project_id = ? AND archived = ? ORDER BY created_at DESC")
+            .bind(project_id)
+            .bind(archived_filter as i32)
+            .fetch_all(db)
+            .await?;
 
     Ok(tasks)
 }
@@ -376,11 +349,7 @@ pub async fn get_all_tasks(db: &Db, archived: Option<bool>) -> Result<Vec<Task>>
                 .fetch_all(db)
                 .await?
         }
-        None => {
-            sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC")
-                .fetch_all(db)
-                .await?
-        }
+        None => sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC").fetch_all(db).await?,
     };
 
     Ok(tasks)
@@ -413,10 +382,7 @@ pub async fn create_task(db: &Db, input: CreateTaskInput) -> Result<Task> {
 
     let task_id = result.last_insert_rowid();
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(db).await?;
 
     emit(DomainEvent {
         kind: "task.created".into(),
@@ -428,13 +394,39 @@ pub async fn create_task(db: &Db, input: CreateTaskInput) -> Result<Task> {
 }
 
 pub async fn update_task(db: &Db, task_id: i64, input: UpdateTaskInput) -> Result<Task> {
+    update_task_checked(db, task_id, input, None).await
+}
+
+/// [`update_task`], refused when `expected_updated_at` is given and the task's
+/// `updated_at` differs: someone saved it since the caller read it, and writing
+/// now would silently drop their edit. The refusal is a [`codes::TASK_CHANGED`]
+/// conflict carrying the task as it is now. Without a stamp the last write wins,
+/// as before (agent tools, rules, older clients).
+///
+/// [`codes::TASK_CHANGED`]: crate::error::codes::TASK_CHANGED
+pub async fn update_task_checked(
+    db: &Db,
+    task_id: i64,
+    input: UpdateTaskInput,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<Task> {
+    // The check and the write are one transaction, so no save lands between them.
+    let mut tx = crate::db::begin_write(db).await?;
+    // Stamped once the write lock is held, so a save that queued stamps after the one before it.
     let now = Utc::now();
 
     // Get current task
-    let current_task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let current_task =
+        sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(&mut *tx).await?;
+    if let Some(expected) = expected_updated_at {
+        if current_task.updated_at != expected {
+            return Err(AppError::Conflict {
+                code: crate::error::codes::TASK_CHANGED,
+                message: "this task was changed somewhere else".into(),
+                current: Box::new(serde_json::to_value(&current_task)?),
+            });
+        }
+    }
     let prev_status = current_task.status.clone();
 
     // Prepare completed_at timestamp if status is being changed to "Done"
@@ -482,13 +474,11 @@ pub async fn update_task(db: &Db, task_id: i64, input: UpdateTaskInput) -> Resul
     .bind(now)
     .bind(completed_at)
     .bind(task_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
 
     if task.status != prev_status {
         emit(DomainEvent {
@@ -503,10 +493,8 @@ pub async fn update_task(db: &Db, task_id: i64, input: UpdateTaskInput) -> Resul
 
 pub async fn update_task_status(db: &Db, task_id: i64, status: String) -> Result<Task> {
     let now = Utc::now();
-    let prev_status: Option<String> = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_optional(db)
-        .await?;
+    let prev_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?").bind(task_id).fetch_optional(db).await?;
 
     // Check if status is "Done" to set completed_at
     let completed_at = if status == "Done" { Some(now) } else { None };
@@ -519,10 +507,7 @@ pub async fn update_task_status(db: &Db, task_id: i64, status: String) -> Result
         .execute(db)
         .await?;
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(db).await?;
 
     if prev_status.as_deref() != Some(task.status.as_str()) {
         emit(DomainEvent {
@@ -536,10 +521,7 @@ pub async fn update_task_status(db: &Db, task_id: i64, status: String) -> Result
 }
 
 pub async fn delete_task(db: &Db, task_id: i64) -> Result<()> {
-    println!(
-        "delete_task called with task_id: {} (soft delete - archiving)",
-        task_id
-    );
+    println!("delete_task called with task_id: {} (soft delete - archiving)", task_id);
 
     let now = Utc::now();
 
@@ -565,10 +547,7 @@ pub async fn restore_task(db: &Db, task_id: i64) -> Result<Task> {
         .execute(db)
         .await?;
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(db).await?;
 
     Ok(task)
 }
@@ -593,15 +572,9 @@ pub async fn permanently_delete_task(db: &Db, task_id: i64) -> Result<()> {
         }
     }
 
-    let result = sqlx::query("DELETE FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM tasks WHERE id = ?").bind(task_id).execute(db).await?;
 
-    println!(
-        "permanently_delete_task affected {} rows",
-        result.rows_affected()
-    );
+    println!("permanently_delete_task affected {} rows", result.rows_affected());
     Ok(())
 }
 
@@ -615,10 +588,7 @@ pub async fn archive_task(db: &Db, task_id: i64, archived: bool) -> Result<Task>
         .execute(db)
         .await?;
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(task_id).fetch_one(db).await?;
 
     Ok(task)
 }
@@ -639,9 +609,7 @@ pub async fn start_time_entry(db: &Db, task_id: i64, notes: Option<String>, user
     .await?;
 
     if active.is_some() {
-        return Err(crate::error::AppError::InvalidInput(
-            "Timer already running for this task".to_string(),
-        ));
+        return Err(crate::error::AppError::InvalidInput("Timer already running for this task".to_string()));
     }
 
     let result = sqlx::query(
@@ -657,10 +625,8 @@ pub async fn start_time_entry(db: &Db, task_id: i64, notes: Option<String>, user
 
     let entry_id = result.last_insert_rowid();
 
-    let entry = sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?")
-        .bind(entry_id)
-        .fetch_one(db)
-        .await?;
+    let entry =
+        sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?").bind(entry_id).fetch_one(db).await?;
 
     Ok(entry)
 }
@@ -669,15 +635,11 @@ pub async fn stop_time_entry(db: &Db, entry_id: i64, notes: Option<String>) -> R
     let now = Utc::now();
 
     // Get the entry
-    let entry = sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?")
-        .bind(entry_id)
-        .fetch_one(db)
-        .await?;
+    let entry =
+        sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?").bind(entry_id).fetch_one(db).await?;
 
     if entry.end_time.is_some() {
-        return Err(crate::error::AppError::InvalidInput(
-            "Timer already stopped".to_string(),
-        ));
+        return Err(crate::error::AppError::InvalidInput("Timer already stopped".to_string()));
     }
 
     // Calculate duration in seconds
@@ -692,32 +654,27 @@ pub async fn stop_time_entry(db: &Db, entry_id: i64, notes: Option<String>) -> R
         .execute(db)
         .await?;
 
-    let updated_entry = sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?")
-        .bind(entry_id)
-        .fetch_one(db)
-        .await?;
+    let updated_entry =
+        sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE id = ?").bind(entry_id).fetch_one(db).await?;
 
     Ok(updated_entry)
 }
 
 pub async fn get_time_entries(db: &Db, task_id: i64) -> Result<Vec<TimeEntry>> {
-    let entries = sqlx::query_as::<_, TimeEntry>(
-        "SELECT * FROM time_entries WHERE task_id = ? ORDER BY start_time DESC",
-    )
-    .bind(task_id)
-    .fetch_all(db)
-    .await?;
+    let entries =
+        sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE task_id = ? ORDER BY start_time DESC")
+            .bind(task_id)
+            .fetch_all(db)
+            .await?;
 
     Ok(entries)
 }
 
 pub async fn get_active_time_entry(db: &Db, task_id: i64) -> Result<Option<TimeEntry>> {
-    let entry = sqlx::query_as::<_, TimeEntry>(
-        "SELECT * FROM time_entries WHERE task_id = ? AND end_time IS NULL",
-    )
-    .bind(task_id)
-    .fetch_optional(db)
-    .await?;
+    let entry = sqlx::query_as::<_, TimeEntry>("SELECT * FROM time_entries WHERE task_id = ? AND end_time IS NULL")
+        .bind(task_id)
+        .fetch_optional(db)
+        .await?;
 
     Ok(entry)
 }
@@ -725,22 +682,18 @@ pub async fn get_active_time_entry(db: &Db, task_id: i64) -> Result<Option<TimeE
 pub async fn delete_time_entry(db: &Db, entry_id: i64) -> Result<()> {
     println!("delete_time_entry called with entry_id: {}", entry_id);
 
-    let result = sqlx::query("DELETE FROM time_entries WHERE id = ?")
-        .bind(entry_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM time_entries WHERE id = ?").bind(entry_id).execute(db).await?;
 
     println!("delete_time_entry affected {} rows", result.rows_affected());
     Ok(())
 }
 
 pub async fn get_task_total_time(db: &Db, task_id: i64) -> Result<i64> {
-    let result: (Option<i64>,) = sqlx::query_as(
-        "SELECT SUM(duration) FROM time_entries WHERE task_id = ? AND duration IS NOT NULL",
-    )
-    .bind(task_id)
-    .fetch_one(db)
-    .await?;
+    let result: (Option<i64>,) =
+        sqlx::query_as("SELECT SUM(duration) FROM time_entries WHERE task_id = ? AND duration IS NOT NULL")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?;
 
     Ok(result.0.unwrap_or(0))
 }
@@ -794,10 +747,8 @@ pub async fn get_global_active_time_entry(db: &Db, user_id: Option<i64>) -> Resu
 
     if let Some(entry) = entry_opt {
         // Get the associated task
-        let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-            .bind(entry.task_id)
-            .fetch_one(db)
-            .await?;
+        let task =
+            sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?").bind(entry.task_id).fetch_one(db).await?;
 
         Ok(Some((entry, task)))
     } else {
@@ -850,10 +801,7 @@ pub async fn get_file_attachments(db: &Db, task_id: i64) -> Result<Vec<FileAttac
     Ok(attachments)
 }
 
-pub async fn create_file_attachment(
-    db: &Db,
-    input: CreateFileAttachmentInput,
-) -> Result<FileAttachment> {
+pub async fn create_file_attachment(db: &Db, input: CreateFileAttachmentInput) -> Result<FileAttachment> {
     let now = Utc::now();
 
     let result = sqlx::query(
@@ -876,11 +824,10 @@ pub async fn create_file_attachment(
 
     let attachment_id = result.last_insert_rowid();
 
-    let attachment =
-        sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
-            .bind(attachment_id)
-            .fetch_one(db)
-            .await?;
+    let attachment = sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .fetch_one(db)
+        .await?;
 
     Ok(attachment)
 }
@@ -891,11 +838,10 @@ pub async fn update_file_attachment(
     input: UpdateFileAttachmentInput,
 ) -> Result<FileAttachment> {
     // Get current attachment
-    let current =
-        sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
-            .bind(attachment_id)
-            .fetch_one(db)
-            .await?;
+    let current = sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .fetch_one(db)
+        .await?;
 
     // Update with provided values or keep existing ones
     sqlx::query("UPDATE file_attachments SET file_path = ?, notes = ? WHERE id = ?")
@@ -905,30 +851,20 @@ pub async fn update_file_attachment(
         .execute(db)
         .await?;
 
-    let attachment =
-        sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
-            .bind(attachment_id)
-            .fetch_one(db)
-            .await?;
+    let attachment = sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .fetch_one(db)
+        .await?;
 
     Ok(attachment)
 }
 
 pub async fn delete_file_attachment(db: &Db, attachment_id: i64) -> Result<()> {
-    println!(
-        "delete_file_attachment called with attachment_id: {}",
-        attachment_id
-    );
+    println!("delete_file_attachment called with attachment_id: {}", attachment_id);
 
-    let result = sqlx::query("DELETE FROM file_attachments WHERE id = ?")
-        .bind(attachment_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM file_attachments WHERE id = ?").bind(attachment_id).execute(db).await?;
 
-    println!(
-        "delete_file_attachment affected {} rows",
-        result.rows_affected()
-    );
+    println!("delete_file_attachment affected {} rows", result.rows_affected());
     Ok(())
 }
 
@@ -939,11 +875,10 @@ pub async fn verify_file_attachment(db: &Db, attachment_id: i64) -> Result<FileA
     let now = Utc::now();
 
     // Get current attachment
-    let attachment =
-        sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
-            .bind(attachment_id)
-            .fetch_one(db)
-            .await?;
+    let attachment = sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .fetch_one(db)
+        .await?;
 
     // Check if file exists
     let is_valid = Path::new(&attachment.file_path).exists();
@@ -956,11 +891,10 @@ pub async fn verify_file_attachment(db: &Db, attachment_id: i64) -> Result<FileA
         .execute(db)
         .await?;
 
-    let updated_attachment =
-        sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
-            .bind(attachment_id)
-            .fetch_one(db)
-            .await?;
+    let updated_attachment = sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .fetch_one(db)
+        .await?;
 
     Ok(updated_attachment)
 }
@@ -1017,13 +951,15 @@ async fn fill_comment_tags(db: &Db, comments: &mut [Comment]) -> Result<()> {
 }
 
 async fn comment_with_tags(db: &Db, comment_id: i64) -> Result<Comment> {
-    let mut c = vec![sqlx::query_as::<_, Comment>(
-        "SELECT c.*, mp.name AS profile_name, mp.avatar AS profile_avatar \
+    let mut c = vec![
+        sqlx::query_as::<_, Comment>(
+            "SELECT c.*, mp.name AS profile_name, mp.avatar AS profile_avatar \
          FROM comments c LEFT JOIN model_profiles mp ON mp.id = c.profile_id WHERE c.id = ?",
-    )
-    .bind(comment_id)
-    .fetch_one(db)
-    .await?];
+        )
+        .bind(comment_id)
+        .fetch_one(db)
+        .await?,
+    ];
     fill_comment_tags(db, &mut c).await?;
     Ok(c.remove(0))
 }
@@ -1035,10 +971,8 @@ async fn same_project_tasks(db: &Db, project_id: i64, task_ids: &[i64]) -> Resul
         if out.contains(&t) {
             continue;
         }
-        let pid: Option<i64> = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
-            .bind(t)
-            .fetch_optional(db)
-            .await?;
+        let pid: Option<i64> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?").bind(t).fetch_optional(db).await?;
         if pid != Some(project_id) {
             return Err(AppError::InvalidInput(format!("task {t} is not in this project")));
         }
@@ -1075,10 +1009,8 @@ async fn rehome_thread(db: &Db, comment_id: i64, new_task: i64) -> Result<()> {
 pub async fn create_comment(db: &Db, mut input: CreateCommentInput) -> Result<Comment> {
     let now = Utc::now();
 
-    let home_project: Option<i64> = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
-        .bind(input.task_id)
-        .fetch_optional(db)
-        .await?;
+    let home_project: Option<i64> =
+        sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?").bind(input.task_id).fetch_optional(db).await?;
     let home_project = home_project.ok_or_else(|| AppError::NotFound(format!("task {}", input.task_id)))?;
     // A reply lives on its thread's home task. Clients viewing a TAGGED task
     // may send that task instead — accept it within the same project (the
@@ -1341,10 +1273,7 @@ pub async fn get_project_comment_board_among(
 pub async fn delete_comment(db: &Db, comment_id: i64) -> Result<()> {
     println!("delete_comment called with comment_id: {}", comment_id);
 
-    let result = sqlx::query("DELETE FROM comments WHERE id = ?")
-        .bind(comment_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM comments WHERE id = ?").bind(comment_id).execute(db).await?;
 
     println!("delete_comment affected {} rows", result.rows_affected());
     Ok(())
@@ -1355,14 +1284,13 @@ pub async fn delete_comment(db: &Db, comment_id: i64) -> Result<()> {
 /// Toggle a user's emoji reaction on a comment. Returns true if it's now set,
 /// false if it was removed (re-reacting the same emoji un-reacts).
 pub async fn toggle_comment_reaction(db: &Db, comment_id: i64, user_id: i64, emoji: &str) -> Result<bool> {
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM comment_reactions WHERE comment_id = ? AND user_id = ? AND emoji = ?",
-    )
-    .bind(comment_id)
-    .bind(user_id)
-    .bind(emoji)
-    .fetch_optional(db)
-    .await?;
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM comment_reactions WHERE comment_id = ? AND user_id = ? AND emoji = ?")
+            .bind(comment_id)
+            .bind(user_id)
+            .bind(emoji)
+            .fetch_optional(db)
+            .await?;
     if let Some(id) = existing {
         sqlx::query("DELETE FROM comment_reactions WHERE id = ?").bind(id).execute(db).await?;
         Ok(false)
@@ -1454,23 +1382,26 @@ pub async fn list_notifications(db: &Db, user_id: i64) -> Result<Vec<Notificatio
                          WHERE t.id = n.link_task_id AND pm.user_id = ?1)) \
          ORDER BY n.created_at DESC LIMIT 50",
     )
-        .bind(user_id)
-        .fetch_all(db)
-        .await?)
+    .bind(user_id)
+    .fetch_all(db)
+    .await?)
 }
 
 pub async fn mark_notifications_read(db: &Db, user_id: i64) -> Result<()> {
-    sqlx::query("UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0")
-        .bind(user_id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0").bind(user_id).execute(db).await?;
     Ok(())
 }
 
 // ---- In-app tickets (bug reports / feature requests) ----
 
 /// File a ticket for `user_id`. `kind` is normalized to "feature" or "bug".
-pub async fn create_ticket(db: &Db, user_id: i64, kind: &str, title: &str, body: Option<&str>) -> Result<crate::models::Ticket> {
+pub async fn create_ticket(
+    db: &Db,
+    user_id: i64,
+    kind: &str,
+    title: &str,
+    body: Option<&str>,
+) -> Result<crate::models::Ticket> {
     let kind = if kind.eq_ignore_ascii_case("feature") { "feature" } else { "bug" };
     let title = title.trim();
     if title.is_empty() {
@@ -1484,10 +1415,7 @@ pub async fn create_ticket(db: &Db, user_id: i64, kind: &str, title: &str, body:
         .execute(db)
         .await?
         .last_insert_rowid();
-    Ok(sqlx::query_as::<_, crate::models::Ticket>("SELECT * FROM tickets WHERE id = ?")
-        .bind(id)
-        .fetch_one(db)
-        .await?)
+    Ok(sqlx::query_as::<_, crate::models::Ticket>("SELECT * FROM tickets WHERE id = ?").bind(id).fetch_one(db).await?)
 }
 
 /// List tickets for a viewer: the owner sees ALL; everyone else sees only their
@@ -1506,10 +1434,12 @@ pub async fn list_tickets(db: &Db, viewer_user_id: i64) -> Result<Vec<crate::mod
             .fetch_all(db)
             .await?
     } else {
-        sqlx::query_as::<_, crate::models::Ticket>(&format!("{base} WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT 500"))
-            .bind(viewer_user_id)
-            .fetch_all(db)
-            .await?
+        sqlx::query_as::<_, crate::models::Ticket>(&format!(
+            "{base} WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT 500"
+        ))
+        .bind(viewer_user_id)
+        .fetch_all(db)
+        .await?
     };
     Ok(rows)
 }
@@ -1560,13 +1490,15 @@ async fn notify_mentions(db: &Db, content: &str, task_id: i64, _project_id: Opti
         return;
     }
     let who = match author {
-        Some(a) => sqlx::query_scalar::<_, String>("SELECT COALESCE(NULLIF(full_name, ''), username) FROM users WHERE id = ?")
-            .bind(a)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "Someone".into()),
+        Some(a) => {
+            sqlx::query_scalar::<_, String>("SELECT COALESCE(NULLIF(full_name, ''), username) FROM users WHERE id = ?")
+                .bind(a)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "Someone".into())
+        }
         None => "Someone".into(),
     };
     let snippet: String = content.chars().take(140).collect();
@@ -1584,7 +1516,9 @@ async fn notify_mentions(db: &Db, content: &str, task_id: i64, _project_id: Opti
         // Notify only people who can see the task (task visibility; the owner sees all).
         let viewer = crate::visibility::Viewer { user_id: uid, is_owner: is_owner == 1 };
         if crate::visibility::can_see_task(db, viewer, task_id).await.unwrap_or(false) {
-            let _ = create_notification(db, uid, "comment", &format!("{who} mentioned you"), Some(&snippet), Some(task_id)).await;
+            let _ =
+                create_notification(db, uid, "comment", &format!("{who} mentioned you"), Some(&snippet), Some(task_id))
+                    .await;
         }
     }
 }
@@ -1592,9 +1526,7 @@ async fn notify_mentions(db: &Db, content: &str, task_id: i64, _project_id: Opti
 // ============== Custom Emojis ==============
 
 pub async fn list_custom_emojis(db: &Db) -> Result<Vec<CustomEmoji>> {
-    Ok(sqlx::query_as::<_, CustomEmoji>("SELECT * FROM custom_emojis ORDER BY name ASC")
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as::<_, CustomEmoji>("SELECT * FROM custom_emojis ORDER BY name ASC").fetch_all(db).await?)
 }
 
 /// Register a custom emoji. `name` is the `:name:` shortcode (a-z, 0-9, '_'),
@@ -1690,10 +1622,8 @@ pub async fn get_events(
 }
 
 pub async fn get_event(db: &Db, event_id: i64) -> Result<Event> {
-    let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     Ok(event)
 }
@@ -1730,10 +1660,8 @@ pub async fn create_event(db: &Db, input: CreateEventInput) -> Result<Event> {
 
     let event_id = result.last_insert_rowid();
 
-    let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     emit(DomainEvent {
         kind: "event.created".into(),
@@ -1763,10 +1691,8 @@ pub async fn update_event(db: &Db, event_id: i64, input: UpdateEventInput) -> Re
     let now = Utc::now();
 
     // Get current event
-    let current_event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let current_event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     // Update with provided values or keep existing ones
     sqlx::query(
@@ -1806,10 +1732,8 @@ pub async fn update_event(db: &Db, event_id: i64, input: UpdateEventInput) -> Re
     .execute(db)
     .await?;
 
-    let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     Ok(event)
 }
@@ -1821,7 +1745,7 @@ pub async fn delete_event(db: &Db, event_id: i64) -> Result<()> {
     println!("delete_event called with event_id: {} (archiving)", event_id);
 
     let now = Utc::now();
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
 
     // Soft delete by setting archived = true
     let result = sqlx::query("UPDATE events SET archived = 1, updated_at = ? WHERE id = ?")
@@ -1850,10 +1774,8 @@ pub async fn archive_event(db: &Db, event_id: i64, archived: bool) -> Result<Eve
         .execute(db)
         .await?;
 
-    let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     Ok(event)
 }
@@ -1862,7 +1784,7 @@ pub async fn archive_event(db: &Db, event_id: i64, archived: bool) -> Result<Eve
 /// alongside it (same `updated_at`); a copy binned on its own stays there.
 pub async fn restore_event(db: &Db, event_id: i64) -> Result<Event> {
     let now = Utc::now();
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
 
     sqlx::query(
         "UPDATE events SET archived = 0, updated_at = ?1 WHERE series_id = ?2 AND archived = 1 \
@@ -1879,10 +1801,8 @@ pub async fn restore_event(db: &Db, event_id: i64) -> Result<Event> {
         .await?;
     tx.commit().await?;
 
-    let event = sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?"))
-        .bind(event_id)
-        .fetch_one(db)
-        .await?;
+    let event =
+        sqlx::query_as::<_, Event>(concat!(event_select!(), " WHERE id = ?")).bind(event_id).fetch_one(db).await?;
 
     Ok(event)
 }
@@ -1910,44 +1830,32 @@ pub async fn set_event_done(db: &Db, event_id: i64, done: bool) -> Result<Event>
 pub async fn permanently_delete_event(db: &Db, event_id: i64) -> Result<()> {
     println!("permanently_delete_event called with event_id: {}", event_id);
 
-    let result = sqlx::query("DELETE FROM events WHERE id = ?")
-        .bind(event_id)
-        .execute(db)
-        .await?;
+    let result = sqlx::query("DELETE FROM events WHERE id = ?").bind(event_id).execute(db).await?;
 
-    println!(
-        "permanently_delete_event affected {} rows",
-        result.rows_affected()
-    );
+    println!("permanently_delete_event affected {} rows", result.rows_affected());
     Ok(())
 }
 
 pub async fn link_event_to_task(db: &Db, event_id: i64, task_id: i64) -> Result<EventTask> {
     let now = Utc::now();
 
-    let result =
-        sqlx::query("INSERT INTO event_tasks (event_id, task_id, created_at) VALUES (?, ?, ?)")
-            .bind(event_id)
-            .bind(task_id)
-            .bind(now)
-            .execute(db)
-            .await?;
+    let result = sqlx::query("INSERT INTO event_tasks (event_id, task_id, created_at) VALUES (?, ?, ?)")
+        .bind(event_id)
+        .bind(task_id)
+        .bind(now)
+        .execute(db)
+        .await?;
 
     let link_id = result.last_insert_rowid();
 
-    let event_task = sqlx::query_as::<_, EventTask>("SELECT * FROM event_tasks WHERE id = ?")
-        .bind(link_id)
-        .fetch_one(db)
-        .await?;
+    let event_task =
+        sqlx::query_as::<_, EventTask>("SELECT * FROM event_tasks WHERE id = ?").bind(link_id).fetch_one(db).await?;
 
     Ok(event_task)
 }
 
 pub async fn unlink_event_from_task(db: &Db, event_id: i64, task_id: i64) -> Result<()> {
-    println!(
-        "unlink_event_from_task called with event_id: {}, task_id: {}",
-        event_id, task_id
-    );
+    println!("unlink_event_from_task called with event_id: {}, task_id: {}", event_id, task_id);
 
     let result = sqlx::query("DELETE FROM event_tasks WHERE event_id = ? AND task_id = ?")
         .bind(event_id)
@@ -1955,10 +1863,7 @@ pub async fn unlink_event_from_task(db: &Db, event_id: i64, task_id: i64) -> Res
         .execute(db)
         .await?;
 
-    println!(
-        "unlink_event_from_task affected {} rows",
-        result.rows_affected()
-    );
+    println!("unlink_event_from_task affected {} rows", result.rows_affected());
     Ok(())
 }
 
@@ -2013,43 +1918,33 @@ pub async fn get_task_linked_event_ids(db: &Db) -> Result<Vec<i64>> {
 pub async fn link_event_to_project(db: &Db, event_id: i64, project_id: i64) -> Result<EventProject> {
     let now = Utc::now();
 
-    let result = sqlx::query(
-        "INSERT INTO event_projects (event_id, project_id, created_at) VALUES (?, ?, ?)",
-    )
-    .bind(event_id)
-    .bind(project_id)
-    .bind(now)
-    .execute(db)
-    .await?;
+    let result = sqlx::query("INSERT INTO event_projects (event_id, project_id, created_at) VALUES (?, ?, ?)")
+        .bind(event_id)
+        .bind(project_id)
+        .bind(now)
+        .execute(db)
+        .await?;
 
     let link_id = result.last_insert_rowid();
 
-    let event_project =
-        sqlx::query_as::<_, EventProject>("SELECT * FROM event_projects WHERE id = ?")
-            .bind(link_id)
-            .fetch_one(db)
-            .await?;
+    let event_project = sqlx::query_as::<_, EventProject>("SELECT * FROM event_projects WHERE id = ?")
+        .bind(link_id)
+        .fetch_one(db)
+        .await?;
 
     Ok(event_project)
 }
 
 pub async fn unlink_event_from_project(db: &Db, event_id: i64, project_id: i64) -> Result<()> {
-    println!(
-        "unlink_event_from_project called with event_id: {}, project_id: {}",
-        event_id, project_id
-    );
+    println!("unlink_event_from_project called with event_id: {}, project_id: {}", event_id, project_id);
 
-    let result =
-        sqlx::query("DELETE FROM event_projects WHERE event_id = ? AND project_id = ?")
-            .bind(event_id)
-            .bind(project_id)
-            .execute(db)
-            .await?;
+    let result = sqlx::query("DELETE FROM event_projects WHERE event_id = ? AND project_id = ?")
+        .bind(event_id)
+        .bind(project_id)
+        .execute(db)
+        .await?;
 
-    println!(
-        "unlink_event_from_project affected {} rows",
-        result.rows_affected()
-    );
+    println!("unlink_event_from_project affected {} rows", result.rows_affected());
     Ok(())
 }
 
@@ -2069,11 +1964,7 @@ pub async fn get_event_projects(db: &Db, event_id: i64) -> Result<Vec<Project>> 
     Ok(projects)
 }
 
-pub async fn get_project_events(
-    db: &Db,
-    project_id: i64,
-    archived: Option<bool>,
-) -> Result<Vec<Event>> {
+pub async fn get_project_events(db: &Db, project_id: i64, archived: Option<bool>) -> Result<Vec<Event>> {
     let query = match archived {
         Some(true) => {
             r#"
@@ -2103,10 +1994,7 @@ pub async fn get_project_events(
         }
     };
 
-    let events = sqlx::query_as::<_, Event>(query)
-        .bind(project_id)
-        .fetch_all(db)
-        .await?;
+    let events = sqlx::query_as::<_, Event>(query).bind(project_id).fetch_all(db).await?;
 
     Ok(events)
 }
@@ -2199,11 +2087,10 @@ pub async fn get_project_member_overview_among(
 // they import flow through the normal (synced) events table tagged by calendar_id.
 
 pub async fn get_calendar_subscriptions(db: &Db) -> Result<Vec<CalendarSubscription>> {
-    let subs = sqlx::query_as::<_, CalendarSubscription>(
-        "SELECT * FROM calendar_subscriptions ORDER BY created_at ASC",
-    )
-    .fetch_all(db)
-    .await?;
+    let subs =
+        sqlx::query_as::<_, CalendarSubscription>("SELECT * FROM calendar_subscriptions ORDER BY created_at ASC")
+            .fetch_all(db)
+            .await?;
     Ok(subs)
 }
 
@@ -2224,14 +2111,12 @@ pub async fn create_calendar_subscription(
     if name.is_empty() || url.is_empty() {
         return Err(crate::AppError::InvalidInput("name and url are required".into()));
     }
-    let result = sqlx::query(
-        "INSERT INTO calendar_subscriptions (name, url, color) VALUES (?, ?, ?)",
-    )
-    .bind(name)
-    .bind(url)
-    .bind(&input.color)
-    .execute(db)
-    .await?;
+    let result = sqlx::query("INSERT INTO calendar_subscriptions (name, url, color) VALUES (?, ?, ?)")
+        .bind(name)
+        .bind(url)
+        .bind(&input.color)
+        .execute(db)
+        .await?;
     get_calendar_subscription(db, result.last_insert_rowid())
         .await?
         .ok_or_else(|| crate::AppError::NotFound("calendar subscription".into()))
@@ -2241,15 +2126,12 @@ pub async fn create_calendar_subscription(
 /// external_uid) so anything the user already allocated to projects/tasks is
 /// preserved as a normal event rather than silently deleted.
 pub async fn delete_calendar_subscription(db: &Db, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query("UPDATE events SET calendar_id = NULL, external_uid = NULL WHERE calendar_id = ?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM calendar_subscriptions WHERE id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query("DELETE FROM calendar_subscriptions WHERE id = ?").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -2275,13 +2157,11 @@ pub async fn set_calendar_sync_result(db: &Db, id: i64, status: &str, event_coun
 /// overwrites the imported fields — project/task allocations and the archived
 /// flag are intentionally preserved.
 pub async fn upsert_imported_event(db: &Db, calendar_id: i64, ev: &ParsedIcsEvent) -> Result<bool> {
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM events WHERE calendar_id = ? AND external_uid = ?",
-    )
-    .bind(calendar_id)
-    .bind(&ev.uid)
-    .fetch_optional(db)
-    .await?;
+    let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM events WHERE calendar_id = ? AND external_uid = ?")
+        .bind(calendar_id)
+        .bind(&ev.uid)
+        .fetch_optional(db)
+        .await?;
 
     let now = Utc::now();
     if let Some(id) = existing {
@@ -2338,10 +2218,8 @@ pub async fn get_contacts(db: &Db, archived: Option<bool>) -> Result<Vec<Contact
 }
 
 pub async fn get_contact(db: &Db, contact_id: i64) -> Result<Contact> {
-    let contact = sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .fetch_one(db)
-        .await?;
+    let contact =
+        sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?").bind(contact_id).fetch_one(db).await?;
 
     Ok(contact)
 }
@@ -2371,10 +2249,8 @@ pub async fn create_contact(db: &Db, input: CreateContactInput) -> Result<Contac
 
     let contact_id = result.last_insert_rowid();
 
-    let contact = sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .fetch_one(db)
-        .await?;
+    let contact =
+        sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?").bind(contact_id).fetch_one(db).await?;
 
     Ok(contact)
 }
@@ -2429,10 +2305,8 @@ pub async fn update_contact(db: &Db, contact_id: i64, input: UpdateContactInput)
 
     query_builder.bind(contact_id).execute(db).await?;
 
-    let contact = sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .fetch_one(db)
-        .await?;
+    let contact =
+        sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?").bind(contact_id).fetch_one(db).await?;
 
     Ok(contact)
 }
@@ -2459,19 +2333,14 @@ pub async fn restore_contact(db: &Db, contact_id: i64) -> Result<Contact> {
         .execute(db)
         .await?;
 
-    let contact = sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .fetch_one(db)
-        .await?;
+    let contact =
+        sqlx::query_as::<_, Contact>("SELECT * FROM contacts WHERE id = ?").bind(contact_id).fetch_one(db).await?;
 
     Ok(contact)
 }
 
 pub async fn permanently_delete_contact(db: &Db, contact_id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM contacts WHERE id = ?")
-        .bind(contact_id)
-        .execute(db)
-        .await?;
+    sqlx::query("DELETE FROM contacts WHERE id = ?").bind(contact_id).execute(db).await?;
 
     Ok(())
 }
@@ -2479,13 +2348,12 @@ pub async fn permanently_delete_contact(db: &Db, contact_id: i64) -> Result<()> 
 pub async fn link_contact_to_task(db: &Db, task_id: i64, contact_id: i64) -> Result<TaskContact> {
     let now = Utc::now();
 
-    let result =
-        sqlx::query("INSERT INTO task_contacts (task_id, contact_id, created_at) VALUES (?, ?, ?)")
-            .bind(task_id)
-            .bind(contact_id)
-            .bind(now)
-            .execute(db)
-            .await?;
+    let result = sqlx::query("INSERT INTO task_contacts (task_id, contact_id, created_at) VALUES (?, ?, ?)")
+        .bind(task_id)
+        .bind(contact_id)
+        .bind(now)
+        .execute(db)
+        .await?;
 
     let link_id = result.last_insert_rowid();
 
@@ -2542,11 +2410,10 @@ pub async fn get_contact_tasks(db: &Db, contact_id: i64) -> Result<Vec<Task>> {
 // ============== User Operations ==============
 
 pub async fn get_users(db: &Db) -> Result<Vec<User>> {
-    let users = sqlx::query_as::<_, User>(
-        "SELECT *, pin_hash IS NOT NULL AS has_pin FROM users ORDER BY created_at DESC",
-    )
-    .fetch_all(db)
-    .await?;
+    let users =
+        sqlx::query_as::<_, User>("SELECT *, pin_hash IS NOT NULL AS has_pin FROM users ORDER BY created_at DESC")
+            .fetch_all(db)
+            .await?;
 
     Ok(users)
 }
@@ -2594,10 +2461,8 @@ pub async fn set_user_pin(db: &Db, user_id: i64, pin: Option<&str>) -> Result<Us
 
 /// Check a PIN attempt. A user with NO pin verifies trivially (open profile).
 pub async fn verify_user_pin(db: &Db, user_id: i64, pin: &str) -> Result<bool> {
-    let stored: Option<Option<String>> = sqlx::query_scalar("SELECT pin_hash FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?;
+    let stored: Option<Option<String>> =
+        sqlx::query_scalar("SELECT pin_hash FROM users WHERE id = ?").bind(user_id).fetch_optional(db).await?;
     match stored {
         None => Err(crate::error::AppError::NotFound(format!("User {user_id} not found"))),
         Some(None) => Ok(true),
@@ -2638,10 +2503,7 @@ pub async fn create_user(db: &Db, input: CreateUserInput) -> Result<User> {
 
     let user_id = result.last_insert_rowid();
 
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_one(db)
-        .await?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?").bind(user_id).fetch_one(db).await?;
 
     Ok(user)
 }
@@ -2677,66 +2539,44 @@ pub async fn update_user(db: &Db, user_id: i64, input: UpdateUserInput) -> Resul
 
     final_query.execute(db).await?;
 
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_one(db)
-        .await?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?").bind(user_id).fetch_one(db).await?;
 
     Ok(user)
 }
 
 pub async fn delete_user(db: &Db, user_id: i64) -> Result<()> {
     // Don't allow deleting the last user
-    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-        .fetch_one(db)
-        .await?;
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users").fetch_one(db).await?;
 
     if user_count.0 <= 1 {
-        return Err(crate::error::AppError::InvalidInput(
-            "Cannot delete the last user".to_string(),
-        ));
+        return Err(crate::error::AppError::InvalidInput("Cannot delete the last user".to_string()));
     }
 
     // Never delete the global owner: ensure_owner would otherwise silently
     // promote the next user, an escalation path.
-    let is_owner: Option<bool> = sqlx::query_scalar("SELECT is_owner FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?;
+    let is_owner: Option<bool> =
+        sqlx::query_scalar("SELECT is_owner FROM users WHERE id = ?").bind(user_id).fetch_optional(db).await?;
     if is_owner == Some(true) {
         return Err(crate::error::AppError::InvalidInput("Cannot delete the owner".to_string()));
     }
 
-    sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(user_id)
-        .execute(db)
-        .await?;
+    sqlx::query("DELETE FROM users WHERE id = ?").bind(user_id).execute(db).await?;
 
     Ok(())
 }
 
-pub async fn get_user_setting(
-    db: &Db,
-    user_id: i64,
-    setting_key: String,
-) -> Result<Option<String>> {
-    let setting: Option<UserSetting> = sqlx::query_as::<_, UserSetting>(
-        "SELECT * FROM user_settings WHERE user_id = ? AND setting_key = ?",
-    )
-    .bind(user_id)
-    .bind(&setting_key)
-    .fetch_optional(db)
-    .await?;
+pub async fn get_user_setting(db: &Db, user_id: i64, setting_key: String) -> Result<Option<String>> {
+    let setting: Option<UserSetting> =
+        sqlx::query_as::<_, UserSetting>("SELECT * FROM user_settings WHERE user_id = ? AND setting_key = ?")
+            .bind(user_id)
+            .bind(&setting_key)
+            .fetch_optional(db)
+            .await?;
 
     Ok(setting.and_then(|s| s.setting_value))
 }
 
-pub async fn set_user_setting(
-    db: &Db,
-    user_id: i64,
-    setting_key: String,
-    setting_value: String,
-) -> Result<()> {
+pub async fn set_user_setting(db: &Db, user_id: i64, setting_key: String, setting_value: String) -> Result<()> {
     let now = Utc::now();
 
     sqlx::query(
@@ -2996,14 +2836,16 @@ pub async fn set_tab_pin(
     if !position.is_finite() {
         return Err(AppError::InvalidInput("bad pin position".into()));
     }
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM tab_pins WHERE user_id = ? AND project_id = ? AND tab_id = ?")
-        .bind(user_id)
-        .bind(project_id)
-        .bind(tab_id)
-        .fetch_optional(db)
-        .await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM tab_pins WHERE user_id = ? AND project_id = ? AND tab_id = ?")
+            .bind(user_id)
+            .bind(project_id)
+            .bind(tab_id)
+            .fetch_optional(db)
+            .await?;
     if exists.is_none() {
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tab_pins WHERE user_id = ?").bind(user_id).fetch_one(db).await?;
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tab_pins WHERE user_id = ?").bind(user_id).fetch_one(db).await?;
         if n >= MAX_TAB_PINS {
             return Err(AppError::InvalidInput(format!("at most {MAX_TAB_PINS} pinned tabs")));
         }
@@ -3037,35 +2879,23 @@ pub async fn unpin_tab(db: &Db, user_id: i64, project_id: i64, tab_id: &str) -> 
 // ---- Atlas (Epoch I) ------------------------------------------------------ //
 
 pub async fn list_atlas_collections(db: &Db) -> Result<Vec<AtlasCollection>> {
-    Ok(sqlx::query_as::<_, AtlasCollection>("SELECT * FROM atlas_collections ORDER BY name ASC")
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as::<_, AtlasCollection>("SELECT * FROM atlas_collections ORDER BY name ASC").fetch_all(db).await?)
 }
 
 /// Library indexing control (see AtlasCollection::auto_index).
 pub async fn set_atlas_auto_index(db: &Db, id: i64, enabled: bool) -> Result<()> {
-    sqlx::query("UPDATE atlas_collections SET auto_index = ? WHERE id = ?")
-        .bind(enabled)
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE atlas_collections SET auto_index = ? WHERE id = ?").bind(enabled).bind(id).execute(db).await?;
     Ok(())
 }
 
 /// The folder changed after the last ingest — stamps the debounce clock.
 pub async fn mark_atlas_dirty(db: &Db, id: i64) -> Result<()> {
-    sqlx::query("UPDATE atlas_collections SET dirty_at = datetime('now') WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE atlas_collections SET dirty_at = datetime('now') WHERE id = ?").bind(id).execute(db).await?;
     Ok(())
 }
 
 pub async fn clear_atlas_dirty(db: &Db, id: i64) -> Result<()> {
-    sqlx::query("UPDATE atlas_collections SET dirty_at = NULL WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE atlas_collections SET dirty_at = NULL WHERE id = ?").bind(id).execute(db).await?;
     Ok(())
 }
 
@@ -3279,7 +3109,10 @@ pub async fn list_unlinked_email_threads_for(db: &Db, user_id: i64, limit: i64) 
 }
 
 pub async fn get_email_account(db: &Db, id: i64) -> Result<Option<EmailAccount>> {
-    Ok(sqlx::query_as::<_, EmailAccount>("SELECT * FROM email_accounts WHERE id = ?").bind(id).fetch_optional(db).await?)
+    Ok(sqlx::query_as::<_, EmailAccount>("SELECT * FROM email_accounts WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3435,7 +3268,11 @@ pub async fn upsert_email_message(
 /// Link a thread to a project (None = unlink). Linking publishes the thread to
 /// the project's members and queues its bodies for fetch + RAG staging.
 pub async fn set_email_thread_project(db: &Db, thread_id: i64, project_id: Option<i64>) -> Result<()> {
-    sqlx::query("UPDATE email_threads SET project_id = ? WHERE id = ?").bind(project_id).bind(thread_id).execute(db).await?;
+    sqlx::query("UPDATE email_threads SET project_id = ? WHERE id = ?")
+        .bind(project_id)
+        .bind(thread_id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -3465,16 +3302,18 @@ pub async fn list_unlinked_email_threads(db: &Db, limit: i64) -> Result<Vec<Emai
 
 /// A thread's messages, oldest first.
 pub async fn list_email_thread_messages(db: &Db, thread_id: i64) -> Result<Vec<EmailMessage>> {
-    Ok(sqlx::query_as::<_, EmailMessage>(
-        "SELECT * FROM email_messages WHERE thread_id = ? ORDER BY date ASC, uid ASC",
-    )
-    .bind(thread_id)
-    .fetch_all(db)
-    .await?)
+    Ok(sqlx::query_as::<_, EmailMessage>("SELECT * FROM email_messages WHERE thread_id = ? ORDER BY date ASC, uid ASC")
+        .bind(thread_id)
+        .fetch_all(db)
+        .await?)
 }
 
 pub async fn set_email_message_body(db: &Db, message_id: i64, body_text: &str) -> Result<()> {
-    sqlx::query("UPDATE email_messages SET body_text = ? WHERE id = ?").bind(body_text).bind(message_id).execute(db).await?;
+    sqlx::query("UPDATE email_messages SET body_text = ? WHERE id = ?")
+        .bind(body_text)
+        .bind(message_id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -3607,19 +3446,13 @@ pub async fn list_binned_chats(db: &Db, project_id: i64, user_id: i64) -> Result
 
 /// Move a chat to the bin (stage 1 of deletion — restorable).
 pub async fn bin_chat(db: &Db, chat_id: i64) -> Result<()> {
-    sqlx::query("UPDATE chats SET deleted_at = datetime('now') WHERE id = ?")
-        .bind(chat_id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE chats SET deleted_at = datetime('now') WHERE id = ?").bind(chat_id).execute(db).await?;
     Ok(())
 }
 
 /// Bring a binned chat back.
 pub async fn restore_chat(db: &Db, chat_id: i64) -> Result<()> {
-    sqlx::query("UPDATE chats SET deleted_at = NULL WHERE id = ?")
-        .bind(chat_id)
-        .execute(db)
-        .await?;
+    sqlx::query("UPDATE chats SET deleted_at = NULL WHERE id = ?").bind(chat_id).execute(db).await?;
     Ok(())
 }
 
@@ -3633,10 +3466,7 @@ pub async fn chat_project(db: &Db, chat_id: i64) -> Result<Option<i64>> {
 
 /// A single chat thread by id (used to check authorship before publishing).
 pub async fn get_chat(db: &Db, chat_id: i64) -> Result<Option<Chat>> {
-    Ok(sqlx::query_as::<_, Chat>("SELECT * FROM chats WHERE id = ?")
-        .bind(chat_id)
-        .fetch_optional(db)
-        .await?)
+    Ok(sqlx::query_as::<_, Chat>("SELECT * FROM chats WHERE id = ?").bind(chat_id).fetch_optional(db).await?)
 }
 
 /// Publish (or unpublish) a chat to the whole project team. Returns the row.
@@ -3646,22 +3476,14 @@ pub async fn set_chat_public(db: &Db, chat_id: i64, is_public: bool) -> Result<C
         .bind(chat_id)
         .execute(db)
         .await?;
-    get_chat(db, chat_id)
-        .await?
-        .ok_or_else(|| crate::error::AppError::NotFound("chat".into()))
+    get_chat(db, chat_id).await?.ok_or_else(|| crate::error::AppError::NotFound("chat".into()))
 }
 
 /// Pin (or unpin) a chat — pinned threads float to the top of the list. Note:
 /// pinning does NOT bump updated_at, so it never reorders the recency sort.
 pub async fn set_chat_pinned(db: &Db, chat_id: i64, pinned: bool) -> Result<Chat> {
-    sqlx::query("UPDATE chats SET pinned = ? WHERE id = ?")
-        .bind(pinned as i64)
-        .bind(chat_id)
-        .execute(db)
-        .await?;
-    get_chat(db, chat_id)
-        .await?
-        .ok_or_else(|| crate::error::AppError::NotFound("chat".into()))
+    sqlx::query("UPDATE chats SET pinned = ? WHERE id = ?").bind(pinned as i64).bind(chat_id).execute(db).await?;
+    get_chat(db, chat_id).await?.ok_or_else(|| crate::error::AppError::NotFound("chat".into()))
 }
 
 /// All messages in a chat, oldest first (the order the model needs as history).
@@ -3784,9 +3606,7 @@ pub async fn delete_model_profile(db: &Db, id: i64) -> Result<()> {
 
 /// The active profile (by 'ai_active_profile_id'), if set and still present.
 pub async fn active_model_profile(db: &Db) -> Result<Option<ModelProfile>> {
-    let id = get_app_setting(db, "ai_active_profile_id")
-        .await?
-        .and_then(|s| s.trim().parse::<i64>().ok());
+    let id = get_app_setting(db, "ai_active_profile_id").await?.and_then(|s| s.trim().parse::<i64>().ok());
     match id {
         Some(id) => get_model_profile(db, id).await,
         None => Ok(None),
@@ -4044,7 +3864,10 @@ pub async fn record_rule_fired(db: &Db, id: i64) -> Result<()> {
 /// board yet (the TUI's MAX_AUTO_PART_NUMBER). Caps obvious typos (9999 for 99).
 const MAX_AUTO_PART_NUMBER: i64 = 999;
 
-fn model_kit_project(db: &Db, kit_id: i64) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<i64>>> + Send + '_>> {
+fn model_kit_project(
+    db: &Db,
+    kit_id: i64,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<i64>>> + Send + '_>> {
     Box::pin(async move {
         let pid: Option<i64> = sqlx::query_scalar("SELECT project_id FROM model_kits WHERE id = ?")
             .bind(kit_id)
@@ -4056,16 +3879,17 @@ fn model_kit_project(db: &Db, kit_id: i64) -> std::pin::Pin<Box<dyn std::future:
 
 fn touch_kit(db: &Db, kit_id: i64) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
     Box::pin(async move {
-        sqlx::query("UPDATE model_kits SET updated_at = datetime('now') WHERE id = ?")
-            .bind(kit_id)
-            .execute(db)
-            .await?;
+        sqlx::query("UPDATE model_kits SET updated_at = datetime('now') WHERE id = ?").bind(kit_id).execute(db).await?;
         Ok(())
     })
 }
 
 fn normalize_kind(k: &str) -> String {
-    if MODEL_KINDS.contains(&k) { k.to_string() } else { "other".to_string() }
+    if MODEL_KINDS.contains(&k) {
+        k.to_string()
+    } else {
+        "other".to_string()
+    }
 }
 
 fn normalize_status(s: Option<&str>) -> String {
@@ -4076,12 +3900,10 @@ fn normalize_status(s: Option<&str>) -> String {
 }
 
 pub async fn list_model_kits(db: &Db, project_id: i64) -> Result<Vec<ModelKit>> {
-    let kits = sqlx::query_as::<_, ModelKit>(
-        "SELECT * FROM model_kits WHERE project_id = ? ORDER BY sort_order, id",
-    )
-    .bind(project_id)
-    .fetch_all(db)
-    .await?;
+    let kits = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE project_id = ? ORDER BY sort_order, id")
+        .bind(project_id)
+        .fetch_all(db)
+        .await?;
     Ok(kits)
 }
 
@@ -4111,16 +3933,19 @@ pub async fn create_model_kit(db: &Db, input: CreateModelKitInput) -> Result<Mod
     .execute(db)
     .await?;
     let id = res.last_insert_rowid();
-    let kit = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE id = ?")
-        .bind(id)
-        .fetch_one(db)
-        .await?;
-    emit(DomainEvent { kind: "model.kit_created".into(), project_id: Some(input.project_id), entity_id: id, data: serde_json::json!({ "kind": kind, "status": status }) });
+    let kit = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE id = ?").bind(id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.kit_created".into(),
+        project_id: Some(input.project_id),
+        entity_id: id,
+        data: serde_json::json!({ "kind": kind, "status": status }),
+    });
     Ok(kit)
 }
 
 pub async fn update_model_kit(db: &Db, kit_id: i64, input: UpdateModelKitInput) -> Result<ModelKit> {
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     let cur = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE id = ?").bind(kit_id).fetch_one(db).await?;
     let name = input.name.unwrap_or(cur.name);
     let kind = normalize_kind(&input.kind.unwrap_or(cur.kind.clone()));
@@ -4144,7 +3969,12 @@ pub async fn update_model_kit(db: &Db, kit_id: i64, input: UpdateModelKitInput) 
     .execute(db)
     .await?;
     let kit = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE id = ?").bind(kit_id).fetch_one(db).await?;
-    emit(DomainEvent { kind: "model.kit_updated".into(), project_id: Some(pid), entity_id: kit_id, data: serde_json::json!({ "status": status, "prev_status": prev_status }) });
+    emit(DomainEvent {
+        kind: "model.kit_updated".into(),
+        project_id: Some(pid),
+        entity_id: kit_id,
+        data: serde_json::json!({ "status": status, "prev_status": prev_status }),
+    });
     Ok(kit)
 }
 
@@ -4152,7 +3982,12 @@ pub async fn delete_model_kit(db: &Db, kit_id: i64) -> Result<()> {
     let pid = model_kit_project(db, kit_id).await?;
     sqlx::query("DELETE FROM model_kits WHERE id = ?").bind(kit_id).execute(db).await?;
     if let Some(pid) = pid {
-        emit(DomainEvent { kind: "model.kit_deleted".into(), project_id: Some(pid), entity_id: kit_id, data: serde_json::json!({}) });
+        emit(DomainEvent {
+            kind: "model.kit_deleted".into(),
+            project_id: Some(pid),
+            entity_id: kit_id,
+            data: serde_json::json!({}),
+        });
     }
     Ok(())
 }
@@ -4161,7 +3996,8 @@ pub async fn delete_model_kit(db: &Db, kit_id: i64) -> Result<()> {
 /// counts (a runner with two of #7 → `{7: 2}`). Mirrors the TUI.
 pub async fn create_model_board(db: &Db, input: CreateModelBoardInput) -> Result<ModelBoard> {
     let kit_id = input.kit_id;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(crate::error::AppError::InvalidInput("board name is required".into()));
@@ -4169,11 +4005,20 @@ pub async fn create_model_board(db: &Db, input: CreateModelBoardInput) -> Result
     if input.max_parts < 0 {
         return Err(crate::error::AppError::InvalidInput("max_parts cannot be negative".into()));
     }
-    let next_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_boards WHERE kit_id = ?")
-        .bind(kit_id).fetch_one(db).await?;
-    let res = sqlx::query("INSERT INTO model_boards (kit_id, name, max_parts, color, sort_order) VALUES (?, ?, ?, ?, ?)")
-        .bind(kit_id).bind(name).bind(input.max_parts).bind(input.color.as_deref()).bind(next_order)
-        .execute(db).await?;
+    let next_order: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_boards WHERE kit_id = ?")
+            .bind(kit_id)
+            .fetch_one(db)
+            .await?;
+    let res =
+        sqlx::query("INSERT INTO model_boards (kit_id, name, max_parts, color, sort_order) VALUES (?, ?, ?, ?, ?)")
+            .bind(kit_id)
+            .bind(name)
+            .bind(input.max_parts)
+            .bind(input.color.as_deref())
+            .bind(next_order)
+            .execute(db)
+            .await?;
     let board_id = res.last_insert_rowid();
 
     // Build the part-number list: 1..max_parts, with extra copies for duplicates.
@@ -4186,23 +4031,36 @@ pub async fn create_model_board(db: &Db, input: CreateModelBoardInput) -> Result
     if !numbers.is_empty() {
         let mut sql = String::from("INSERT INTO model_parts (board_id, number, is_used) VALUES ");
         for (i, _n) in numbers.iter().enumerate() {
-            if i > 0 { sql.push(','); }
+            if i > 0 {
+                sql.push(',');
+            }
             sql.push_str("(?, ?, 0)");
         }
         let mut q = sqlx::query(&sql);
-        for n in &numbers { q = q.bind(board_id).bind(n); }
+        for n in &numbers {
+            q = q.bind(board_id).bind(n);
+        }
         q.execute(db).await?;
     }
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.board_created".into(), project_id: Some(pid), entity_id: board_id, data: serde_json::json!({ "kit_id": kit_id }) });
-    let board = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.board_created".into(),
+        project_id: Some(pid),
+        entity_id: board_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
+    let board =
+        sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
     Ok(board)
 }
 
 pub async fn update_model_board(db: &Db, board_id: i64, input: UpdateModelBoardInput) -> Result<ModelBoard> {
-    let kit_id: i64 = sqlx::query_scalar("SELECT kit_id FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
-    let cur = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
+    let kit_id: i64 =
+        sqlx::query_scalar("SELECT kit_id FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let cur =
+        sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
     // Growing max_parts creates the new part rows; shrinking never deletes
     // existing parts (you may have already used #30) — it only changes the
     // declared grid extent.
@@ -4211,11 +4069,15 @@ pub async fn update_model_board(db: &Db, board_id: i64, input: UpdateModelBoardI
         let mut sql = String::from("INSERT INTO model_parts (board_id, number, is_used) VALUES ");
         let new_numbers: Vec<i64> = ((cur.max_parts + 1)..=new_max).collect();
         for (i, _n) in new_numbers.iter().enumerate() {
-            if i > 0 { sql.push(','); }
+            if i > 0 {
+                sql.push(',');
+            }
             sql.push_str("(?, ?, 0)");
         }
         let mut q = sqlx::query(&sql);
-        for n in &new_numbers { q = q.bind(board_id).bind(n); }
+        for n in &new_numbers {
+            q = q.bind(board_id).bind(n);
+        }
         q.execute(db).await?;
     }
     sqlx::query("UPDATE model_boards SET name=?, max_parts=?, color=?, sort_order=? WHERE id=?")
@@ -4224,73 +4086,132 @@ pub async fn update_model_board(db: &Db, board_id: i64, input: UpdateModelBoardI
         .bind(input.color.or(cur.color))
         .bind(input.sort_order.unwrap_or(cur.sort_order))
         .bind(board_id)
-        .execute(db).await?;
+        .execute(db)
+        .await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.board_updated".into(), project_id: Some(pid), entity_id: board_id, data: serde_json::json!({ "kit_id": kit_id }) });
-    let board = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.board_updated".into(),
+        project_id: Some(pid),
+        entity_id: board_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
+    let board =
+        sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
     Ok(board)
 }
 
 pub async fn delete_model_board(db: &Db, board_id: i64) -> Result<()> {
-    let kit_id: i64 = sqlx::query_scalar("SELECT kit_id FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let kit_id: i64 =
+        sqlx::query_scalar("SELECT kit_id FROM model_boards WHERE id = ?").bind(board_id).fetch_one(db).await?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     sqlx::query("DELETE FROM model_boards WHERE id = ?").bind(board_id).execute(db).await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.board_deleted".into(), project_id: Some(pid), entity_id: board_id, data: serde_json::json!({ "kit_id": kit_id }) });
+    emit(DomainEvent {
+        kind: "model.board_deleted".into(),
+        project_id: Some(pid),
+        entity_id: board_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
     Ok(())
 }
 
 pub async fn list_model_sections(db: &Db, kit_id: i64) -> Result<Vec<ModelSection>> {
-    let sections = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE kit_id = ? ORDER BY sort_order, id")
-        .bind(kit_id).fetch_all(db).await?;
+    let sections =
+        sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE kit_id = ? ORDER BY sort_order, id")
+            .bind(kit_id)
+            .fetch_all(db)
+            .await?;
     Ok(sections)
 }
 
 pub async fn create_model_section(db: &Db, input: CreateModelSectionInput) -> Result<ModelSection> {
     let kit_id = input.kit_id;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(crate::error::AppError::InvalidInput("section name is required".into()));
     }
-    let next_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_sections WHERE kit_id = ?")
-        .bind(kit_id).fetch_one(db).await?;
-    let res = sqlx::query("INSERT INTO model_sections (kit_id, name, start_step, end_step, sort_order) VALUES (?, ?, ?, ?, ?)")
-        .bind(kit_id).bind(name).bind(input.start_step.as_deref()).bind(input.end_step.as_deref()).bind(next_order)
-        .execute(db).await?;
+    let next_order: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_sections WHERE kit_id = ?")
+            .bind(kit_id)
+            .fetch_one(db)
+            .await?;
+    let res = sqlx::query(
+        "INSERT INTO model_sections (kit_id, name, start_step, end_step, sort_order) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(kit_id)
+    .bind(name)
+    .bind(input.start_step.as_deref())
+    .bind(input.end_step.as_deref())
+    .bind(next_order)
+    .execute(db)
+    .await?;
     let id = res.last_insert_rowid();
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.section_created".into(), project_id: Some(pid), entity_id: id, data: serde_json::json!({ "kit_id": kit_id }) });
-    let s = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?").bind(id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.section_created".into(),
+        project_id: Some(pid),
+        entity_id: id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
+    let s =
+        sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?").bind(id).fetch_one(db).await?;
     Ok(s)
 }
 
 pub async fn update_model_section(db: &Db, section_id: i64, input: UpdateModelSectionInput) -> Result<ModelSection> {
-    let kit_id: i64 = sqlx::query_scalar("SELECT kit_id FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
-    let cur = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
+    let kit_id: i64 =
+        sqlx::query_scalar("SELECT kit_id FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let cur = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?")
+        .bind(section_id)
+        .fetch_one(db)
+        .await?;
     sqlx::query("UPDATE model_sections SET name=?, start_step=?, end_step=?, sort_order=? WHERE id=?")
         .bind(input.name.unwrap_or(cur.name))
         .bind(input.start_step.or(cur.start_step))
         .bind(input.end_step.or(cur.end_step))
         .bind(input.sort_order.unwrap_or(cur.sort_order))
         .bind(section_id)
-        .execute(db).await?;
+        .execute(db)
+        .await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.section_updated".into(), project_id: Some(pid), entity_id: section_id, data: serde_json::json!({ "kit_id": kit_id }) });
-    let s = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.section_updated".into(),
+        project_id: Some(pid),
+        entity_id: section_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
+    let s = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE id = ?")
+        .bind(section_id)
+        .fetch_one(db)
+        .await?;
     Ok(s)
 }
 
 pub async fn delete_model_section(db: &Db, section_id: i64) -> Result<()> {
-    let kit_id: i64 = sqlx::query_scalar("SELECT kit_id FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let kit_id: i64 =
+        sqlx::query_scalar("SELECT kit_id FROM model_sections WHERE id = ?").bind(section_id).fetch_one(db).await?;
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     // Free the parts this section held before cascade-delete (the TUI does this).
-    sqlx::query("UPDATE model_parts SET is_used=0 WHERE id IN (SELECT part_id FROM model_used_parts WHERE section_id=?)")
-        .bind(section_id).execute(db).await?;
+    sqlx::query(
+        "UPDATE model_parts SET is_used=0 WHERE id IN (SELECT part_id FROM model_used_parts WHERE section_id=?)",
+    )
+    .bind(section_id)
+    .execute(db)
+    .await?;
     sqlx::query("DELETE FROM model_sections WHERE id = ?").bind(section_id).execute(db).await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.section_deleted".into(), project_id: Some(pid), entity_id: section_id, data: serde_json::json!({ "kit_id": kit_id }) });
+    emit(DomainEvent {
+        kind: "model.section_deleted".into(),
+        project_id: Some(pid),
+        entity_id: section_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
     Ok(())
 }
 
@@ -4301,20 +4222,41 @@ pub async fn delete_model_section(db: &Db, section_id: i64) -> Result<()> {
 /// `(marked, auto_duplicated)` tuple the TUI exposes.
 pub async fn mark_model_part(db: &Db, input: MarkModelPartInput) -> Result<(bool, bool)> {
     let kit_id = input.kit_id;
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
-    let board: Option<ModelBoard> = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE kit_id=? AND name=?")
-        .bind(kit_id).bind(input.board_name.as_str()).fetch_optional(db).await?;
-    let board = match board { Some(b) => b, None => return Ok((false, false)) };
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let board: Option<ModelBoard> =
+        sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE kit_id=? AND name=?")
+            .bind(kit_id)
+            .bind(input.board_name.as_str())
+            .fetch_optional(db)
+            .await?;
+    let board = match board {
+        Some(b) => b,
+        None => return Ok((false, false)),
+    };
     // An unused copy first.
-    let part: Option<ModelPart> = sqlx::query_as::<_, ModelPart>("SELECT * FROM model_parts WHERE board_id=? AND number=? AND is_used=0 LIMIT 1")
-        .bind(board.id).bind(input.part_number).fetch_optional(db).await?;
+    let part: Option<ModelPart> =
+        sqlx::query_as::<_, ModelPart>("SELECT * FROM model_parts WHERE board_id=? AND number=? AND is_used=0 LIMIT 1")
+            .bind(board.id)
+            .bind(input.part_number)
+            .fetch_optional(db)
+            .await?;
     if let Some(p) = part {
         let now = Utc::now();
         sqlx::query("UPDATE model_parts SET is_used=1 WHERE id=?").bind(p.id).execute(db).await?;
         sqlx::query("INSERT INTO model_used_parts (part_id, section_id, used_at) VALUES (?, ?, ?)")
-            .bind(p.id).bind(input.section_id).bind(now).execute(db).await?;
+            .bind(p.id)
+            .bind(input.section_id)
+            .bind(now)
+            .execute(db)
+            .await?;
         touch_kit(db, kit_id).await?;
-        emit(DomainEvent { kind: "model.part_marked".into(), project_id: Some(pid), entity_id: p.id, data: serde_json::json!({ "kit_id": kit_id, "section_id": input.section_id }) });
+        emit(DomainEvent {
+            kind: "model.part_marked".into(),
+            project_id: Some(pid),
+            entity_id: p.id,
+            data: serde_json::json!({ "kit_id": kit_id, "section_id": input.section_id }),
+        });
         return Ok((true, false));
     }
     // No unused copy — auto-create, capped at MAX_AUTO_PART_NUMBER.
@@ -4322,63 +4264,125 @@ pub async fn mark_model_part(db: &Db, input: MarkModelPartInput) -> Result<(bool
         return Ok((false, false));
     }
     if input.part_number > board.max_parts {
-        sqlx::query("UPDATE model_boards SET max_parts=? WHERE id=?").bind(input.part_number).bind(board.id).execute(db).await?;
+        sqlx::query("UPDATE model_boards SET max_parts=? WHERE id=?")
+            .bind(input.part_number)
+            .bind(board.id)
+            .execute(db)
+            .await?;
     }
     let res = sqlx::query("INSERT INTO model_parts (board_id, number, is_used) VALUES (?, ?, 1)")
-        .bind(board.id).bind(input.part_number).execute(db).await?;
+        .bind(board.id)
+        .bind(input.part_number)
+        .execute(db)
+        .await?;
     let new_id = res.last_insert_rowid();
     let now = Utc::now();
     sqlx::query("INSERT INTO model_used_parts (part_id, section_id, used_at) VALUES (?, ?, ?)")
-        .bind(new_id).bind(input.section_id).bind(now).execute(db).await?;
+        .bind(new_id)
+        .bind(input.section_id)
+        .bind(now)
+        .execute(db)
+        .await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.part_marked".into(), project_id: Some(pid), entity_id: new_id, data: serde_json::json!({ "kit_id": kit_id, "section_id": input.section_id, "auto_duplicated": true }) });
+    emit(DomainEvent {
+        kind: "model.part_marked".into(),
+        project_id: Some(pid),
+        entity_id: new_id,
+        data: serde_json::json!({ "kit_id": kit_id, "section_id": input.section_id, "auto_duplicated": true }),
+    });
     Ok((true, true))
 }
 
 /// Free one used copy of a board's part (clears is_used + deletes its UsedPart).
 pub async fn unmark_model_part(db: &Db, kit_id: i64, board_name: &str, part_number: i64) -> Result<bool> {
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
-    let row: Option<(i64, i64)> = sqlx::query_as("SELECT p.id, u.id FROM model_parts p \
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT p.id, u.id FROM model_parts p \
         JOIN model_boards b ON p.board_id=b.id \
         LEFT JOIN model_used_parts u ON u.part_id=p.id \
         WHERE b.kit_id=? AND b.name=? AND p.number=? AND p.is_used=1 \
-        ORDER BY u.used_at DESC LIMIT 1")
-        .bind(kit_id).bind(board_name).bind(part_number).fetch_optional(db).await?;
+        ORDER BY u.used_at DESC LIMIT 1",
+    )
+    .bind(kit_id)
+    .bind(board_name)
+    .bind(part_number)
+    .fetch_optional(db)
+    .await?;
     let Some((part_id, used_id)) = row else { return Ok(false) };
     sqlx::query("DELETE FROM model_used_parts WHERE id=?").bind(used_id).execute(db).await?;
     sqlx::query("UPDATE model_parts SET is_used=0 WHERE id=?").bind(part_id).execute(db).await?;
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.part_unmarked".into(), project_id: Some(pid), entity_id: part_id, data: serde_json::json!({ "kit_id": kit_id }) });
+    emit(DomainEvent {
+        kind: "model.part_unmarked".into(),
+        project_id: Some(pid),
+        entity_id: part_id,
+        data: serde_json::json!({ "kit_id": kit_id }),
+    });
     Ok(true)
 }
 
 /// Link a project_file to a kit under a category. Returns the link row.
-pub async fn link_model_kit_file(db: &Db, kit_id: i64, file_id: i64, kind: &str, caption: Option<&str>) -> Result<ModelKitFile> {
-    let pid = model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
+pub async fn link_model_kit_file(
+    db: &Db,
+    kit_id: i64,
+    file_id: i64,
+    kind: &str,
+    caption: Option<&str>,
+) -> Result<ModelKitFile> {
+    let pid =
+        model_kit_project(db, kit_id).await?.ok_or_else(|| crate::error::AppError::NotFound("model kit".into()))?;
     // The file must belong to the same project (no cross-project borrowing).
-    let file_pid: i64 = sqlx::query_scalar("SELECT project_id FROM project_files WHERE id = ?").bind(file_id).fetch_one(db).await?;
+    let file_pid: i64 =
+        sqlx::query_scalar("SELECT project_id FROM project_files WHERE id = ?").bind(file_id).fetch_one(db).await?;
     if file_pid != pid {
         return Err(crate::error::AppError::InvalidInput("that file is not in this project".into()));
     }
-    let k = match kind { "manual" | "paint" => kind, _ => "photo" };
-    let next_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_kit_files WHERE kit_id=? AND kind=?")
-        .bind(kit_id).bind(k).fetch_one(db).await?;
-    let res = sqlx::query("INSERT INTO model_kit_files (kit_id, file_id, kind, caption, sort_order) VALUES (?, ?, ?, ?, ?)")
-        .bind(kit_id).bind(file_id).bind(k).bind(caption).bind(next_order).execute(db).await?;
+    let k = match kind {
+        "manual" | "paint" => kind,
+        _ => "photo",
+    };
+    let next_order: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_kit_files WHERE kit_id=? AND kind=?")
+            .bind(kit_id)
+            .bind(k)
+            .fetch_one(db)
+            .await?;
+    let res =
+        sqlx::query("INSERT INTO model_kit_files (kit_id, file_id, kind, caption, sort_order) VALUES (?, ?, ?, ?, ?)")
+            .bind(kit_id)
+            .bind(file_id)
+            .bind(k)
+            .bind(caption)
+            .bind(next_order)
+            .execute(db)
+            .await?;
     let id = res.last_insert_rowid();
     touch_kit(db, kit_id).await?;
-    emit(DomainEvent { kind: "model.file_linked".into(), project_id: Some(pid), entity_id: id, data: serde_json::json!({ "kit_id": kit_id, "file_id": file_id, "kind": k }) });
-    let f = sqlx::query_as::<_, ModelKitFile>("SELECT * FROM model_kit_files WHERE id = ?").bind(id).fetch_one(db).await?;
+    emit(DomainEvent {
+        kind: "model.file_linked".into(),
+        project_id: Some(pid),
+        entity_id: id,
+        data: serde_json::json!({ "kit_id": kit_id, "file_id": file_id, "kind": k }),
+    });
+    let f =
+        sqlx::query_as::<_, ModelKitFile>("SELECT * FROM model_kit_files WHERE id = ?").bind(id).fetch_one(db).await?;
     Ok(f)
 }
 
 pub async fn unlink_model_kit_file(db: &Db, link_id: i64) -> Result<()> {
-    let kit_id: Option<i64> = sqlx::query_scalar("SELECT kit_id FROM model_kit_files WHERE id = ?").bind(link_id).fetch_optional(db).await?;
+    let kit_id: Option<i64> =
+        sqlx::query_scalar("SELECT kit_id FROM model_kit_files WHERE id = ?").bind(link_id).fetch_optional(db).await?;
     sqlx::query("DELETE FROM model_kit_files WHERE id = ?").bind(link_id).execute(db).await?;
     if let Some(kid) = kit_id {
         if let Some(pid) = model_kit_project(db, kid).await? {
             touch_kit(db, kid).await?;
-            emit(DomainEvent { kind: "model.file_unlinked".into(), project_id: Some(pid), entity_id: link_id, data: serde_json::json!({ "kit_id": kid }) });
+            emit(DomainEvent {
+                kind: "model.file_unlinked".into(),
+                project_id: Some(pid),
+                entity_id: link_id,
+                data: serde_json::json!({ "kit_id": kid }),
+            });
         }
     }
     Ok(())
@@ -4389,7 +4393,10 @@ pub async fn unlink_model_kit_file(db: &Db, link_id: i64) -> Result<()> {
 /// progress. One round trip, no N+1 on the frontend.
 pub async fn get_model_kit_detail(db: &Db, kit_id: i64) -> Result<ModelKitDetail> {
     let kit = sqlx::query_as::<_, ModelKit>("SELECT * FROM model_kits WHERE id = ?").bind(kit_id).fetch_one(db).await?;
-    let boards = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE kit_id=? ORDER BY sort_order, id").bind(kit_id).fetch_all(db).await?;
+    let boards = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE kit_id=? ORDER BY sort_order, id")
+        .bind(kit_id)
+        .fetch_all(db)
+        .await?;
     let board_ids: Vec<i64> = boards.iter().map(|b| b.id).collect();
     let mut parts_by_board: std::collections::BTreeMap<i64, Vec<ModelPart>> = std::collections::BTreeMap::new();
     let mut total_parts: i64 = 0;
@@ -4400,24 +4407,53 @@ pub async fn get_model_kit_detail(db: &Db, kit_id: i64) -> Result<ModelKitDetail
             "SELECT * FROM model_parts WHERE board_id IN (SELECT id FROM model_boards WHERE kit_id = ?) ORDER BY number")
             .bind(kit_id).fetch_all(db).await?
             .into_iter().map(|p| { total_parts += 1; if p.is_used { used_parts += 1; } (p.board_id, p) }).collect();
-        for (bid, p) in all_parts { parts_by_board.entry(bid).or_default().push(p); }
+        for (bid, p) in all_parts {
+            parts_by_board.entry(bid).or_default().push(p);
+        }
     }
-    let sections = sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE kit_id=? ORDER BY sort_order, id").bind(kit_id).fetch_all(db).await?;
+    let sections =
+        sqlx::query_as::<_, ModelSection>("SELECT * FROM model_sections WHERE kit_id=? ORDER BY sort_order, id")
+            .bind(kit_id)
+            .fetch_all(db)
+            .await?;
     // used_by_section: section_id → board_id → sorted part numbers.
     let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
         "SELECT u.section_id, b.id, p.number FROM model_used_parts u \
          JOIN model_parts p ON u.part_id=p.id \
          JOIN model_boards b ON p.board_id=b.id \
-         WHERE b.kit_id=? ORDER BY u.used_at")
-        .bind(kit_id).fetch_all(db).await?;
-    let mut used_by_section: std::collections::BTreeMap<i64, std::collections::BTreeMap<i64, Vec<i64>>> = std::collections::BTreeMap::new();
+         WHERE b.kit_id=? ORDER BY u.used_at",
+    )
+    .bind(kit_id)
+    .fetch_all(db)
+    .await?;
+    let mut used_by_section: std::collections::BTreeMap<i64, std::collections::BTreeMap<i64, Vec<i64>>> =
+        std::collections::BTreeMap::new();
     for (sid, bid, num) in rows {
         used_by_section.entry(sid).or_default().entry(bid).or_default().push(num);
     }
-    for m in used_by_section.values_mut() { for v in m.values_mut() { v.sort(); } }
-    let files = sqlx::query_as::<_, ModelKitFile>("SELECT * FROM model_kit_files WHERE kit_id=? ORDER BY kind, sort_order, id").bind(kit_id).fetch_all(db).await?;
-    let percent = if total_parts > 0 { (used_parts as f64 / total_parts as f64 * 100.0 * 10.0).round() / 10.0 } else { 0.0 };
-    Ok(ModelKitDetail { kit, boards, parts_by_board, sections, used_by_section, files, total_parts, used_parts, percent })
+    for m in used_by_section.values_mut() {
+        for v in m.values_mut() {
+            v.sort();
+        }
+    }
+    let files =
+        sqlx::query_as::<_, ModelKitFile>("SELECT * FROM model_kit_files WHERE kit_id=? ORDER BY kind, sort_order, id")
+            .bind(kit_id)
+            .fetch_all(db)
+            .await?;
+    let percent =
+        if total_parts > 0 { (used_parts as f64 / total_parts as f64 * 100.0 * 10.0).round() / 10.0 } else { 0.0 };
+    Ok(ModelKitDetail {
+        kit,
+        boards,
+        parts_by_board,
+        sections,
+        used_by_section,
+        files,
+        total_parts,
+        used_parts,
+        percent,
+    })
 }
 
 /// Newest-first build log for a kit (the UsedPart audit trail).
@@ -4429,8 +4465,11 @@ pub async fn get_model_build_log(db: &Db, kit_id: i64) -> Result<Vec<ModelBuildL
          JOIN model_parts p ON u.part_id=p.id \
          JOIN model_boards b ON p.board_id=b.id \
          JOIN model_sections s ON u.section_id=s.id \
-         WHERE b.kit_id=? ORDER BY u.used_at DESC")
-        .bind(kit_id).fetch_all(db).await?;
+         WHERE b.kit_id=? ORDER BY u.used_at DESC",
+    )
+    .bind(kit_id)
+    .fetch_all(db)
+    .await?;
     Ok(entries)
 }
 
@@ -4446,10 +4485,15 @@ mod model_tests {
         // ensure_personal_project writes a membership row — FK wants real users.
         for id in [7i64, 8] {
             sqlx::query("INSERT OR IGNORE INTO users (id, username, full_name) VALUES (?, ?, ?)")
-                .bind(id).bind(format!("u{id}")).bind(format!("User {id}"))
-                .execute(&db).await.unwrap();
+                .bind(id)
+                .bind(format!("u{id}"))
+                .bind(format!("User {id}"))
+                .execute(&db)
+                .await
+                .unwrap();
         }
-        let visible = create_project(&db, CreateProjectInput { name: "Gunpla".into(), description: None }).await.unwrap();
+        let visible =
+            create_project(&db, CreateProjectInput { name: "Gunpla".into(), description: None }).await.unwrap();
 
         let p1 = ensure_personal_project(&db, 7).await.unwrap();
         let p2 = ensure_personal_project(&db, 7).await.unwrap();
@@ -4463,10 +4507,22 @@ mod model_tests {
         assert!(!listed.iter().any(|p| p.id == p1 || p.id == other), "personal containers never list");
 
         // Adoption moves the collection wholesale; children ride on kit_id.
-        let kit = create_model_kit(&db, CreateModelKitInput {
-            project_id: visible.id, name: "RX-78-2".into(), kind: "gundam".into(), grade: Some("MG".into()),
-            scale: None, faction: None, points: None, status: None, notes: None,
-        }).await.unwrap();
+        let kit = create_model_kit(
+            &db,
+            CreateModelKitInput {
+                project_id: visible.id,
+                name: "RX-78-2".into(),
+                kind: "gundam".into(),
+                grade: Some("MG".into()),
+                scale: None,
+                faction: None,
+                points: None,
+                status: None,
+                notes: None,
+            },
+        )
+        .await
+        .unwrap();
         let moved = adopt_model_kits(&db, visible.id, p1).await.unwrap();
         assert_eq!(moved, 1);
         assert!(list_model_kits(&db, visible.id).await.unwrap().is_empty(), "source emptied");
@@ -4476,9 +4532,14 @@ mod model_tests {
     }
 
     async fn db() -> Db {
-        let path = std::env::temp_dir().join(format!("ganban_models_{}_{}.db", std::process::id(), std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
-        for ext in ["db", "db-wal", "db-shm"] { let _ = std::fs::remove_file(path.with_extension(ext)); }
+        let path = std::env::temp_dir().join(format!(
+            "ganban_models_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+        ));
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
         let pool = crate::init_db(&path).await.unwrap();
         pool
     }
@@ -4489,11 +4550,48 @@ mod model_tests {
         let proj = create_project(&db, CreateProjectInput { name: "Bench".into(), description: None }).await.unwrap();
 
         // A Gundam kit with a board of 30 parts (two of #7) and one section.
-        let kit = create_model_kit(&db, CreateModelKitInput { project_id: proj.id, name: "RX-78-2".into(), kind: "gundam".into(), grade: Some("RG".into()), scale: Some("1/144".into()), ..Default::default() }).await.unwrap();
+        let kit = create_model_kit(
+            &db,
+            CreateModelKitInput {
+                project_id: proj.id,
+                name: "RX-78-2".into(),
+                kind: "gundam".into(),
+                grade: Some("RG".into()),
+                scale: Some("1/144".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(kit.status, "Backlog");
 
-        let board = create_model_board(&db, CreateModelBoardInput { kit_id: kit.id, name: "A".into(), max_parts: 30, color: Some("#3b6fb0".into()), duplicates: Some({ let mut m = std::collections::BTreeMap::new(); m.insert(7, 2); m }) }).await.unwrap();
-        let section = create_model_section(&db, CreateModelSectionInput { kit_id: kit.id, name: "Chest".into(), start_step: Some("02-1".into()), end_step: Some("02-5".into()) }).await.unwrap();
+        let board = create_model_board(
+            &db,
+            CreateModelBoardInput {
+                kit_id: kit.id,
+                name: "A".into(),
+                max_parts: 30,
+                color: Some("#3b6fb0".into()),
+                duplicates: Some({
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert(7, 2);
+                    m
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let section = create_model_section(
+            &db,
+            CreateModelSectionInput {
+                kit_id: kit.id,
+                name: "Chest".into(),
+                start_step: Some("02-1".into()),
+                end_step: Some("02-5".into()),
+            },
+        )
+        .await
+        .unwrap();
 
         // Duplicates: board has 31 parts (1..30 plus an extra #7).
         let detail = get_model_kit_detail(&db, kit.id).await.unwrap();
@@ -4503,22 +4601,51 @@ mod model_tests {
         assert_eq!(a_parts.iter().filter(|p| p.number == 7).count(), 2, "two copies of #7");
 
         // Mark #7 twice (both copies) — second is NOT auto-dup since a copy exists.
-        let r1 = mark_model_part(&db, MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id }).await.unwrap();
-        let r2 = mark_model_part(&db, MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id }).await.unwrap();
+        let r1 = mark_model_part(
+            &db,
+            MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id },
+        )
+        .await
+        .unwrap();
+        let r2 = mark_model_part(
+            &db,
+            MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id },
+        )
+        .await
+        .unwrap();
         assert_eq!(r1, (true, false));
         assert_eq!(r2, (true, false));
         // A third #7 has no unused copy → auto-duplicate.
-        let r3 = mark_model_part(&db, MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id }).await.unwrap();
+        let r3 = mark_model_part(
+            &db,
+            MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 7, section_id: section.id },
+        )
+        .await
+        .unwrap();
         assert_eq!(r3, (true, true));
 
         // A brand-new number (not on the board) is auto-created, growing max_parts.
-        let r4 = mark_model_part(&db, MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 42, section_id: section.id }).await.unwrap();
+        let r4 = mark_model_part(
+            &db,
+            MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 42, section_id: section.id },
+        )
+        .await
+        .unwrap();
         assert_eq!(r4, (true, true));
-        let board2 = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?").bind(board.id).fetch_one(&db).await.unwrap();
+        let board2 = sqlx::query_as::<_, ModelBoard>("SELECT * FROM model_boards WHERE id = ?")
+            .bind(board.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(board2.max_parts, 42, "max_parts grew to cover the new number");
 
         // A typo-sized number is rejected.
-        let r5 = mark_model_part(&db, MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 9999, section_id: section.id }).await.unwrap();
+        let r5 = mark_model_part(
+            &db,
+            MarkModelPartInput { kit_id: kit.id, board_name: "A".into(), part_number: 9999, section_id: section.id },
+        )
+        .await
+        .unwrap();
         assert_eq!(r5, (false, false));
 
         // Progress + build log reflect 4 marks.
@@ -4544,20 +4671,43 @@ mod model_tests {
     async fn warhammer_kit_uses_faction_and_points() {
         let db = db().await;
         let proj = create_project(&db, CreateProjectInput { name: "Bench".into(), description: None }).await.unwrap();
-        let kit = create_model_kit(&db, CreateModelKitInput {
-            project_id: proj.id, name: "Combat Patrol".into(), kind: "40k".into(),
-            faction: Some("Tyranids".into()), points: Some(500), ..Default::default()
-        }).await.unwrap();
+        let kit = create_model_kit(
+            &db,
+            CreateModelKitInput {
+                project_id: proj.id,
+                name: "Combat Patrol".into(),
+                kind: "40k".into(),
+                faction: Some("Tyranids".into()),
+                points: Some(500),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(kit.kind, "40k");
         assert_eq!(kit.faction.as_deref(), Some("Tyranids"));
         assert_eq!(kit.points, Some(500));
         // Unknown kind normalizes to "other".
-        let k2 = create_model_kit(&db, CreateModelKitInput { project_id: proj.id, name: "X".into(), kind: "ponies".into(), ..Default::default() }).await.unwrap();
+        let k2 = create_model_kit(
+            &db,
+            CreateModelKitInput { project_id: proj.id, name: "X".into(), kind: "ponies".into(), ..Default::default() },
+        )
+        .await
+        .unwrap();
         assert_eq!(k2.kind, "other");
         // Status lifecycle: update + a bogus status falls back to Backlog.
-        let moved = update_model_kit(&db, kit.id, UpdateModelKitInput { status: Some("Painted".into()), ..Default::default() }).await.unwrap();
+        let moved =
+            update_model_kit(&db, kit.id, UpdateModelKitInput { status: Some("Painted".into()), ..Default::default() })
+                .await
+                .unwrap();
         assert_eq!(moved.status, "Painted");
-        let bogus = update_model_kit(&db, kit.id, UpdateModelKitInput { status: Some("Teleported".into()), ..Default::default() }).await.unwrap();
+        let bogus = update_model_kit(
+            &db,
+            kit.id,
+            UpdateModelKitInput { status: Some("Teleported".into()), ..Default::default() },
+        )
+        .await
+        .unwrap();
         assert_eq!(bogus.status, "Backlog", "unknown status normalizes to Backlog");
     }
 }
@@ -4591,7 +4741,10 @@ mod exdates_tests {
 
     #[test]
     fn keeps_valid_days_sorted_once() {
-        assert_eq!(clean_exdates(Some(" 2026-11-10,2026-11-03,,2026-11-10,nope,2026-02-30".into())), Some("2026-11-03,2026-11-10".into()));
+        assert_eq!(
+            clean_exdates(Some(" 2026-11-10,2026-11-03,,2026-11-10,nope,2026-02-30".into())),
+            Some("2026-11-03,2026-11-10".into())
+        );
         assert_eq!(clean_exdates(Some("".into())), None);
         assert_eq!(clean_exdates(None), None);
     }

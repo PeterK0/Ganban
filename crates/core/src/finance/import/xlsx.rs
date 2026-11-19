@@ -25,8 +25,8 @@ pub fn read_xlsx(bytes: &[u8]) -> Result<Vec<Vec<Cell>>> {
     if unpacked > MAX_UNPACKED_BYTES {
         return Err(AppError::InvalidInput(TOO_LARGE.into()));
     }
-    let mut book: Xlsx<_> = Xlsx::new(Cursor::new(bytes))
-        .map_err(|_| AppError::InvalidInput("this spreadsheet can't be read".into()))?;
+    let mut book: Xlsx<_> =
+        Xlsx::new(Cursor::new(bytes)).map_err(|_| AppError::InvalidInput("this spreadsheet can't be read".into()))?;
     let range = match book.worksheet_range_at(0) {
         Some(Ok(r)) => r,
         _ => return Err(AppError::InvalidInput("this spreadsheet has no readable sheet".into())),
@@ -56,8 +56,7 @@ fn cell_of(d: &Data) -> Cell {
             let (y, mo, d, h, mi, s, _ms) = x.to_ymd_hms_milli();
             NaiveDate::from_ymd_opt(y as i32, mo as u32, d as u32)
                 .and_then(|date| {
-                    NaiveTime::from_hms_opt(h as u32, mi as u32, s as u32)
-                        .map(|t| NaiveDateTime::new(date, t))
+                    NaiveTime::from_hms_opt(h as u32, mi as u32, s as u32).map(|t| NaiveDateTime::new(date, t))
                 })
                 .map(Cell::Date)
                 .unwrap_or(Cell::Number(x.as_f64()))

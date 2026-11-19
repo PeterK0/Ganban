@@ -110,28 +110,31 @@ pub async fn run_routine(
     ops::set_routine_last_run(db, routine.id).await?;
     // Routines run as the owner (they're the owner's standing instructions).
     let owner = ganban_core::auth::ensure_owner(db).await?;
-    if let Err(e) = ops::record_agent_action(db, ops::NewAgentAction {
-        status: "applied",
-        user_id: owner,
-        profile_id: None,
-        project_id: None, // cross-project work
-        chat_id: None,
-        routine_id: Some(routine.id),
-        tool: routine.kind.as_str(),
-        summary: &format!("Routine “{}” ran", routine.name),
-        args_json: &routine.trigger_json,
-        result_json: Some(&result.to_string()),
-        // Capacity meter: what the run cost (zeroes = deterministic fallbacks).
-        model: run_model.as_deref(),
-        prompt_tokens: Some(run_usage.prompt_tokens),
-        completion_tokens: Some(run_usage.completion_tokens),
-        duration_ms: Some(run_usage.duration_ms),
-        protocol_slug: None,
-        protocol_version: None,
-        content_hash: None,
-        parent_action_id: None,
-        approver_id: None,
-    })
+    if let Err(e) = ops::record_agent_action(
+        db,
+        ops::NewAgentAction {
+            status: "applied",
+            user_id: owner,
+            profile_id: None,
+            project_id: None, // cross-project work
+            chat_id: None,
+            routine_id: Some(routine.id),
+            tool: routine.kind.as_str(),
+            summary: &format!("Routine “{}” ran", routine.name),
+            args_json: &routine.trigger_json,
+            result_json: Some(&result.to_string()),
+            // Capacity meter: what the run cost (zeroes = deterministic fallbacks).
+            model: run_model.as_deref(),
+            prompt_tokens: Some(run_usage.prompt_tokens),
+            completion_tokens: Some(run_usage.completion_tokens),
+            duration_ms: Some(run_usage.duration_ms),
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: None,
+            approver_id: None,
+        },
+    )
     .await
     {
         tracing::warn!("ran '{}' but could not ledger it: {e}", routine.name);
@@ -164,7 +167,8 @@ pub fn spawn_runner(
         loop {
             let routines = ops::list_routines(&db).await.unwrap_or_default();
             let now = Utc::now();
-            let due: Vec<Routine> = routines.into_iter().filter(|r| is_due(r, now) && backoff.ready(r.id, now)).collect();
+            let due: Vec<Routine> =
+                routines.into_iter().filter(|r| is_due(r, now) && backoff.ready(r.id, now)).collect();
             if !due.is_empty() {
                 let client = ollama.read().await.clone();
                 let rag_client = rag.read().await.clone();
@@ -230,7 +234,10 @@ mod tests {
         ganban_core::finance::entity_for_user(&db, owner).await.unwrap();
         let r = ops::routine_by_kind(&db, "ecb_rates").await.unwrap().unwrap();
         assert!(r.last_run_at.is_none() && is_due(&r, Utc::now()));
-        assert_eq!(ganban_core::finance::rates::feed_url(&db).await.unwrap(), ganban_core::finance::rates::ECB_HIST_URL);
+        assert_eq!(
+            ganban_core::finance::rates::feed_url(&db).await.unwrap(),
+            ganban_core::finance::rates::ECB_HIST_URL
+        );
     }
 
     #[tokio::test]

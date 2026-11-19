@@ -47,9 +47,7 @@ async fn day_view_includes_timed_and_all_day_events_on_that_day() {
     let _next = add(&db, "Tomorrow", "2026-06-18T09:00:00Z", false).await;
 
     // Day view asks for a single day: start == end.
-    let got = ops::get_events(&db, Some("2026-06-17".into()), Some("2026-06-17".into()), Some(false))
-        .await
-        .unwrap();
+    let got = ops::get_events(&db, Some("2026-06-17".into()), Some("2026-06-17".into()), Some(false)).await.unwrap();
     let ids: Vec<i64> = got.iter().map(|e| e.id).collect();
 
     assert!(ids.contains(&timed), "timed event on the day must show in the Day view");
@@ -63,10 +61,7 @@ async fn task_linked_event_ids_lists_only_task_connected_events() {
     let with_task = add(&db, "Has task", "2026-06-17T10:00:00Z", false).await;
     let _without = add(&db, "No task", "2026-06-17T11:00:00Z", false).await;
 
-    let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None })
-        .await
-        .unwrap()
-        .id;
+    let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
     let task = ops::create_task(
         &db,
         CreateTaskInput {
@@ -101,9 +96,7 @@ async fn month_window_is_inclusive_of_the_last_day() {
     let last = add(&db, "Month end", "2026-06-30T23:30:00Z", false).await;
     let _after = add(&db, "Next month", "2026-07-01T00:00:00Z", false).await;
 
-    let got = ops::get_events(&db, Some("2026-06-01".into()), Some("2026-06-30".into()), Some(false))
-        .await
-        .unwrap();
+    let got = ops::get_events(&db, Some("2026-06-01".into()), Some("2026-06-30".into()), Some(false)).await.unwrap();
     let ids: Vec<i64> = got.iter().map(|e| e.id).collect();
     assert!(ids.contains(&last), "an event late on the last day must be in-window");
     assert_eq!(ids.len(), 1, "July must be excluded: {ids:?}");

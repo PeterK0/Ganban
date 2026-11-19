@@ -79,14 +79,26 @@ fn the_size_guard_needs_force_and_names_the_size() {
     let mb = 1024 * 1024;
     assert_eq!(storage::ai_flag(10 * mb, false, false, 50 * mb).unwrap(), storage::AI_EXCLUDED);
     assert_eq!(storage::ai_flag(10 * mb, true, false, 50 * mb).unwrap(), storage::AI_INCLUDED);
-    assert_eq!(storage::ai_flag(50 * mb, true, false, 50 * mb).unwrap(), storage::AI_INCLUDED, "the guard itself is fine");
+    assert_eq!(
+        storage::ai_flag(50 * mb, true, false, 50 * mb).unwrap(),
+        storage::AI_INCLUDED,
+        "the guard itself is fine"
+    );
     let refusal = storage::ai_flag(380 * mb, true, false, 50 * mb).unwrap_err();
-    assert_eq!(refusal.code(), Some(ganban_core::error::codes::AI_FILE_TOO_LARGE), "the client matches the code, not the text");
+    assert_eq!(
+        refusal.code(),
+        Some(ganban_core::error::codes::AI_FILE_TOO_LARGE),
+        "the client matches the code, not the text"
+    );
     assert!(refusal.is_invalid_input());
     let err = refusal.to_string();
     assert!(err.contains("380 MB") && err.contains("50 MB") && err.contains("force"), "{err}");
     assert_eq!(storage::ai_flag(380 * mb, true, true, 50 * mb).unwrap(), storage::AI_FORCED);
-    assert_eq!(storage::ai_flag(380 * mb, false, false, 50 * mb).unwrap(), storage::AI_EXCLUDED, "leaving out never asks");
+    assert_eq!(
+        storage::ai_flag(380 * mb, false, false, 50 * mb).unwrap(),
+        storage::AI_EXCLUDED,
+        "leaving out never asks"
+    );
     assert_eq!(storage::mb_label(3 * mb / 2), "1.5 MB");
 }
 
@@ -99,7 +111,12 @@ async fn including_a_big_file_needs_force_and_the_choice_moves_with_the_file() {
     let pf = storage::store_project_file(&db, &root, pid, "book.pdf", None, None, Some(1), b"pages").await.unwrap();
     let small = storage::store_shared_bytes(&db, &root, tid, "note.md", None, Some(1), b"note").await.unwrap();
     // Pretend it's a 380 MB textbook (the guard reads the recorded size).
-    sqlx::query("UPDATE project_files SET size_bytes = ? WHERE id = ?").bind(380_i64 * 1024 * 1024).bind(pf.id).execute(&db).await.unwrap();
+    sqlx::query("UPDATE project_files SET size_bytes = ? WHERE id = ?")
+        .bind(380_i64 * 1024 * 1024)
+        .bind(pf.id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let err = storage::set_project_file_ai_included(&db, pf.id, true, false).await.unwrap_err().to_string();
     assert!(err.contains("380 MB"), "{err}");
@@ -114,12 +131,18 @@ async fn including_a_big_file_needs_force_and_the_choice_moves_with_the_file() {
     assert_eq!(flag(&db, "project_files", back.id).await, storage::AI_FORCED);
 
     // An attachment counts by its stored size and moves its updated_at, so replicas pull it.
-    let before: String =
-        sqlx::query_scalar("SELECT updated_at FROM file_attachments WHERE id = ?").bind(small.id).fetch_one(&db).await.unwrap();
+    let before: String = sqlx::query_scalar("SELECT updated_at FROM file_attachments WHERE id = ?")
+        .bind(small.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
     assert!(storage::set_attachment_ai_included(&db, small.id, true, false).await.unwrap().ai_included);
-    let after: String =
-        sqlx::query_scalar("SELECT updated_at FROM file_attachments WHERE id = ?").bind(small.id).fetch_one(&db).await.unwrap();
+    let after: String = sqlx::query_scalar("SELECT updated_at FROM file_attachments WHERE id = ?")
+        .bind(small.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_ne!(before, after);
     assert!(!storage::set_attachment_ai_included(&db, small.id, false, false).await.unwrap().ai_included);
 }
@@ -158,11 +181,13 @@ async fn the_replica_backfill_marks_nothing_dirty() {
 
     let db = init_db_role(&path, Role::Replica).await.unwrap();
     assert_eq!(flag(&db, "file_attachments", att).await, 1);
-    let dirty: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state WHERE dirty = 1").fetch_one(&db).await.unwrap();
+    let dirty: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sync_state WHERE dirty = 1").fetch_one(&db).await.unwrap();
     assert_eq!(dirty, 0, "the backfill isn't a local edit");
-    let trigger: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = 'trg_file_attachments_cap_upd'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let trigger: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = 'trg_file_attachments_cap_upd'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert!(trigger.contains("ai_included"), "the capture trigger snapshots the new column");
 }

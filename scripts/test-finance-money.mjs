@@ -30,7 +30,7 @@ eq(m.exponent('NOPE'), 2, 'an unknown code falls back to 2');
 // Display
 eq(m.formatMoney(123456, 'EUR', 'en-IE'), '€1,234.56', 'en-IE euro');
 eq(m.formatMoney(-123456, 'EUR', 'de-DE'), '-1.234,56 €', 'de-DE negative euro');
-eq(m.formatMoney(-4200, 'EUR', 'el-GR'), '-42,00 €', 'el-GR euro');
+eq(m.formatMoney(-4200, 'EUR', 'pt-PT'), '-42,00 €', 'pt-PT euro');
 eq(m.formatMoney(1500, 'JPY', 'en-US'), '¥1,500', 'yen has no minor digits');
 eq(m.formatMoney(5, 'EUR', 'en-IE'), '€0.05', 'a few cents');
 eq(m.formatMoney(4200, 'EUR', 'en-IE', { sign: true }), '+€42.00', 'signed display');
@@ -63,7 +63,7 @@ eq(m.parseMoney('.5', 'EUR', 'en-IE'), 50, 'no integer part');
 eq(m.parseMoney('0.1', 'EUR', 'en-IE') + m.parseMoney('0.2', 'EUR', 'en-IE'), 30, 'no float drift');
 
 // Round trips
-for (const [minor, cur, loc] of [[123456, 'EUR', 'de-DE'], [-5, 'EUR', 'en-IE'], [1500, 'JPY', 'ja-JP'], [-1000001, 'KWD', 'en-US'], [0, 'EUR', 'el-GR']]) {
+for (const [minor, cur, loc] of [[123456, 'EUR', 'de-DE'], [-5, 'EUR', 'en-IE'], [1500, 'JPY', 'ja-JP'], [-1000001, 'KWD', 'en-US'], [0, 'EUR', 'pt-PT']]) {
   eq(m.parseMoney(m.toInput(minor, cur, loc), cur, loc), minor, `toInput round trip ${minor} ${cur} ${loc}`);
   eq(m.parseMoney(m.formatMoney(minor, cur, loc), cur, loc), minor, `formatMoney round trip ${minor} ${cur} ${loc}`);
 }

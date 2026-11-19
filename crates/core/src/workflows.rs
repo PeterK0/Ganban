@@ -63,11 +63,13 @@ pub struct WorkflowStepRun {
 
 /// Start a durable run.
 pub async fn create_run(db: &Db, workflow_slug: &str, version: i64) -> Result<i64> {
-    let res = sqlx::query("INSERT INTO workflow_runs (workflow_slug, version, status, current_step) VALUES (?, ?, 'running', 0)")
-        .bind(workflow_slug)
-        .bind(version)
-        .execute(db)
-        .await?;
+    let res = sqlx::query(
+        "INSERT INTO workflow_runs (workflow_slug, version, status, current_step) VALUES (?, ?, 'running', 0)",
+    )
+    .bind(workflow_slug)
+    .bind(version)
+    .execute(db)
+    .await?;
     Ok(res.last_insert_rowid())
 }
 
@@ -85,12 +87,14 @@ pub async fn begin_step(db: &Db, run_id: i64, step: i64, idempotency_key: Option
             )));
         }
     }
-    let res = sqlx::query("INSERT INTO workflow_step_runs (run_id, step, status, idempotency_key) VALUES (?, ?, 'running', ?)")
-        .bind(run_id)
-        .bind(step)
-        .bind(idempotency_key)
-        .execute(db)
-        .await?;
+    let res = sqlx::query(
+        "INSERT INTO workflow_step_runs (run_id, step, status, idempotency_key) VALUES (?, ?, 'running', ?)",
+    )
+    .bind(run_id)
+    .bind(step)
+    .bind(idempotency_key)
+    .execute(db)
+    .await?;
     sqlx::query("UPDATE workflow_runs SET current_step = ?, updated_at = datetime('now') WHERE id = ?")
         .bind(step)
         .bind(run_id)
@@ -126,7 +130,13 @@ pub async fn suspend_for_approval(db: &Db, run_id: i64, step_run_id: i64) -> Res
 /// The human decided. `approved` resumes the run; a rejection takes the
 /// step's declared `on_reject`: `continue_past = true` skips the step and
 /// keeps going, `false` fails the whole run (stop).
-pub async fn resolve_approval(db: &Db, run_id: i64, step_run_id: i64, approved: bool, continue_past: bool) -> Result<()> {
+pub async fn resolve_approval(
+    db: &Db,
+    run_id: i64,
+    step_run_id: i64,
+    approved: bool,
+    continue_past: bool,
+) -> Result<()> {
     let (step_status, run_status) = match (approved, continue_past) {
         (true, _) => ("done", "running"),
         (false, true) => ("rejected", "running"),

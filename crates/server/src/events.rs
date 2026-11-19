@@ -40,10 +40,8 @@ impl EventHub {
     pub fn new() -> Self {
         // 256 pulses of headroom: a lagging subscriber just gets a "lagged"
         // marker and refetches — losing pulses is harmless by design.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         Self {
             tx: Arc::new(broadcast::channel(256).0),
             seq: Arc::new(AtomicU64::new(0)),
@@ -175,8 +173,8 @@ mod tests {
         assert_eq!(invoke_pulse_kind("create_quiz_question"), Some("quiz"));
         assert_eq!(invoke_pulse_kind("get_quiz_subjects"), None, "reads never pulse");
         assert_eq!(invoke_pulse_kind("frobnicate_widget"), Some("entities")); // unknown write
-        // Reads and auth/admin machinery never pulse — names alone would
-        // narrate owner activity to every member.
+                                                                              // Reads and auth/admin machinery never pulse — names alone would
+                                                                              // narrate owner activity to every member.
         assert_eq!(invoke_pulse_kind("get_tasks"), None);
         assert_eq!(invoke_pulse_kind("list_members"), None);
         // Reads MUST be named get_/list_/verify_ — an off-convention read
@@ -229,7 +227,6 @@ mod tests {
         assert_eq!(pulse_kind("/projects/7/tabs/atlas/config"), Some("projects"));
     }
 }
-
 
 #[cfg(test)]
 mod hub_tests {

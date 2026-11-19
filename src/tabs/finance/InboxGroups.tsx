@@ -1,10 +1,10 @@
-// The inbox by payee: the host groups the drafts (fin_inbox_groups) by direction and merchant, so ten
-// thousand lines become a few hundred rows, the largest first. One pick sorts a whole group and offers
-// to remember it as a rule. With a local model on the host, "Suggest categories for all unsorted" runs
+// "To sort" by payee: the host groups the lines (fin_inbox_groups) by direction and merchant, so ten
+// thousand lines become a few hundred rows, the largest first. One pick files a whole group and
+// teaches its payee the category (the Undo toast comes from `fileGroup`). With a local model on the host, "Suggest categories for all unsorted" runs
 // in the background and fills one suggestion per group; the user takes them group by group.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as fin from './api';
-import { bulkErrorText, categorisedText, dateRange, suggestJobText } from './inbox.pure';
+import { bulkErrorText, dateRange, suggestJobText } from './inbox.pure';
 import { formatDate } from './money.pure';
 import { AccountPicker, Empty, MUTED, Money, errText, useFinance } from './shared';
 import { useRailShell } from '../../components/RailViews';
@@ -31,20 +31,22 @@ export default function InboxGroups({
   filter,
   canSuggest,
   onShowLines,
+  fileGroup,
 }: {
   /** The inbox's filters (drafts only; the host adds that). */
   filter: fin.EntryFilter;
   canSuggest: boolean;
   onShowLines: (g: fin.InboxGroup) => void;
+  /** Files every uncategorised line of a filter under a category, with the toast. */
+  fileGroup: (filter: fin.EntryFilter, ledgerAccountId: number) => Promise<fin.CategoriseMatching | string>;
 }) {
-  const { ledgerById, entity, reload: reloadAll, locale } = useFinance();
+  const { ledgerById, entity, locale } = useFinance();
   const touch = useRailShell() === 'touch';
   const [groups, setGroups] = useState<fin.InboxGroup[]>([]);
   const [totals, setTotals] = useState({ groups: 0, lines: 0 });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [offer, setOffer] = useState<{ text: string; rule: fin.RuleInput } | null>(null);
   const [job, setJob] = useState<fin.SuggestJob | null>(null);
   const seq = useRef(0);
 
@@ -114,33 +116,18 @@ export default function InboxGroups({
   };
 
   const sortGroup = async (g: fin.InboxGroup, ledgerAccountId: number) => {
-    const name = ledgerById.get(ledgerAccountId)?.name ?? 'that category';
     setBusy(g.key);
     setMsg(null);
-    setOffer(null);
-    try {
-      const r = await fin.categoriseMatching({ ...filter, groupKey: g.key }, ledgerAccountId);
-      const text = categorisedText(r.categorised, r.skipped, name, locale);
-      if (r.rule_input) setOffer({ text, rule: r.rule_input });
-      else setMsg(text);
-      await Promise.all([load(false, 0, true), reloadAll()]);
-    } catch (e) {
-      setMsg(bulkErrorText(errText(e)));
-      window.setTimeout(() => void Promise.all([load(false, 0, true), reloadAll()]), 8000);
-    } finally {
-      setBusy(null);
+    const r = await fileGroup({ ...filter, groupKey: g.key }, ledgerAccountId);
+    if (typeof r === 'string') {
+      setMsg(bulkErrorText(r));
+      window.setTimeout(() => void load(false, 0, true), 8000);
+    } else {
+      // A filed group leaves the list.
+      setGroups((gs) => gs.filter((x) => x.key !== g.key || r.categorised < x.uncategorised));
+      void load(false, 0, true);
     }
-  };
-
-  const remember = async () => {
-    if (!offer) return;
-    try {
-      await fin.createRule(offer.rule);
-      setOffer(null);
-      setMsg('Rule saved. Future imports file these lines the same way.');
-    } catch (e) {
-      setMsg(errText(e));
-    }
+    setBusy(null);
   };
 
   const dismiss = async (g: fin.InboxGroup) => {
@@ -178,21 +165,10 @@ export default function InboxGroups({
           {suggestJobText(job, locale)}
         </p>
       )}
-      {offer && (
-        <div className="g-card p-4 flex flex-wrap items-center gap-3" role="status">
-          <span className="flex-1 min-w-[200px] text-sm text-text">{offer.text} File new lines from this payee the same way?</span>
-          <button className="g-btn g-btn-gilt g-btn-sm" onClick={() => void remember()}>
-            And remember as a rule
-          </button>
-          <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setOffer(null)}>
-            Not now
-          </button>
-        </div>
-      )}
       {msg && <p className="text-sm text-subtext-1">{msg}</p>}
 
       {!loading && groups.length === 0 ? (
-        <Empty title="The inbox is empty">Imported lines land here to be sorted and posted.</Empty>
+        <Empty title="Nothing to sort">Lines your payees and rules can’t file wait here after an import.</Empty>
       ) : (
         <div className="g-plain" role="list">
           {groups.map((g) => {
@@ -211,35 +187,35 @@ export default function InboxGroups({
                   </button>
                   <span className="flex items-center gap-2 order-last sm:order-none w-full sm:w-[260px] pl-0">
                     {transfers ? (
-                      <span className="g-tag" title="Transfers between your accounts: not a category">
-                        Transfers
-                      </span>
+                      <button className={`g-btn g-btn-ghost g-btn-sm ${touch ? 'min-h-[44px]' : ''}`} onClick={() => onShowLines(g)} title="Lines that may be money moved between your accounts">
+                        Transfer? Check the lines
+                      </button>
                     ) : sorted ? (
-                      <span className={`text-sm truncate ${MUTED}`}>{g.category_id != null ? ledgerById.get(g.category_id)?.name : 'Sorted'}</span>
+                      <span className={`text-sm truncate ${MUTED}`}>{g.category_id != null ? ledgerById.get(g.category_id)?.name : 'Filed'}</span>
                     ) : (
-                      <AccountPicker
-                        label={`Category for ${g.label}`}
-                        value={null}
-                        placeholder={busy === g.key ? 'Sorting…' : g.uncategorised < g.count ? `${g.uncategorised.toLocaleString(locale)} unsorted · category…` : 'Category…'}
-                        onChange={(id) => void sortGroup(g, id)}
-                        className="flex-1 min-w-0"
-                      />
+                      <>
+                        <AccountPicker
+                          label={`Category for ${g.label}`}
+                          value={null}
+                          placeholder={busy === g.key ? 'Filing…' : suggested ? suggested.name : g.uncategorised < g.count ? `${g.uncategorised.toLocaleString(locale)} to sort · category…` : 'Pick a category…'}
+                          onChange={(id) => void sortGroup(g, id)}
+                          className={`flex-1 min-w-0 ${suggested ? 'italic' : ''}`}
+                        />
+                        {suggested && (
+                          <>
+                            <button className={`g-btn g-btn-gilt g-btn-sm flex-none ${touch ? 'min-h-[44px]' : ''}`} disabled={busy === g.key} onClick={() => void sortGroup(g, suggested.id)} title={`File ${g.uncategorised} under ${suggested.name}`} aria-label={`Accept ${suggested.name}`}>
+                              ✓
+                            </button>
+                            <button className="g-iconbtn flex-none" onClick={() => void dismiss(g)} title={`Not ${suggested.name}`} aria-label={`Not ${suggested.name}`}>
+                              ×
+                            </button>
+                          </>
+                        )}
+                      </>
                     )}
                   </span>
                   <Money minor={g.total_minor} currency={entity.functional_currency} colour className="w-[110px] text-right ml-auto sm:ml-0" />
                 </div>
-                {suggested && !transfers && g.uncategorised > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-sm" role="status">
-                    <span className={MUTED}>Suggested:</span>
-                    <span className="g-tag">{suggested.name}</span>
-                    <button className={`g-btn g-btn-gilt g-btn-sm ${touch ? 'min-h-[44px]' : ''}`} disabled={busy === g.key} onClick={() => void sortGroup(g, suggested.id)}>
-                      Use for {g.uncategorised.toLocaleString(locale)}
-                    </button>
-                    <button className={`g-btn g-btn-ghost g-btn-sm ${touch ? 'min-h-[44px]' : ''}`} onClick={() => void dismiss(g)}>
-                      Dismiss
-                    </button>
-                  </div>
-                )}
               </div>
             );
           })}

@@ -18,11 +18,7 @@ fn temp_db(tag: &str) -> PathBuf {
 }
 
 async fn uuid_of(db: &Db, table: &str, id: i64) -> String {
-    sqlx::query_scalar(&format!("SELECT sync_uuid FROM {table} WHERE id=?"))
-        .bind(id)
-        .fetch_one(db)
-        .await
-        .unwrap()
+    sqlx::query_scalar(&format!("SELECT sync_uuid FROM {table} WHERE id=?")).bind(id).fetch_one(db).await.unwrap()
 }
 
 fn find<'a>(changes: &'a [Value], entity: &str, sync_uuid: &str) -> &'a Value {
@@ -37,10 +33,7 @@ async fn full_pull_is_symmetric_incoming_changes() {
     let path = temp_db("full");
     let db = init_db_role(&path, Role::Server).await.unwrap();
 
-    let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None })
-        .await
-        .unwrap()
-        .id;
+    let pid = ops::create_project(&db, CreateProjectInput { name: "P".into(), description: None }).await.unwrap().id;
     let tid = ops::create_task(
         &db,
         CreateTaskInput {
@@ -59,10 +52,20 @@ async fn full_pull_is_symmetric_incoming_changes() {
     .await
     .unwrap()
     .id;
-    let cid = ops::create_comment(&db, CreateCommentInput { task_id: tid, content: "hi".into(), user_id: Some(1), parent_id: None, profile_id: None, task_ids: vec![] })
-        .await
-        .unwrap()
-        .id;
+    let cid = ops::create_comment(
+        &db,
+        CreateCommentInput {
+            task_id: tid,
+            content: "hi".into(),
+            user_id: Some(1),
+            parent_id: None,
+            profile_id: None,
+            task_ids: vec![],
+        },
+    )
+    .await
+    .unwrap()
+    .id;
 
     let (p_uuid, t_uuid, c_uuid) =
         (uuid_of(&db, "projects", pid).await, uuid_of(&db, "tasks", tid).await, uuid_of(&db, "comments", cid).await);
@@ -103,10 +106,7 @@ async fn incremental_pull_emits_tombstones_and_only_newer_rows() {
     let path = temp_db("inc");
     let db = init_db_role(&path, Role::Server).await.unwrap();
 
-    let pid = ops::create_project(&db, CreateProjectInput { name: "Keep".into(), description: None })
-        .await
-        .unwrap()
-        .id;
+    let pid = ops::create_project(&db, CreateProjectInput { name: "Keep".into(), description: None }).await.unwrap().id;
     let tid = ops::create_task(
         &db,
         CreateTaskInput {

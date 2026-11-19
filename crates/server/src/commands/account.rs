@@ -56,7 +56,10 @@ pub(super) const COMMANDS: &[Command] = &[
     command("create_ticket").access(Access::AnyMember).author(ME).run(|cx, a| {
         Box::pin(async move {
             let kind = a.opt_str("kind").unwrap_or_else(|| "bug".into());
-            reply(ops::create_ticket(cx.db, a.author()?, &kind, &a.req_str("title")?, a.opt_str("body").as_deref()).await?)
+            reply(
+                ops::create_ticket(cx.db, a.author()?, &kind, &a.req_str("title")?, a.opt_str("body").as_deref())
+                    .await?,
+            )
         })
     }),
     // ops scopes by viewer: the owner sees every ticket, anyone else their own.
@@ -82,9 +85,16 @@ pub(super) const COMMANDS: &[Command] = &[
     // enrolling it resolves to them (profile and memberships carry over), never anyone else.
     command("create_device_enrollment").access(Access::AnyMember).author(ME).run(|cx, a| {
         Box::pin(async move {
-            let token =
-                auth::create_enrollment_token(cx.db, "new_device", Some(a.author()?), None, None, None, auth::ENROLLMENT_TTL_SECS)
-                    .await?;
+            let token = auth::create_enrollment_token(
+                cx.db,
+                "new_device",
+                Some(a.author()?),
+                None,
+                None,
+                None,
+                auth::ENROLLMENT_TTL_SECS,
+            )
+            .await?;
             Ok(json!({ "token": token }))
         })
     }),
@@ -121,12 +131,18 @@ mod tests {
         http(&db, mia, "set_my_display_name", json!({ "fullName": "  Mia  ", "userId": 8 })).await.unwrap();
         assert_eq!(seed(&db, "get_user", json!({ "userId": 7 })).await["full_name"], "Mia");
         assert_eq!(seed(&db, "get_user", json!({ "userId": 8 })).await["full_name"], "User 8");
-        assert!(http(&db, mia, "set_my_display_name", json!({ "fullName": " " })).await.unwrap_err().is_invalid_input());
+        assert!(http(&db, mia, "set_my_display_name", json!({ "fullName": " " }))
+            .await
+            .unwrap_err()
+            .is_invalid_input());
 
         let ticket = http(&db, mia, "create_ticket", json!({ "title": "It broke", "userId": 8 })).await.unwrap();
         assert_eq!(ticket["user_id"], 7);
         assert_eq!(ids(&http(&db, mia, "list_tickets", json!({ "userId": 8 })).await.unwrap()).len(), 1);
-        assert!(http(&db, mia, "set_ticket_status", json!({ "id": ticket["id"], "status": "closed" })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, mia, "set_ticket_status", json!({ "id": ticket["id"], "status": "closed" }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
 
         http(&db, mia, "leave_project", json!({ "projectId": a, "userId": 8 })).await.unwrap();
         assert_eq!(ganban_core::auth::member_role(&db, a, 7).await.unwrap(), None, "Mia left");
@@ -143,11 +159,20 @@ mod tests {
         let enrol = |name: &'static str| {
             let db = db.clone();
             async move {
-                let invite = ganban_core::auth::create_enrollment_token(&db, "invite", None, Some(a), Some("member"), Some(name), 3600)
-                    .await
-                    .unwrap();
+                let invite = ganban_core::auth::create_enrollment_token(
+                    &db,
+                    "invite",
+                    None,
+                    Some(a),
+                    Some("member"),
+                    Some(name),
+                    3600,
+                )
+                .await
+                .unwrap();
                 let joined = ganban_core::auth::enroll(&db, &invite, Some("phone"), Some(name)).await.unwrap();
-                let (user, device) = ganban_core::auth::validate_device_token(&db, &joined.device_token).await.unwrap().unwrap();
+                let (user, device) =
+                    ganban_core::auth::validate_device_token(&db, &joined.device_token).await.unwrap().unwrap();
                 AuthUser { id: user.id, is_owner: false, device_id: Some(device) }
             }
         };
@@ -158,7 +183,8 @@ mod tests {
         assert_eq!(mine.as_array().unwrap().len(), 1);
         assert_eq!(mine[0]["current"], true, "the device making the request is flagged");
 
-        let token = http(&db, mia, "create_device_enrollment", json!({ "userId": bo.id })).await.unwrap()["token"].clone();
+        let token =
+            http(&db, mia, "create_device_enrollment", json!({ "userId": bo.id })).await.unwrap()["token"].clone();
         let second = ganban_core::auth::enroll(&db, token.as_str().unwrap(), Some("laptop"), None).await.unwrap();
         assert_eq!(second.user.id, mia.id, "a pairing code enrols the caller, never the user named");
 

@@ -38,7 +38,9 @@ pub(super) const COMMANDS: &[Command] = &[
     }),
     // ---- Recognition schedules ----
     command("fin_list_schedules").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(schedules::list_schedules(cx.db, &entity(cx, a).await?, a.opt_i64("entryId")).await?) })
+        Box::pin(
+            async move { reply(schedules::list_schedules(cx.db, &entity(cx, a).await?, a.opt_i64("entryId")).await?) },
+        )
     }),
     command("fin_create_schedule").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(schedules::create_schedule(cx.db, &entity(cx, a).await?, a.input()?).await?) })
@@ -50,9 +52,10 @@ pub(super) const COMMANDS: &[Command] = &[
         })
     }),
     // ---- Budgets ----
-    command("fin_list_budgets").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(budgets::list_budgets(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_list_budgets")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(budgets::list_budgets(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_create_budget").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(budgets::create_budget(cx.db, &entity(cx, a).await?, a.input()?).await?) })
     }),
@@ -69,7 +72,9 @@ pub(super) const COMMANDS: &[Command] = &[
         })
     }),
     command("fin_budget_progress").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(budgets::budget_progress(cx.db, &entity(cx, a).await?, &a.req_str("month")?).await?) })
+        Box::pin(
+            async move { reply(budgets::budget_progress(cx.db, &entity(cx, a).await?, &a.req_str("month")?).await?) },
+        )
     }),
     // ---- Recurring and planned ----
     command("fin_detect_recurring").access(Access::OwnFinance).author(USER).run(|cx, a| {
@@ -110,7 +115,9 @@ pub(super) const COMMANDS: &[Command] = &[
     }),
     // ---- Forecast and statements ----
     command("fin_forecast").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(forecast::forecast(cx.db, &entity(cx, a).await?, &a.req_str("month")?, &today()).await?) })
+        Box::pin(async move {
+            reply(forecast::forecast(cx.db, &entity(cx, a).await?, &a.req_str("month")?, &today()).await?)
+        })
     }),
     command("fin_statement").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move {
@@ -125,9 +132,10 @@ pub(super) const COMMANDS: &[Command] = &[
         })
     }),
     // ---- Settings ----
-    command("fin_get_settings").access(Access::OwnFinance).author(USER).run(|cx, a| {
-        Box::pin(async move { reply(reminder::get_settings(cx.db, &entity(cx, a).await?).await?) })
-    }),
+    command("fin_get_settings")
+        .access(Access::OwnFinance)
+        .author(USER)
+        .run(|cx, a| Box::pin(async move { reply(reminder::get_settings(cx.db, &entity(cx, a).await?).await?) })),
     command("fin_update_settings").access(Access::OwnFinance).author(USER).run(|cx, a| {
         Box::pin(async move { reply(reminder::update_settings(cx.db, &entity(cx, a).await?, a.input()?).await?) })
     }),
@@ -169,24 +177,49 @@ mod tests {
         let chart = http(&db, mia, "fin_list_ledger_accounts", json!({})).await.unwrap();
         let named = |n: &str| chart.as_array().unwrap().iter().find(|a| a["name"] == n).map(id).unwrap();
         let (housing, groceries) = (named("Housing"), named("Groceries"));
-        let entry = http(&db, mia, "fin_create_entry", json!({ "input": { "date": "2026-02-01", "description": "Insurance", "lines": [
-            { "ledgerAccountId": account["ledger_account_id"], "amountMinor": -12_000, "currency": "EUR" },
-            { "ledgerAccountId": housing, "amountMinor": 12_000, "currency": "EUR" }
-        ]}}))
+        let entry = http(
+            &db,
+            mia,
+            "fin_create_entry",
+            json!({ "input": { "date": "2026-02-01", "description": "Insurance", "lines": [
+                { "ledgerAccountId": account["ledger_account_id"], "amountMinor": -12_000, "currency": "EUR" },
+                { "ledgerAccountId": housing, "amountMinor": 12_000, "currency": "EUR" }
+            ]}}),
+        )
         .await
         .unwrap();
-        let schedule = http(&db, mia, "fin_create_schedule", json!({ "input": { "entryId": id(&entry), "startMonth": "2026-02", "months": 6 } }))
-            .await
-            .unwrap();
-        let budget = http(&db, mia, "fin_create_budget", json!({ "input": { "ledgerAccountId": groceries, "amountMinor": 30_000 } }))
-            .await
-            .unwrap();
-        let planned = http(&db, mia, "fin_create_planned", json!({ "input": { "date": "2026-03-10", "description": "Trip", "amountMinor": -50_000 } }))
-            .await
-            .unwrap();
-        let settings = http(&db, mia, "fin_update_settings", json!({ "input": { "reminder": { "weekday": "thu", "time": "8:30" } } }))
-            .await
-            .unwrap();
+        let schedule = http(
+            &db,
+            mia,
+            "fin_create_schedule",
+            json!({ "input": { "entryId": id(&entry), "startMonth": "2026-02", "months": 6 } }),
+        )
+        .await
+        .unwrap();
+        let budget = http(
+            &db,
+            mia,
+            "fin_create_budget",
+            json!({ "input": { "ledgerAccountId": groceries, "amountMinor": 30_000 } }),
+        )
+        .await
+        .unwrap();
+        let planned = http(
+            &db,
+            mia,
+            "fin_create_planned",
+            json!({ "input": { "date": "2026-03-10", "description": "Trip", "amountMinor": -50_000 } }),
+        )
+        .await
+        .unwrap();
+        let settings = http(
+            &db,
+            mia,
+            "fin_update_settings",
+            json!({ "input": { "reminder": { "weekday": "thu", "time": "8:30" } } }),
+        )
+        .await
+        .unwrap();
         assert_eq!(settings["reminder"], json!({ "enabled": true, "weekday": "Thu", "time": "08:30" }));
         let progress = http(&db, mia, "fin_budget_progress", json!({ "month": "2026-02" })).await.unwrap();
         assert_eq!(progress[0]["target_minor"], 30_000);
@@ -195,12 +228,18 @@ mod tests {
 
         for user in [owner, ana] {
             for (name, args) in [
-                ("fin_create_schedule", json!({ "input": { "entryId": id(&entry), "startMonth": "2026-02", "months": 2 } })),
+                (
+                    "fin_create_schedule",
+                    json!({ "input": { "entryId": id(&entry), "startMonth": "2026-02", "months": 2 } }),
+                ),
                 ("fin_delete_schedule", json!({ "scheduleId": id(&schedule) })),
                 ("fin_create_budget", json!({ "input": { "ledgerAccountId": groceries, "amountMinor": 1 } })),
                 ("fin_update_budget", json!({ "budgetId": id(&budget), "input": { "amountMinor": 1 } })),
                 ("fin_delete_budget", json!({ "budgetId": id(&budget) })),
-                ("fin_update_planned", json!({ "plannedId": id(&planned), "input": { "date": "2026-03-10", "description": "x", "amountMinor": 1 } })),
+                (
+                    "fin_update_planned",
+                    json!({ "plannedId": id(&planned), "input": { "date": "2026-03-10", "description": "x", "amountMinor": 1 } }),
+                ),
                 ("fin_delete_planned", json!({ "plannedId": id(&planned) })),
                 ("fin_resolve_recurring", json!({ "recurringId": 1, "confirm": true })),
             ] {
@@ -217,13 +256,25 @@ mod tests {
             ] {
                 assert_eq!(http(&db, user, name, args).await.unwrap(), json!([]), "{name} as user {}", user.id);
             }
-            let theirs = http(&db, user, "fin_statement", json!({ "kind": "position", "period": "2026-02", "userId": mia.id })).await.unwrap();
-            assert_eq!(theirs["rows"].as_array().unwrap().iter().map(|r| r["amount_minor"].as_i64().unwrap().abs()).sum::<i64>(), 0);
+            let theirs =
+                http(&db, user, "fin_statement", json!({ "kind": "position", "period": "2026-02", "userId": mia.id }))
+                    .await
+                    .unwrap();
+            assert_eq!(
+                theirs["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["amount_minor"].as_i64().unwrap().abs())
+                    .sum::<i64>(),
+                0
+            );
             let f = http(&db, user, "fin_forecast", json!({ "month": "2026-02" })).await.unwrap();
             assert_eq!(f["end_minor"], 0);
             let periods = http(&db, user, "fin_list_periods", json!({})).await.unwrap();
             assert!(periods.as_array().unwrap().iter().all(|p| p["entries"] == 0));
-            let csv = http(&db, user, "fin_statement_csv", json!({ "kind": "profit_loss", "period": "2026" })).await.unwrap();
+            let csv =
+                http(&db, user, "fin_statement_csv", json!({ "kind": "profit_loss", "period": "2026" })).await.unwrap();
             assert!(!csv["content"].as_str().unwrap().contains("Housing"));
             assert_eq!(http(&db, user, "fin_get_settings", json!({})).await.unwrap()["reminder"]["weekday"], "Mon");
         }

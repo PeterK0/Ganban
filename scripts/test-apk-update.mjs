@@ -72,6 +72,10 @@ eq(a && [a.version, a.versionCode, a.size, a.sha256, a.url], ['1.0.2', 1000002, 
 eq(U.githubApk(rel([apkAsset('x.apk', { digest: null })]))?.sha256, '', 'no digest: no check');
 eq(U.githubApk(rel([apkAsset('x.apk', { digest: 'md5:00' })]))?.sha256, '', 'a digest of another kind: no check');
 eq(U.githubApk(rel([apkAsset('Ganban_1.0.2_universal-unsigned.apk')])), null, 'an unsigned APK is no build');
+// The release's body is its patch notes (the release workflow writes them), shown before the user taps Update.
+eq(U.githubApk(rel([apkAsset('x.apk')], { body: '### Fixed\n\n- **A fix.**' }))?.notes, '### Fixed\n\n- **A fix.**', "the release's body is the offer's patch notes");
+eq(U.githubApk(rel([apkAsset('x.apk')], { body: '  ' }))?.notes, null, 'a blank body: no notes');
+eq(U.githubApk(rel([apkAsset('x.apk')]))?.notes, null, 'no body: no notes');
 eq(U.githubApk(rel([apkAsset('x.apk', { browser_download_url: 'http://plain/x.apk' })])), null, 'only https downloads');
 eq(U.githubApk(rel([apkAsset('x.apk')], { tag_name: 'nightly' })), null, 'a tag that is not a version');
 eq(U.githubApk(rel([apkAsset('x.apk')], { prerelease: true })), null, 'a prerelease');

@@ -30,7 +30,7 @@ impl Default for BulkOptions {
 }
 
 async fn write_tx(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
-    Ok(db.begin_with("BEGIN IMMEDIATE").await?)
+    crate::db::begin_write(db).await
 }
 
 // ============== Payee groups ==============
@@ -44,6 +44,20 @@ pub fn group_key(description: &str, payee: Option<&str>, amount_minor: i64) -> S
     format!("{dir}:{}", merchant_key(description, payee))
 }
 
+/// A draft's payee group: by its payee when it has one (`out:#12`), so every spelling of a
+/// payee is one row; else by its text ([`group_key`]).
+pub fn group_key_of(payee_id: Option<i64>, description: &str, payee: Option<&str>, amount_minor: i64) -> String {
+    match payee_id {
+        Some(p) => format!("{}:#{p}", if amount_minor < 0 { "out" } else { "in" }),
+        None => group_key(description, payee, amount_minor),
+    }
+}
+
+/// The payee of a group key made by [`group_key_of`].
+fn payee_of_key(key: &str) -> Option<i64> {
+    key.split_once(":#").and_then(|(_, p)| p.parse().ok())
+}
+
 /// The direction of a group key.
 fn direction(key: &str) -> &'static str {
     if key.starts_with("out:") {
@@ -54,7 +68,8 @@ fn direction(key: &str) -> &'static str {
 }
 
 /// The bank line's amount of an entry (alias `e`), as a scalar subquery.
-const BANK_AMOUNT: &str = "(SELECT l.amount_minor FROM fin_lines l JOIN fin_accounts a ON a.ledger_account_id = l.ledger_account_id \
+const BANK_AMOUNT: &str =
+    "(SELECT l.amount_minor FROM fin_lines l JOIN fin_accounts a ON a.ledger_account_id = l.ledger_account_id \
      WHERE l.entry_id = e.id ORDER BY l.id LIMIT 1)";
 
 /// Works out the payee group of every draft that has none yet (new imports, edited text),
@@ -65,8 +80,8 @@ pub async fn fill_group_keys(db: &Db, ent: &Entity) -> Result<usize> {
         // Read inside the write transaction, so an edit can't slip in between the read and
         // the write and leave the key of the old text.
         let mut tx = write_tx(db).await?;
-        let rows: Vec<(i64, String, Option<String>, Option<i64>)> = sqlx::query_as(&format!(
-            "SELECT e.id, e.description, e.payee, {BANK_AMOUNT} FROM fin_entries e \
+        let rows: Vec<(i64, String, Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(&format!(
+            "SELECT e.id, e.description, e.payee, {BANK_AMOUNT}, e.payee_id FROM fin_entries e \
              WHERE e.entity_id = ? AND e.status = 'draft' AND e.group_key IS NULL LIMIT 1000"
         ))
         .bind(ent.id)
@@ -75,9 +90,9 @@ pub async fn fill_group_keys(db: &Db, ent: &Entity) -> Result<usize> {
         if rows.is_empty() {
             return Ok(filled);
         }
-        for (id, description, payee, amount) in &rows {
+        for (id, description, payee, amount, payee_id) in &rows {
             sqlx::query("UPDATE fin_entries SET group_key = ? WHERE id = ?")
-                .bind(group_key(description, payee.as_deref(), amount.unwrap_or(0)))
+                .bind(group_key_of(*payee_id, description, payee.as_deref(), amount.unwrap_or(0)))
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
@@ -142,7 +157,8 @@ fn drafts(mut filter: EntryFilter) -> EntryFilter {
     filter
 }
 
-const LIVE_PAIR: &str = "EXISTS (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) AND p.status != 'rejected')";
+const LIVE_PAIR: &str =
+    "EXISTS (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) AND p.status != 'rejected')";
 
 /// The drafts a filter matches, grouped by payee, the largest groups first. The host groups,
 /// so the client gets a page of groups, never the drafts.
@@ -153,7 +169,8 @@ pub async fn inbox_groups(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64
     let ids = ids(&mut conn, ent).await?;
     let (sql, binds) = filter_sql(&mut conn, ent, &filter).await?;
     let totals_sql = format!("SELECT COUNT(DISTINCT e.group_key), COUNT(*){sql}");
-    let (total_groups, total_lines): (i64, i64) = bind_all!(sqlx::query_as(&totals_sql), &binds).fetch_one(&mut *conn).await?;
+    let (total_groups, total_lines): (i64, i64) =
+        bind_all!(sqlx::query_as(&totals_sql), &binds).fetch_one(&mut *conn).await?;
     let page_sql = format!(
         "SELECT e.group_key, COUNT(*) AS n, MIN(e.date), MAX(e.date), \
            COALESCE(SUM((SELECT SUM(l.functional_minor) FROM fin_lines l WHERE l.entry_id = e.id \
@@ -175,8 +192,19 @@ pub async fn inbox_groups(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64
     for (key, count, first_date, last_date, total_minor, uncategorised, paired) in rows {
         let one = EntryFilter { group_key: Some(key.clone()), ..filter.clone() };
         let (gsql, gbinds) = filter_sql(&mut conn, ent, &one).await?;
-        let label_sql = format!("SELECT COALESCE(NULLIF(e.payee, ''), e.description){gsql} ORDER BY e.date DESC, e.id DESC LIMIT 1");
-        let label: Option<String> = bind_all!(sqlx::query_scalar(&label_sql), &gbinds).fetch_optional(&mut *conn).await?;
+        let label_sql = format!(
+            "SELECT COALESCE(NULLIF(e.payee, ''), e.description){gsql} ORDER BY e.date DESC, e.id DESC LIMIT 1"
+        );
+        let label: Option<String> = match payee_of_key(&key) {
+            Some(p) => {
+                sqlx::query_scalar("SELECT name FROM fin_payees WHERE id = ? AND entity_id = ?")
+                    .bind(p)
+                    .bind(ent.id)
+                    .fetch_optional(&mut *conn)
+                    .await?
+            }
+            None => bind_all!(sqlx::query_scalar(&label_sql), &gbinds).fetch_optional(&mut *conn).await?,
+        };
         let category_sql = format!(
             "SELECT l.ledger_account_id FROM fin_lines l WHERE l.entry_id IN (SELECT e.id{gsql}) \
              AND l.ledger_account_id NOT IN (SELECT ledger_account_id FROM fin_accounts WHERE entity_id = {}) \
@@ -184,14 +212,17 @@ pub async fn inbox_groups(db: &Db, ent: &Entity, filter: EntryFilter, limit: i64
              GROUP BY l.ledger_account_id ORDER BY COUNT(*) DESC LIMIT 1",
             ent.id, ids.unc_expense, ids.unc_income, ids.fees, ids.clearing
         );
-        let category_id: Option<i64> = bind_all!(sqlx::query_scalar(&category_sql), &gbinds).fetch_optional(&mut *conn).await?;
+        let category_id: Option<i64> =
+            bind_all!(sqlx::query_scalar(&category_sql), &gbinds).fetch_optional(&mut *conn).await?;
         let suggested: Option<i64> = if uncategorised > 0 {
-            sqlx::query_scalar("SELECT ledger_account_id FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?")
-                .bind(ent.id)
-                .bind(&key)
-                .fetch_optional(&mut *conn)
-                .await?
-                .flatten()
+            sqlx::query_scalar(
+                "SELECT ledger_account_id FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?",
+            )
+            .bind(ent.id)
+            .bind(&key)
+            .fetch_optional(&mut *conn)
+            .await?
+            .flatten()
         } else {
             None
         };
@@ -226,26 +257,36 @@ pub struct PostOutcome {
 /// Posts these drafts, in one transaction: the ones dated in a closed month or waiting in a
 /// transfer pair to review are left, and counted. An entry that's already posted is skipped,
 /// and so is one dated on or after `before` when that's given.
-pub(crate) async fn post_ids_in(conn: &mut Conn, ent: &Entity, ids: &[i64], before: Option<&str>, out: &mut PostOutcome) -> Result<()> {
-    let latest: Option<String> = sqlx::query_scalar("SELECT MAX(month) FROM fin_periods WHERE entity_id = ? AND status = 'closed'")
-        .bind(ent.id)
-        .fetch_one(&mut *conn)
-        .await?;
+pub(crate) async fn post_ids_in(
+    conn: &mut Conn,
+    ent: &Entity,
+    ids: &[i64],
+    before: Option<&str>,
+    out: &mut PostOutcome,
+) -> Result<()> {
+    let latest: Option<String> =
+        sqlx::query_scalar("SELECT MAX(month) FROM fin_periods WHERE entity_id = ? AND status = 'closed'")
+            .bind(ent.id)
+            .fetch_one(&mut *conn)
+            .await?;
     let at = now();
     for &id in ids {
-        let date: Option<String> = sqlx::query_scalar("SELECT date FROM fin_entries WHERE id = ? AND entity_id = ? AND status = 'draft'")
-            .bind(id)
-            .bind(ent.id)
-            .fetch_optional(&mut *conn)
-            .await?;
+        let date: Option<String> =
+            sqlx::query_scalar("SELECT date FROM fin_entries WHERE id = ? AND entity_id = ? AND status = 'draft'")
+                .bind(id)
+                .bind(ent.id)
+                .fetch_optional(&mut *conn)
+                .await?;
         let Some(date) = date else { continue };
         if before.is_some_and(|b| date.as_str() >= b) {
             continue;
         }
-        let in_review: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM fin_pairs WHERE (entry_a = ?1 OR entry_b = ?1) AND status = 'review')")
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
+        let in_review: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM fin_pairs WHERE (entry_a = ?1 OR entry_b = ?1) AND status = 'review')",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
         if in_review {
             out.review += 1;
             continue;
@@ -254,9 +295,21 @@ pub(crate) async fn post_ids_in(conn: &mut Conn, ent: &Entity, ids: &[i64], befo
             out.closed += 1;
             continue;
         }
-        sqlx::query("UPDATE fin_entries SET status = 'posted', updated_at = ? WHERE id = ?").bind(&at).bind(id).execute(&mut *conn).await?;
-        audit(conn, ent, "post", "entry", Some(id), Some(&serde_json::json!({"status": "draft"})), Some(&serde_json::json!({"status": "posted"})))
+        sqlx::query("UPDATE fin_entries SET status = 'posted', updated_at = ? WHERE id = ?")
+            .bind(&at)
+            .bind(id)
+            .execute(&mut *conn)
             .await?;
+        audit(
+            conn,
+            ent,
+            "post",
+            "entry",
+            Some(id),
+            Some(&serde_json::json!({"status": "draft"})),
+            Some(&serde_json::json!({"status": "posted"})),
+        )
+        .await?;
         out.posted += 1;
     }
     Ok(())
@@ -306,15 +359,30 @@ pub struct CategoriseOutcome {
     /// A rule for the same lines, in `fin_create_rule`'s input shape, when one can be made and
     /// wasn't asked for: the interface offers "and remember as a rule".
     pub rule_input: Option<RuleInput>,
+    /// Payees that took the category as their default (their first one): Undo's data.
+    pub payee_defaults: Vec<super::payees::DefaultChange>,
 }
 
 /// A rule that files future lines like the ones a filter matches: a payee group's merchant
 /// and direction, else the search text (and the account). Dates can't be a rule, so a filter
 /// with neither gives none.
-async fn rule_for(conn: &mut Conn, ent: &Entity, filter: &EntryFilter, ledger_account_id: i64) -> Result<Option<RuleInput>> {
+async fn rule_for(
+    conn: &mut Conn,
+    ent: &Entity,
+    filter: &EntryFilter,
+    ledger_account_id: i64,
+) -> Result<Option<RuleInput>> {
     let mut conditions = Conditions { account_id: filter.account_id, ..Default::default() };
     if let Some(key) = &filter.group_key {
-        let merchant = key.split_once(':').map(|(_, m)| m).unwrap_or("").trim();
+        let mut merchant = key.split_once(':').map(|(_, m)| m).unwrap_or("").trim().to_string();
+        if let Some(p) = payee_of_key(key) {
+            let name: Option<String> = sqlx::query_scalar("SELECT name FROM fin_payees WHERE id = ? AND entity_id = ?")
+                .bind(p)
+                .bind(ent.id)
+                .fetch_optional(&mut *conn)
+                .await?;
+            merchant = name.map(|n| merchant_key(&n, None)).unwrap_or_default();
+        }
         if merchant.is_empty() {
             return Ok(None);
         }
@@ -342,7 +410,12 @@ async fn rule_for(conn: &mut Conn, ent: &Entity, filter: &EntryFilter, ledger_ac
     } else {
         return Ok(None);
     }
-    Ok(Some(RuleInput { position: None, conditions, action: Action { ledger_account_id: Some(ledger_account_id), splits: vec![] }, learned: false }))
+    Ok(Some(RuleInput {
+        position: None,
+        conditions,
+        action: Action { ledger_account_id: Some(ledger_account_id), splits: vec![] },
+        learned: false,
+    }))
 }
 
 /// `fin_categorise_matching`: gives every draft the filter matches whose counter side is still
@@ -357,8 +430,20 @@ pub async fn categorise_matching(
     create_rule: bool,
     opts: &BulkOptions,
 ) -> Result<CategoriseOutcome> {
+    // One category for every unsorted line files a salary under Shopping: the lines must be
+    // narrowed to what the user picked first.
+    if !filter.narrows() {
+        return Err(AppError::InvalidInput(
+            "narrow the lines down first: a payee, a search, an account, dates or a selection".into(),
+        ));
+    }
     let _busy = super::reset::begin_bulk(db, ent)?;
-    let filter = EntryFilter { uncategorised: Some(true), ..drafts(filter) };
+    // Unsorted history is posted already; anything else is the inbox's drafts.
+    let filter = if filter.unsorted == Some(true) {
+        EntryFilter { uncategorised: Some(true), status: Some("posted".into()), ..filter }
+    } else {
+        EntryFilter { uncategorised: Some(true), ..drafts(filter) }
+    };
     let (ids, proposal) = {
         let mut conn = db.acquire().await?;
         let la = get_ledger_account_in(&mut conn, ent, ledger_account_id).await?;
@@ -388,6 +473,7 @@ pub async fn categorise_matching(
     );
     let rows = matching(db, ent, &filter, &extra, &[ent.id]).await?;
     let mut out = CategoriseOutcome::default();
+    let mut filed: Vec<i64> = Vec::new();
     // The rule first: if it's refused, nothing has been written.
     if create_rule {
         out.rule = Some(super::rules::create_rule(db, ent, proposal.clone().expect("checked above")).await?);
@@ -411,7 +497,13 @@ pub async fn categorise_matching(
             // `categorise_in` checks everything before its first write, so a refused line
             // leaves nothing behind in the batch.
             match super::categorise_in(&mut tx, ent, id, vec![split]).await {
-                Ok(_) => out.categorised += 1,
+                Ok(_) => {
+                    // Categorised means done: out of unsorted history, and a draft posts.
+                    sqlx::query("UPDATE fin_entries SET unsorted = 0 WHERE id = ?").bind(id).execute(&mut *tx).await?;
+                    post_ids_in(&mut tx, ent, &[id], None, &mut PostOutcome::default()).await?;
+                    filed.push(id);
+                    out.categorised += 1
+                }
                 Err(AppError::InvalidInput(_)) => out.skipped += 1,
                 Err(e) => return Err(e),
             }
@@ -421,12 +513,153 @@ pub async fn categorise_matching(
     }
     // The user chose for the group: its suggestion has served.
     if let Some(key) = &filter.group_key {
-        sqlx::query("DELETE FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?").bind(ent.id).bind(key).execute(db).await?;
+        sqlx::query("DELETE FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?")
+            .bind(ent.id)
+            .bind(key)
+            .execute(db)
+            .await?;
     }
     if !create_rule {
         out.rule_input = proposal;
     }
+    // Sorting a payee's lines teaches the payee, as categorising one of them does: its first
+    // category becomes its default (unless it asks every time).
+    if filter.group_key.is_some() || filter.payee_id.is_some() {
+        let mut payees: Vec<i64> = Vec::new();
+        for chunk in filed.chunks(500) {
+            let list = chunk.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let found: Vec<i64> = sqlx::query_scalar(&format!(
+                "SELECT DISTINCT e.payee_id FROM fin_entries e JOIN fin_payees p ON p.id = e.payee_id \
+                 WHERE e.id IN ({list}) AND p.default_ledger_account_id IS NULL AND p.ask_every_time = 0 \
+                 AND p.merged_into IS NULL"
+            ))
+            .fetch_all(db)
+            .await?;
+            payees.extend(found.into_iter().filter(|p| !payees.contains(p)).collect::<Vec<_>>());
+        }
+        for p in payees {
+            out.payee_defaults.push(super::payees::set_default(db, ent, p, Some(ledger_account_id), true).await?);
+        }
+    }
     Ok(out)
+}
+
+// ============== The inbox's counts and folded transfers ==============
+
+/// `fin_inbox_summary`: the inbox holds decisions only, and this counts them and what stays
+/// out of the inbox.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct InboxSummary {
+    /// Drafts: the lines that need the user.
+    pub decisions: i64,
+    /// Of them, uncategorised.
+    pub uncategorised: i64,
+    /// Of them, legs of a transfer pair to review.
+    pub review: i64,
+    /// Of the uncategorised, those whose payee group has the local model's suggestion.
+    pub suggested: i64,
+    /// Posted as unsorted history.
+    pub unsorted_history: i64,
+    /// Entries in a booked transfer or exchange pair (the Transfers filter).
+    pub transfers: i64,
+    /// While the books from before payees are worked through after an update: `{done, total}`
+    /// entries. Imports wait until it's gone.
+    pub preparing: Option<Preparing>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct Preparing {
+    pub done: i64,
+    pub total: i64,
+}
+
+async fn count_where(conn: &mut Conn, ent: &Entity, cond: &str) -> Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM fin_entries e WHERE e.entity_id = ? AND {cond}");
+    Ok(sqlx::query_scalar(&sql).bind(ent.id).fetch_one(&mut *conn).await?)
+}
+
+pub async fn summary(db: &Db, ent: &Entity) -> Result<InboxSummary> {
+    fill_group_keys(db, ent).await?;
+    let mut conn = db.acquire().await?;
+    let s = super::pairing::sys(&mut conn, ent).await?;
+    let unc = super::payees::uncategorised_sql(&s, ent);
+    let pair = |statuses: &str| {
+        format!("EXISTS (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) AND p.status IN ({statuses}))")
+    };
+    let suggested = format!(
+        "e.status = 'draft' AND {unc} AND EXISTS (SELECT 1 FROM fin_group_suggestions g \
+         WHERE g.entity_id = e.entity_id AND g.group_key = e.group_key AND g.ledger_account_id IS NOT NULL)"
+    );
+    Ok(InboxSummary {
+        decisions: count_where(&mut conn, ent, "e.status = 'draft'").await?,
+        uncategorised: count_where(&mut conn, ent, &format!("e.status = 'draft' AND {unc}")).await?,
+        review: count_where(&mut conn, ent, &format!("e.status = 'draft' AND {}", pair("'review'"))).await?,
+        suggested: count_where(&mut conn, ent, &suggested).await?,
+        unsorted_history: count_where(&mut conn, ent, "e.unsorted = 1").await?,
+        transfers: count_where(&mut conn, ent, &pair("'auto', 'confirmed'")).await?,
+        preparing: super::payees::preparing(db, ent).await?.map(|(done, total)| Preparing { done, total }),
+    })
+}
+
+/// Booked transfers of one kind on one account, folded: "Exchanged to GBP: 1,240 moves, €612".
+#[derive(Debug, Clone, Serialize)]
+pub struct TransferGroup {
+    /// The description pattern the moves share (`pairing::description_key`).
+    pub key: String,
+    /// The latest move's description.
+    pub label: String,
+    pub account_id: i64,
+    pub count: i64,
+    /// The bank lines' total in the functional currency.
+    pub total_minor: i64,
+    pub first_date: String,
+    pub last_date: String,
+}
+
+/// `fin_transfer_groups`: the entries in booked pairs the filter matches, folded by account and
+/// description pattern, the most moves first.
+pub async fn transfer_groups(db: &Db, ent: &Entity, filter: EntryFilter) -> Result<Vec<TransferGroup>> {
+    let filter = EntryFilter { transfers: Some(true), ..filter };
+    let mut conn = db.acquire().await?;
+    let (sql, binds) = filter_sql(&mut conn, ent, &filter).await?;
+    let bank = |col: &str| {
+        format!(
+            "(SELECT {col} FROM fin_lines l JOIN fin_accounts a ON a.ledger_account_id = l.ledger_account_id \
+             WHERE l.entry_id = e.id AND a.entity_id = {} ORDER BY l.id LIMIT 1)",
+            ent.id
+        )
+    };
+    let rows_sql = format!(
+        "SELECT e.description, e.date, {}, {}{sql} ORDER BY e.date DESC, e.id DESC",
+        bank("a.id"),
+        bank("l.functional_minor")
+    );
+    let rows: Vec<(String, String, Option<i64>, Option<i64>)> =
+        bind_all!(sqlx::query_as(&rows_sql), &binds).fetch_all(&mut *conn).await?;
+    let mut groups: Vec<TransferGroup> = Vec::new();
+    let mut at: std::collections::HashMap<(i64, String), usize> = std::collections::HashMap::new();
+    for (description, date, account, functional) in rows {
+        let Some(account) = account else { continue };
+        let key = super::pairing::description_key(&description);
+        let i = *at.entry((account, key.clone())).or_insert_with(|| {
+            groups.push(TransferGroup {
+                key,
+                label: description.clone(),
+                account_id: account,
+                count: 0,
+                total_minor: 0,
+                first_date: date.clone(),
+                last_date: date.clone(),
+            });
+            groups.len() - 1
+        });
+        let g = &mut groups[i];
+        g.count += 1;
+        g.total_minor += functional.unwrap_or(0);
+        g.first_date = date;
+    }
+    groups.sort_by(|a, b| b.count.cmp(&a.count).then(b.total_minor.abs().cmp(&a.total_minor.abs())));
+    Ok(groups)
 }
 
 // ============== Suggestions per group ==============

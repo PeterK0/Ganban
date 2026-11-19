@@ -60,10 +60,38 @@ pub fn looks_like_serial_date(n: f64) -> bool {
 /// cp1252's 0x80–0x9F block, as Unicode. `None` marks the five bytes cp1252 leaves
 /// undefined; decoders pass those through as the C1 control of the same value.
 const CP1252_HIGH: [Option<char>; 32] = [
-    Some('€'), None, Some('‚'), Some('ƒ'), Some('„'), Some('…'), Some('†'), Some('‡'),
-    Some('ˆ'), Some('‰'), Some('Š'), Some('‹'), Some('Œ'), None, Some('Ž'), None,
-    None, Some('‘'), Some('’'), Some('“'), Some('”'), Some('•'), Some('–'), Some('—'),
-    Some('˜'), Some('™'), Some('š'), Some('›'), Some('œ'), None, Some('ž'), Some('Ÿ'),
+    Some('€'),
+    None,
+    Some('‚'),
+    Some('ƒ'),
+    Some('„'),
+    Some('…'),
+    Some('†'),
+    Some('‡'),
+    Some('ˆ'),
+    Some('‰'),
+    Some('Š'),
+    Some('‹'),
+    Some('Œ'),
+    None,
+    Some('Ž'),
+    None,
+    None,
+    Some('‘'),
+    Some('’'),
+    Some('“'),
+    Some('”'),
+    Some('•'),
+    Some('–'),
+    Some('—'),
+    Some('˜'),
+    Some('™'),
+    Some('š'),
+    Some('›'),
+    Some('œ'),
+    None,
+    Some('ž'),
+    Some('Ÿ'),
 ];
 
 fn cp1252_byte(c: char) -> Option<u8> {
@@ -79,8 +107,8 @@ fn cp1252_byte(c: char) -> Option<u8> {
     CP1252_HIGH.iter().position(|m| *m == Some(c)).map(|i| 0x80 + i as u8)
 }
 
-/// Repairs text that was UTF-8 but got decoded as cp1252 ("WOÎ›T" → "WOΛT",
-/// "ðŸ’¸" → "💸"). The text is re-encoded to cp1252 bytes and re-decoded as UTF-8;
+/// Repairs text that was UTF-8 but got decoded as cp1252 ("Î¦Î‘Î¡ÎŸÎ£" → "ΦΑΡΟΣ",
+/// "ðŸŒ±" → "🌱"). The text is re-encoded to cp1252 bytes and re-decoded as UTF-8;
 /// the repair is kept only when every character maps and the bytes are valid UTF-8,
 /// so genuine accented text ("Café") is left alone.
 pub fn repair_mojibake(s: &str) -> String {
@@ -102,10 +130,7 @@ pub fn repair_mojibake(s: &str) -> String {
 
 /// Trims, turns no-break spaces into spaces and collapses runs of whitespace.
 pub fn clean_text(s: &str) -> String {
-    s.split(|c: char| c.is_whitespace() || c == '\u{a0}')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    s.split(|c: char| c.is_whitespace() || c == '\u{a0}').filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +160,11 @@ pub fn detect_decimal_style<'a>(values: impl IntoIterator<Item = &'a str>) -> De
         let (d, c) = (v.rfind('.'), v.rfind(','));
         match (d, c) {
             (Some(d), Some(c)) => {
-                if d > c { dot += 1 } else { comma += 1 }
+                if d > c {
+                    dot += 1
+                } else {
+                    comma += 1
+                }
             }
             (Some(i), None) | (None, Some(i)) => {
                 let mark = v.as_bytes()[i];
@@ -154,7 +183,11 @@ pub fn detect_decimal_style<'a>(values: impl IntoIterator<Item = &'a str>) -> De
             (None, None) => {}
         }
     }
-    if comma > dot { DecimalStyle::Comma } else { DecimalStyle::Dot }
+    if comma > dot {
+        DecimalStyle::Comma
+    } else {
+        DecimalStyle::Dot
+    }
 }
 
 /// Parses a text amount into minor units with `exponent` decimals.
@@ -189,7 +222,11 @@ pub fn parse_amount_minor(s: &str, style: DecimalStyle, exponent: u32) -> Option
                     return None;
                 }
                 seen_digit = true;
-                if seen_dec { frac_part.push(c) } else { int_part.push(c) }
+                if seen_dec {
+                    frac_part.push(c)
+                } else {
+                    int_part.push(c)
+                }
             }
             '-' | '−' | '(' | ')' | '+' => {
                 if matches!(c, '-' | '−' | '(') {
@@ -280,18 +317,12 @@ pub fn parse_date_with(s: &str, fmt: &str) -> Option<NaiveDateTime> {
 }
 
 /// The first of `formats` that parses every non-empty value, if any.
-pub fn detect_date_format<'a>(
-    values: &[&'a str],
-    formats: &[&'static str],
-) -> Option<&'static str> {
+pub fn detect_date_format<'a>(values: &[&'a str], formats: &[&'static str]) -> Option<&'static str> {
     let values: Vec<&str> = values.iter().map(|v| v.trim()).filter(|v| !v.is_empty()).collect();
     if values.is_empty() {
         return None;
     }
-    formats
-        .iter()
-        .copied()
-        .find(|f| values.iter().all(|v| parse_date_with(v, f).is_some()))
+    formats.iter().copied().find(|f| values.iter().all(|v| parse_date_with(v, f).is_some()))
 }
 
 #[cfg(test)]
@@ -318,12 +349,14 @@ mod tests {
 
     #[test]
     fn mojibake_is_repaired_only_when_valid() {
-        assert_eq!(repair_mojibake("WOÎ›T"), "WOΛT");
-        assert_eq!(repair_mojibake("From EUR ðŸ’¸ Pocket"), "From EUR 💸 Pocket");
+        assert_eq!(repair_mojibake("Î¦Î‘Î¡ÎŸÎ£"), "ΦΑΡΟΣ");
+        assert_eq!(repair_mojibake("Ð›ÑƒÐ½Ð°"), "Луна");
+        assert_eq!(repair_mojibake("From EUR ðŸŒ± Jar"), "From EUR 🌱 Jar");
         assert_eq!(repair_mojibake("CafÃ©"), "Café");
         // Genuine text stays as it is.
         assert_eq!(repair_mojibake("Café"), "Café");
-        assert_eq!(repair_mojibake("ΑΝΑΝΕΩΣΗ ΚΑΡΤΑΣ"), "ΑΝΑΝΕΩΣΗ ΚΑΡΤΑΣ");
+        assert_eq!(repair_mojibake("ΦΑΡΟΣ ΚΑΦΕ"), "ΦΑΡΟΣ ΚΑΦΕ");
+        assert_eq!(repair_mojibake("Луна"), "Луна");
         assert_eq!(repair_mojibake("plain"), "plain");
         assert_eq!(repair_mojibake("€ 5"), "€ 5");
     }
@@ -391,10 +424,7 @@ mod tests {
     #[test]
     fn text_dates() {
         assert_eq!(parse_date_with("01/10/2026", "%d/%m/%Y").unwrap(), dt("2026-10-01 00:00:00"));
-        assert_eq!(
-            parse_date_with("2026-10-01 13:05:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-            dt("2026-10-01 13:05:00")
-        );
+        assert_eq!(parse_date_with("2026-10-01 13:05:00", "%Y-%m-%d %H:%M:%S").unwrap(), dt("2026-10-01 13:05:00"));
         let f = detect_date_format(&["01/10/2026", "31/10/2026"], AUTO_DATE_FORMATS);
         assert_eq!(f, Some("%d/%m/%Y"));
         assert_eq!(detect_date_format(&["10/31/2026"], AUTO_DATE_FORMATS), Some("%m/%d/%Y"));

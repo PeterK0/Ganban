@@ -18,14 +18,25 @@ use serde::Serialize;
 use super::import::decode::currency_exponent;
 use super::rules::merchant_key;
 use super::{
-    audit, categorise_in, create_bank_draft_in, create_entry_in, get_entry_in, not_found, now, rates,
-    system, system_account_in, BankDraft, Conn, Entity, Entry, EntryInput, LineInput, Split,
+    audit, categorise_in, create_bank_draft_in, create_entry_in, get_entry_in, not_found, now, rates, system,
+    system_account_in, BankDraft, Conn, Entity, Entry, EntryInput, LineInput, Split,
 };
 use crate::error::{AppError, Result};
 use crate::Db;
 
 /// The note on an entry the import wrote for a pocket's side of a move.
 pub const COUNTERPART_NOTE: &str = "Written by the import: the pocket's side of this move wasn't in the file.";
+
+/// The note on the other-currency side of an exchange the import wrote at the ECB rate: an
+/// estimate, replaced by the real line when that account's statement comes in.
+pub const FX_ESTIMATE_NOTE: &str =
+    "Written by the import at the ECB rate: an estimate until this account's statement is imported.";
+
+/// Posts both legs of a pair that's booked (categorised means done): drafts in an open month
+/// that wait for nothing.
+pub(crate) async fn post_legs(conn: &mut Conn, ent: &Entity, a: i64, b: i64) -> Result<()> {
+    super::inbox::post_ids_in(conn, ent, &[a, b], None, &mut super::inbox::PostOutcome::default()).await
+}
 
 /// How far apart two legs of a transfer may be booked.
 pub const TRANSFER_DAYS: i64 = 3;
@@ -42,9 +53,9 @@ pub struct Candidate {
     pub entry_id: i64,
     pub account_id: i64,
     pub date: NaiveDate,
-    /// The booking time (Revolut's Completed Date), for exchange legs.
+    /// The booking time, when the bank gives one, for exchange legs.
     pub at: Option<NaiveDateTime>,
-    /// The bank's own timestamp of the line (Revolut's Started Date, to the second).
+    /// The bank's own timestamp of the line (when it happened, to the second).
     pub occurred_at: Option<NaiveDateTime>,
     /// The bank's description of the line.
     pub description: String,
@@ -176,15 +187,22 @@ fn fx_score(a: &Candidate, b: &Candidate, ecb: &dyn Fn(&str, &str, NaiveDate) ->
         if secs > 3600 {
             return None;
         }
-        s += if secs <= 120 { 0.25 } else if secs <= 600 { 0.1 } else { 0.0 };
+        s += if secs <= 120 {
+            0.25
+        } else if secs <= 600 {
+            0.1
+        } else {
+            0.0
+        };
     }
     if a.fx_currency.is_some() || b.fx_currency.is_some() {
         s += 0.1;
     }
     let (out, inn) = if a.amount_minor < 0 { (a, b) } else { (b, a) };
-    if let (Some(implied), Some(spot)) =
-        (implied_rate(out.amount_minor, &out.currency, inn.amount_minor, &inn.currency), ecb(&out.currency, &inn.currency, out.date))
-    {
+    if let (Some(implied), Some(spot)) = (
+        implied_rate(out.amount_minor, &out.currency, inn.amount_minor, &inn.currency),
+        ecb(&out.currency, &inn.currency, out.date),
+    ) {
         let dev = (implied / spot - 1.0).abs();
         if dev > 0.1 {
             return None;
@@ -235,7 +253,12 @@ pub fn propose_pairs(c: &[Candidate], ecb: &dyn Fn(&str, &str, NaiveDate) -> Opt
             } else {
                 continue;
             };
-            all.push(Scored { p: Proposal { a: a.entry_id, b: b.entry_id, kind, score, auto: false }, timed, out, inn });
+            all.push(Scored {
+                p: Proposal { a: a.entry_id, b: b.entry_id, kind, score, auto: false },
+                timed,
+                out,
+                inn,
+            });
         }
     }
     all.sort_by(|x, y| {
@@ -280,11 +303,11 @@ pub fn propose_pairs(c: &[Candidate], ecb: &dyn Fn(&str, &str, NaiveDate) -> Opt
     out
 }
 
-/// The booking time stored in a source line's raw row (Revolut's "Completed Date").
+/// The booking time stored in a source line's raw row, in the column a built-in
+/// format keeps it in.
 pub fn at_from_raw(raw_json: &str) -> Option<NaiveDateTime> {
     let v: serde_json::Value = serde_json::from_str(raw_json).ok()?;
-    let s = v.get("Completed Date")?.as_str()?;
-    NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok()
+    super::import::profiles::time_from_raw(&v, |f| f.booked_at_column)
 }
 
 // ============== Bank entries in the ledger ==============
@@ -313,7 +336,11 @@ pub(crate) async fn sys(conn: &mut Conn, ent: &Entity) -> Result<Sys> {
 
 impl Sys {
     pub fn uncategorised_for(&self, amount_minor: i64) -> i64 {
-        if amount_minor < 0 { self.unc_expense } else { self.unc_income }
+        if amount_minor < 0 {
+            self.unc_expense
+        } else {
+            self.unc_income
+        }
     }
 }
 
@@ -354,11 +381,13 @@ pub(crate) async fn bank_view(conn: &mut Conn, ent: &Entity, s: &Sys, entry_id: 
             .fetch_all(&mut *conn)
             .await?;
     let fee: i64 = match entry.source_line_id {
-        Some(sl) => sqlx::query_scalar("SELECT fee_minor FROM fin_source_lines WHERE id = ? AND entity_id = ?")
-            .bind(sl)
-            .bind(ent.id)
-            .fetch_one(&mut *conn)
-            .await?,
+        Some(sl) => {
+            sqlx::query_scalar("SELECT fee_minor FROM fin_source_lines WHERE id = ? AND entity_id = ?")
+                .bind(sl)
+                .bind(ent.id)
+                .fetch_one(&mut *conn)
+                .await?
+        }
         None => 0,
     };
     let mut account = None;
@@ -410,7 +439,14 @@ async fn has_live_pair(conn: &mut Conn, entry_id: i64) -> Result<bool> {
 
 /// Books a pair: both counters to clearing, and for FX the adjusting entry for what's
 /// left on clearing. Returns the adjusting entry's id.
-async fn book(conn: &mut Conn, ent: &Entity, s: &Sys, a: &BankView, b: &BankView, kind: PairKind) -> Result<Option<i64>> {
+async fn book(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &Sys,
+    a: &BankView,
+    b: &BankView,
+    kind: PairKind,
+) -> Result<Option<i64>> {
     recounter(conn, ent, a, s.clearing).await?;
     recounter(conn, ent, b, s.clearing).await?;
     if kind != PairKind::Fx {
@@ -483,10 +519,12 @@ async fn insert_pair(
 }
 
 /// What a pairing run did.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PairingOutcome {
     pub paired: usize,
     pub review: usize,
+    /// The pairs booked without asking.
+    pub pair_ids: Vec<i64>,
 }
 
 /// A fresh entry for the pairing run, with what the file said about it.
@@ -512,10 +550,21 @@ pub(crate) async fn plan_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, fresh: &[
         dates.push(get_entry_in(conn, ent, f.entry_id).await?.date);
     }
     let parse = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
-    let (Some(min), Some(max)) = (dates.iter().filter_map(|d| parse(d)).min(), dates.iter().filter_map(|d| parse(d)).max()) else {
+    let (Some(min), Some(max)) =
+        (dates.iter().filter_map(|d| parse(d)).min(), dates.iter().filter_map(|d| parse(d)).max())
+    else {
         return Ok(Vec::new());
     };
-    let mut cands = candidates_in(conn, ent, s, min - Duration::days(TRANSFER_DAYS), max + Duration::days(TRANSFER_DAYS), false, &|_| true).await?;
+    let mut cands = candidates_in(
+        conn,
+        ent,
+        s,
+        min - Duration::days(TRANSFER_DAYS),
+        max + Duration::days(TRANSFER_DAYS),
+        false,
+        &|_| true,
+    )
+    .await?;
     for c in &mut cands {
         if let Some(f) = by_id.get(&c.entry_id) {
             c.fresh = true;
@@ -605,7 +654,12 @@ async fn propose_with_rates(conn: &mut Conn, cands: &[Candidate]) -> Result<Vec<
 
 /// Books proposed pairs. A side that got paired or categorised since the proposal was
 /// made (the user working while an import runs) is skipped.
-pub(crate) async fn book_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, proposals: &[Proposal]) -> Result<PairingOutcome> {
+pub(crate) async fn book_pairs(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &Sys,
+    proposals: &[Proposal],
+) -> Result<PairingOutcome> {
     let mut out = PairingOutcome::default();
     for p in proposals {
         if has_live_pair(conn, p.a).await? || has_live_pair(conn, p.b).await? {
@@ -618,7 +672,8 @@ pub(crate) async fn book_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, proposals
         }
         if p.auto {
             let adjust = book(conn, ent, s, &a, &b, p.kind).await?;
-            insert_pair(conn, ent, p.kind, p.a, p.b, adjust, "auto", p.score).await?;
+            out.pair_ids.push(insert_pair(conn, ent, p.kind, p.a, p.b, adjust, "auto", p.score).await?);
+            post_legs(conn, ent, p.a, p.b).await?;
             out.paired += 1;
         } else {
             insert_pair(conn, ent, p.kind, p.a, p.b, None, "review", p.score).await?;
@@ -630,7 +685,13 @@ pub(crate) async fn book_pairs(conn: &mut Conn, ent: &Entity, s: &Sys, proposals
 
 /// For a pocket move whose pocket side wasn't in the file, writes that side on the
 /// pocket's account and pairs the two. Returns whether it did.
-pub(crate) async fn write_counterpart(conn: &mut Conn, ent: &Entity, s: &Sys, entry_id: i64, pocket_account: i64) -> Result<bool> {
+pub(crate) async fn write_counterpart(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &Sys,
+    entry_id: i64,
+    pocket_account: i64,
+) -> Result<bool> {
     if has_live_pair(conn, entry_id).await? {
         return Ok(false);
     }
@@ -638,21 +699,51 @@ pub(crate) async fn write_counterpart(conn: &mut Conn, ent: &Entity, s: &Sys, en
     if v.account_id == pocket_account || !v.is_uncategorised(s) {
         return Ok(false);
     }
+    let other_currency: String = sqlx::query_scalar("SELECT currency FROM fin_accounts WHERE id = ? AND entity_id = ?")
+        .bind(pocket_account)
+        .bind(ent.id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| not_found("account"))?;
+    // An exchange to the user's balance in another currency: that side at the ECB rate of
+    // the day, an estimate until its own statement is imported.
+    let fx = other_currency != v.currency;
+    let amount = if fx {
+        match rates::translate_in(conn, -v.amount_minor, &v.currency, &other_currency, &v.entry.date).await {
+            Ok((a, _)) if a != 0 => a,
+            Ok(_) => return Ok(false),
+            Err(e) if skippable(&e) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    } else {
+        -v.amount_minor
+    };
     let draft = BankDraft {
         account_id: pocket_account,
         date: v.entry.date.clone(),
         description: v.entry.description.clone(),
         payee: None,
-        amount_minor: -v.amount_minor,
+        amount_minor: amount,
         fee_minor: 0,
         counter_ledger_account_id: s.clearing,
         source_line_id: None,
         functional_minor: None,
     };
     let other = create_bank_draft_in(conn, ent, draft).await?;
-    sqlx::query("UPDATE fin_entries SET notes = ? WHERE id = ?").bind(COUNTERPART_NOTE).bind(other.id).execute(&mut *conn).await?;
-    recounter(conn, ent, &v, s.clearing).await?;
-    insert_pair(conn, ent, PairKind::Transfer, entry_id, other.id, None, "auto", 1.0).await?;
+    sqlx::query("UPDATE fin_entries SET notes = ?, payee_key = '' WHERE id = ?")
+        .bind(if fx { FX_ESTIMATE_NOTE } else { COUNTERPART_NOTE })
+        .bind(other.id)
+        .execute(&mut *conn)
+        .await?;
+    let (kind, adjust) = if fx {
+        let o = bank_view(conn, ent, s, other.id).await?;
+        (PairKind::Fx, book(conn, ent, s, &v, &o, PairKind::Fx).await?)
+    } else {
+        recounter(conn, ent, &v, s.clearing).await?;
+        (PairKind::Transfer, None)
+    };
+    insert_pair(conn, ent, kind, entry_id, other.id, adjust, "auto", 1.0).await?;
+    post_legs(conn, ent, entry_id, other.id).await?;
     Ok(true)
 }
 
@@ -689,6 +780,67 @@ pub(crate) async fn find_written_counterpart(
     Ok(None)
 }
 
+/// A new bank line that is the real side of an exchange the import estimated earlier (the
+/// same account, a nearby day, the amount within 5%): the estimate goes, and the real line
+/// pairs with the other leg instead, the difference booked as realised FX. Returns the new
+/// entry, posted.
+pub(crate) async fn settle_estimate(
+    conn: &mut Conn,
+    ent: &Entity,
+    s: &Sys,
+    account_id: i64,
+    date: &str,
+    amount_minor: i64,
+    source_line_id: i64,
+) -> Result<Option<i64>> {
+    let Ok(d) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else { return Ok(None) };
+    let from = (d - Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
+    let to = (d + Duration::days(TRANSFER_DAYS)).format("%Y-%m-%d").to_string();
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM fin_entries WHERE entity_id = ? AND source_line_id IS NULL AND notes = ? \
+         AND date BETWEEN ? AND ? ORDER BY ABS(julianday(date) - julianday(?)), id",
+    )
+    .bind(ent.id)
+    .bind(FX_ESTIMATE_NOTE)
+    .bind(&from)
+    .bind(&to)
+    .bind(date)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut found = None;
+    for id in ids {
+        let v = bank_view(conn, ent, s, id).await?;
+        let close = (v.amount_minor - amount_minor).abs() <= (v.amount_minor.abs() / 20).max(2);
+        if v.account_id == account_id && v.amount_minor.signum() == amount_minor.signum() && close {
+            found = Some(id);
+            break;
+        }
+    }
+    let Some(estimate) = found else { return Ok(None) };
+    let pair: Option<(i64, i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, entry_a, entry_b, adjust_entry_id FROM fin_pairs \
+         WHERE (entry_a = ?1 OR entry_b = ?1) AND status != 'rejected' AND entity_id = ?2",
+    )
+    .bind(estimate)
+    .bind(ent.id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((pair_id, a, b, adjust)) = pair else { return Ok(None) };
+    let other = if a == estimate { b } else { a };
+    if let Some(adj) = adjust {
+        delete_written_in(conn, ent, adj).await?;
+    }
+    sqlx::query("DELETE FROM fin_pairs WHERE id = ?").bind(pair_id).execute(&mut *conn).await?;
+    delete_written_in(conn, ent, estimate).await?;
+    let real = super::draft_from_source_line_in(conn, ent, source_line_id, s.clearing, None).await?;
+    sqlx::query("UPDATE fin_entries SET payee_key = '' WHERE id = ?").bind(real.id).execute(&mut *conn).await?;
+    let (va, vb) = (bank_view(conn, ent, s, other).await?, bank_view(conn, ent, s, real.id).await?);
+    let adjust = book(conn, ent, s, &va, &vb, PairKind::Fx).await?;
+    insert_pair(conn, ent, PairKind::Fx, other, real.id, adjust, "auto", 1.0).await?;
+    post_legs(conn, ent, other, real.id).await?;
+    Ok(Some(real.id))
+}
+
 /// Gives each fresh, uncategorised money-in entry the category of the earlier expense
 /// it refunds: the same merchant within [`REFUND_DAYS`], when the bank calls it a refund
 /// or it's no larger than that expense. Returns how many it categorised.
@@ -704,7 +856,10 @@ pub(crate) async fn match_refunds(conn: &mut Conn, ent: &Entity, s: &Sys, fresh:
         }
         let Some(sl) = v.entry.source_line_id else { continue };
         let (description, payee, kind): (String, Option<String>, Option<String>) =
-            sqlx::query_as("SELECT description, payee, kind_hint FROM fin_source_lines WHERE id = ?").bind(sl).fetch_one(&mut *conn).await?;
+            sqlx::query_as("SELECT description, payee, kind_hint FROM fin_source_lines WHERE id = ?")
+                .bind(sl)
+                .fetch_one(&mut *conn)
+                .await?;
         let key = merchant_key(&description, payee.as_deref());
         if key.is_empty() {
             continue;
@@ -750,7 +905,11 @@ async fn delete_written_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<()>
     let before = get_entry_in(conn, ent, id).await?;
     super::require_open(conn, ent, &before.date).await?;
     sqlx::query("DELETE FROM fin_lines WHERE entry_id = ?").bind(id).execute(&mut *conn).await?;
-    sqlx::query("DELETE FROM fin_entries WHERE id = ? AND entity_id = ?").bind(id).bind(ent.id).execute(&mut *conn).await?;
+    sqlx::query("DELETE FROM fin_entries WHERE id = ? AND entity_id = ?")
+        .bind(id)
+        .bind(ent.id)
+        .execute(&mut *conn)
+        .await?;
     audit(conn, ent, "delete", "entry", Some(id), Some(&serde_json::to_value(&before)?), None).await?;
     Ok(())
 }
@@ -812,12 +971,13 @@ pub async fn list_pairs(db: &Db, ent: &Entity, status: Option<&str>) -> Result<V
     .bind(status)
     .fetch_all(&mut *conn)
     .await?;
-    let banks: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>("SELECT ledger_account_id, id FROM fin_accounts WHERE entity_id = ?")
-        .bind(ent.id)
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .collect();
+    let banks: HashMap<i64, i64> =
+        sqlx::query_as::<_, (i64, i64)>("SELECT ledger_account_id, id FROM fin_accounts WHERE entity_id = ?")
+            .bind(ent.id)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
         let mut p = get_pair_in(&mut conn, ent, id).await?;
@@ -842,7 +1002,7 @@ fn like_key(p: &Pair, banks: &HashMap<i64, i64>) -> String {
 /// already is; rejecting undoes the booking: the entries go back to uncategorised, the
 /// adjusting entry and any side the import wrote are deleted.
 pub async fn resolve_pair(db: &Db, ent: &Entity, id: i64, accept: bool) -> Result<Pair> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let pair = get_pair_in(&mut tx, ent, id).await?;
     let s = sys(&mut tx, ent).await?;
     let kind = if pair.kind == "fx" { PairKind::Fx } else { PairKind::Transfer };
@@ -857,7 +1017,9 @@ pub async fn resolve_pair(db: &Db, ent: &Entity, id: i64, accept: bool) -> Resul
             let b = bank_view(&mut tx, ent, &s, pair.entry_b.id).await?;
             // Categorised since the match was proposed: the user's choice stands.
             if [&a, &b].iter().any(|v| !(v.is_uncategorised(&s) || v.is_clearing(&s))) {
-                return Err(AppError::InvalidInput("one of the entries has been categorised since: pair them by hand".into()));
+                return Err(AppError::InvalidInput(
+                    "one of the entries has been categorised since: pair them by hand".into(),
+                ));
             }
             adjust = book(&mut tx, ent, &s, &a, &b, kind).await?;
         }
@@ -866,26 +1028,47 @@ pub async fn resolve_pair(db: &Db, ent: &Entity, id: i64, accept: bool) -> Resul
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        post_legs(&mut tx, ent, pair.entry_a.id, pair.entry_b.id).await?;
     } else {
         // Mark it first: deleting a side the import wrote takes the pair row with it.
-        sqlx::query("UPDATE fin_pairs SET status = 'rejected', adjust_entry_id = NULL WHERE id = ?").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE fin_pairs SET status = 'rejected', adjust_entry_id = NULL WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         if booked {
             if let Some(adj) = pair.adjust_entry_id {
                 delete_written_in(&mut tx, ent, adj).await?;
             }
             for e in [&pair.entry_a, &pair.entry_b] {
-                if e.source_line_id.is_none() && e.notes.as_deref() == Some(COUNTERPART_NOTE) {
+                let written = [COUNTERPART_NOTE, FX_ESTIMATE_NOTE].map(Some);
+                if e.source_line_id.is_none() && written.contains(&e.notes.as_deref()) {
                     delete_written_in(&mut tx, ent, e.id).await?;
                 } else {
                     let v = bank_view(&mut tx, ent, &s, e.id).await?;
                     recounter(&mut tx, ent, &v, s.uncategorised_for(v.amount_minor)).await?;
+                    // "Not a transfer": back in the inbox, with its payee.
+                    sqlx::query(
+                        "UPDATE fin_entries SET status = 'draft', payee_key = NULL WHERE id = ? AND status = 'posted'",
+                    )
+                    .bind(e.id)
+                    .execute(&mut *tx)
+                    .await?;
+                    super::payees::attach_in(&mut tx, ent, e.id).await?;
                 }
             }
         }
     }
     let after = serde_json::json!({ "status": if accept { "confirmed" } else { "rejected" } });
-    audit(&mut tx, ent, if accept { "confirm" } else { "reject" }, "pair", Some(id), Some(&serde_json::json!({ "status": pair.status })), Some(&after))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        if accept { "confirm" } else { "reject" },
+        "pair",
+        Some(id),
+        Some(&serde_json::json!({ "status": pair.status })),
+        Some(&after),
+    )
+    .await?;
     // A pair whose written side was deleted is gone: answer with what it was.
     let out = match get_pair_in(&mut tx, ent, id).await {
         Ok(p) => p,
@@ -902,7 +1085,7 @@ pub async fn pair_entries(db: &Db, ent: &Entity, entry_a: i64, entry_b: i64) -> 
     if entry_a == entry_b {
         return Err(AppError::InvalidInput("pick two different entries".into()));
     }
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let s = sys(&mut tx, ent).await?;
     let a = bank_view(&mut tx, ent, &s, entry_a).await?;
     let b = bank_view(&mut tx, ent, &s, entry_b).await?;
@@ -930,6 +1113,7 @@ pub async fn pair_entries(db: &Db, ent: &Entity, entry_a: i64, entry_b: i64) -> 
     };
     let adjust = book(&mut tx, ent, &s, &a, &b, kind).await?;
     let id = insert_pair(&mut tx, ent, kind, entry_a, entry_b, adjust, "confirmed", 1.0).await?;
+    post_legs(&mut tx, ent, entry_a, entry_b).await?;
     let out = get_pair_in(&mut tx, ent, id).await?;
     tx.commit().await?;
     Ok(out)
@@ -981,7 +1165,7 @@ pub async fn rescore_pairs(db: &Db, ent: &Entity) -> Result<RescoreOutcome> {
     // Each pass that changes something books a pair or pairs a freed leg, so this ends;
     // the cap is only a guard.
     for _ in 0..100 {
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = crate::db::begin_write(db).await?;
         let (changed, confirmed) = rescore_pass(&mut tx, ent, &mut loose).await?;
         tx.commit().await?;
         out.confirmed += confirmed;
@@ -989,10 +1173,11 @@ pub async fn rescore_pairs(db: &Db, ent: &Entity) -> Result<RescoreOutcome> {
             break;
         }
     }
-    out.review = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = 'review'")
-        .bind(ent.id)
-        .fetch_one(db)
-        .await? as usize;
+    out.review =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = 'review'")
+            .bind(ent.id)
+            .fetch_one(db)
+            .await? as usize;
     Ok(out)
 }
 
@@ -1088,21 +1273,31 @@ async fn rescore_pass(conn: &mut Conn, ent: &Entity, loose: &mut HashSet<i64>) -
                 let before = serde_json::json!({ "status": "review", "score": score });
                 let after = serde_json::json!({ "status": "auto", "score": p.score });
                 audit(conn, ent, "rescore", "pair", Some(id), Some(&before), Some(&after)).await?;
+                post_legs(conn, ent, p.a, p.b).await?;
                 changed = true;
                 confirmed += 1;
             } else if (score - p.score).abs() > 1e-9 {
-                sqlx::query("UPDATE fin_pairs SET score = ? WHERE id = ?").bind(p.score).bind(id).execute(&mut *conn).await?;
+                sqlx::query("UPDATE fin_pairs SET score = ? WHERE id = ?")
+                    .bind(p.score)
+                    .bind(id)
+                    .execute(&mut *conn)
+                    .await?;
             }
         } else if p.auto {
             let Some(adjust) = try_book(conn, ent, &s, &p).await? else { continue };
             for (id, a, b, _) in &existing {
-                sqlx::query("DELETE FROM fin_pairs WHERE id = ? AND entity_id = ?").bind(id).bind(ent.id).execute(&mut *conn).await?;
+                sqlx::query("DELETE FROM fin_pairs WHERE id = ? AND entity_id = ?")
+                    .bind(id)
+                    .bind(ent.id)
+                    .execute(&mut *conn)
+                    .await?;
                 let before = serde_json::json!({ "status": "review", "entry_a": a, "entry_b": b });
                 audit(conn, ent, "delete", "pair", Some(*id), Some(&before), None).await?;
                 gone.insert(*id);
                 loose.extend([*a, *b].into_iter().filter(|e| *e != p.a && *e != p.b));
             }
             insert_pair(conn, ent, p.kind, p.a, p.b, adjust, "auto", p.score).await?;
+            post_legs(conn, ent, p.a, p.b).await?;
             loose.remove(&p.a);
             loose.remove(&p.b);
             changed = true;
@@ -1134,13 +1329,21 @@ pub(crate) async fn rescore_at_startup(pool: &Db) {
     if done.as_deref() == Some(RULES_VERSION) {
         return;
     }
-    let ids: Vec<i64> = match sqlx::query_scalar("SELECT DISTINCT entity_id FROM fin_pairs WHERE status = 'review'").fetch_all(pool).await {
+    let ids: Vec<i64> = match sqlx::query_scalar("SELECT DISTINCT entity_id FROM fin_pairs WHERE status = 'review'")
+        .fetch_all(pool)
+        .await
+    {
         Ok(ids) => ids,
         Err(_) => return,
     };
     let mut all_done = true;
     for id in ids {
-        let ent: Option<Entity> = sqlx::query_as("SELECT * FROM fin_entities WHERE id = ?").bind(id).fetch_optional(pool).await.ok().flatten();
+        let ent: Option<Entity> = sqlx::query_as("SELECT * FROM fin_entities WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
         let Some(ent) = ent else { continue };
         // One entity's failure doesn't hold up the others.
         all_done &= rescore_pairs(pool, &ent).await.is_ok();
@@ -1148,11 +1351,13 @@ pub(crate) async fn rescore_at_startup(pool: &Db) {
     if !all_done {
         return;
     }
-    let _ = sqlx::query("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(RULES_KEY)
-        .bind(RULES_VERSION)
-        .execute(pool)
-        .await;
+    let _ = sqlx::query(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(RULES_KEY)
+    .bind(RULES_VERSION)
+    .execute(pool)
+    .await;
 }
 
 #[cfg(test)]
@@ -1208,7 +1413,8 @@ mod tests {
 
     #[test]
     fn plain_card_lines_only_go_to_review() {
-        let cands = vec![c(1, 10, "2026-10-01", -2_000, "EUR", Some("card")), c(2, 20, "2026-10-01", 2_000, "EUR", None)];
+        let cands =
+            vec![c(1, 10, "2026-10-01", -2_000, "EUR", Some("card")), c(2, 20, "2026-10-01", 2_000, "EUR", None)];
         let p = propose_pairs(&cands, &none);
         assert_eq!(p.len(), 1);
         assert!(!p[0].auto);
@@ -1356,9 +1562,11 @@ mod tests {
     #[test]
     fn booking_time_from_the_raw_row() {
         assert_eq!(
-            at_from_raw(r#"{"Completed Date":"2026-10-01 12:00:00"}"#),
+            at_from_raw(r#"{"Booked":"2026-10-01 12:00:00"}"#),
             NaiveDateTime::parse_from_str("2026-10-01 12:00:00", "%Y-%m-%d %H:%M:%S").ok()
         );
-        assert_eq!(at_from_raw(r#"{"Transaction Date":"01/10/2026"}"#), None);
+        // A date alone, or a column no built-in format names, gives no time.
+        assert_eq!(at_from_raw(r#"{"Booked":"2026-10-01"}"#), None);
+        assert_eq!(at_from_raw(r#"{"Date":"2026-10-01 12:00:00"}"#), None);
     }
 }

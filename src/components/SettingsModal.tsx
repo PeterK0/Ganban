@@ -279,8 +279,8 @@ export default function SettingsModal({ isOpen, onClose, currentUserId, onUserCh
       const { flow_id, auth_url } = await beginEmailOAuth(emClientId.trim(), emClientSecret.trim() || undefined);
       // Open the consent page: Tauri opener on desktop, new tab on web.
       try {
-        const { openUrl } = await import('@tauri-apps/plugin-opener');
-        await openUrl(auth_url);
+        const { openLinkHere } = await import('../lib/systemOpen');
+        await openLinkHere(auth_url);
       } catch {
         window.open(auth_url, '_blank', 'noopener');
       }
@@ -923,8 +923,8 @@ export default function SettingsModal({ isOpen, onClose, currentUserId, onUserCh
   // Reveal a local folder in the OS file manager (desktop only).
   const openFolder = async (path: string) => {
     try {
-      const { openPath } = await import('@tauri-apps/plugin-opener');
-      await openPath(path);
+      const { openPathHere } = await import('../lib/systemOpen');
+      await openPathHere(path);
     } catch (e) {
       setStorageMsg(`Couldn't open folder: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -2054,11 +2054,11 @@ function isWindowsHost(): boolean {
                 ? 'This app came from GitHub Releases and updates from there, signed by the project.'
                 : 'Updates come from your host, which builds and signs the apps. Nothing phones home.'}
             </p>
-            <UpdatesPanel />
+            <UpdatesPanel hostControls={hasHostControls()} />
 
             {/* The /download page's builds, for a new device's first install: an
                 advanced option, closed by default. Only where there's a host. */}
-            {hasDaemon() && <ServeInstallersCard />}
+            {hasDaemon() && hasHostControls() && <ServeInstallersCard />}
           </div>
         );
 
@@ -2307,7 +2307,8 @@ function isWindowsHost(): boolean {
                 // And a browser guest owns no machine at all: engines, the
                 // local database, storage roots, app updates and device
                 // pairing are all somebody else's host to run.
-                const hostOnly: Section[] = ['connections', 'data', 'updates', 'sync'];
+                // Updates stays for everyone: a browser has no app to update, but it has patch notes.
+                const hostOnly: Section[] = ['connections', 'data', 'sync'];
                 // "Switch user" is the LOCAL multi-profile picker. On a hosted
                 // client who you are is the pairing — a picker there changed
                 // labels and nothing else, while looking like an account switch.

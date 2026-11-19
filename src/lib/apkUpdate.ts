@@ -23,6 +23,7 @@ import {
   type GithubRelease,
 } from "./apkUpdate.pure";
 import { GITHUB_BROKEN, githubLatestReleaseApi } from "./update.pure";
+import { SAMPLE_OFFER_NOTES } from "./patchNotes";
 import { GITHUB_REPO, UPDATE_CHANNEL, githubRepoToAsk, setUpdateSource, updateSource } from "./updateChannel";
 import { certMatch, certReason, isCrossSource, type SourceStatus, type UpdateSource } from "./updateSource.pure";
 
@@ -74,6 +75,7 @@ const STUB_BUILD: AndroidBuild = {
   size: 48_600_000,
   sha256: "0".repeat(64),
   certSha256: STUB_CERT,
+  notes: SAMPLE_OFFER_NOTES,
 };
 let stubPermissionAsked = false;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

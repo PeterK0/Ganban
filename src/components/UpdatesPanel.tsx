@@ -1,12 +1,12 @@
-// Settings → Updates: this app's update (desktop: where it updates from, checks on open,
-// downloads in the background, "Restart to update"), the owner's "Update the server" card
+// Settings → Updates: this app's update (desktop: where it updates from, checks on open, offers
+// a newer version with its patch notes and downloads only on "Download and install", ADR 0012),
+// this build's patch notes, the owner's "Update the server" card
 // with the host update's live log, and the advanced first-install downloads. ADR 0007,
 // ADR 0008, docs/design/UPDATES.md § The update source: "Updates from" picks GitHub Releases
 // or This server per device; GitHub is asked only while "Check GitHub for new versions" is on.
 import { useEffect, useRef, useState } from 'react';
 import ScrollArea from './ScrollArea';
 import { ShareBuildsPanel } from './ShareBuildsPanel';
-import { confirmDialog } from '../lib/confirm';
 import {
   appVersion,
   checkForUpdate,
@@ -17,7 +17,11 @@ import {
   getHostUpdateStatus,
   isDesktopApp,
   canUpdateHost,
+  putOffUpdate,
+  shownUpdateState,
+  skipUpdate,
   pendingKeyChange,
+  previewHostUpdate,
   restartToUpdate,
   startHostUpdate,
   switchUpdateSource,
@@ -25,9 +29,14 @@ import {
   updateHost,
   useUpdateState,
   type ClientBuilds,
+  type HostUpdatePreview,
   type HostUpdateStatus,
 } from '../lib/update';
-import { HOST_POLL_MS, hostClientApps, keepPolling, nextHostPoll, type HostPoll } from '../lib/update.pure';
+import { HOST_POLL_MS, hostClientApps, hostDesktopBuildNote, keepPolling, nextHostPoll, type HostPoll } from '../lib/update.pure';
+import { UpdateOfferDialog } from './UpdateNotice';
+import { PatchNotesDialog, PatchNotesList } from './PatchNotes';
+import { entriesNotIn, hasEntries, onlyEntries, parsePatchNotes } from '../lib/patchNotes.pure';
+import { BUNDLED_NOTES, THIS_RELEASE } from '../lib/patchNotes';
 import { GITHUB_REPO, setGithubChecksOn, useGithubChecksOn, useUpdateSource } from '../lib/updateChannel';
 import type { SourceStatus, UpdateSource } from '../lib/updateSource.pure';
 
@@ -38,11 +47,14 @@ const fmtDate = (s: string | null | undefined) => {
 };
 const why = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export default function UpdatesPanel() {
+/** `hostControls`: this is the app on a machine (desktop or phone app), not a browser; a browser
+ * gets only the version line and the patch notes. */
+export default function UpdatesPanel({ hostControls = true }: { hostControls?: boolean }) {
   return (
     <>
       <ThisAppCard />
-      <HostUpdateCard />
+      <PatchNotesCard />
+      {hostControls && <HostUpdateCard />}
     </>
   );
 }
@@ -61,6 +73,7 @@ function ThisAppCard() {
   const [statuses, setStatuses] = useState<Statuses | null>(null);
   const [restartErr, setRestartErr] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [offerOpen, setOfferOpen] = useState(false);
   const host = updateHost();
 
   const loadBuilds = () => {
@@ -113,7 +126,7 @@ function ThisAppCard() {
   const githubOff = github && !githubOn && (st.kind === 'idle' || st.kind === 'up-to-date' || st.kind === 'failed');
   const pct = downloadPercent(st);
   const tag =
-    st.kind === 'up-to-date' ? 'g-tag-ok' : st.kind === 'ready' ? 'g-tag-pri' : st.kind === 'failed' ? 'g-tag-red' : st.kind === 'unsupported' ? 'g-tag-warn' : '';
+    st.kind === 'up-to-date' ? 'g-tag-ok' : st.kind === 'ready' || st.kind === 'available' ? 'g-tag-pri' : st.kind === 'failed' ? 'g-tag-red' : st.kind === 'unsupported' ? 'g-tag-warn' : '';
   const busy = st.kind === 'checking' || st.kind === 'downloading';
   const keyChange = st.kind === 'failed' ? pendingKeyChange() : null;
   const options: { value: UpdateSource; label: string }[] = [
@@ -170,7 +183,7 @@ function ThisAppCard() {
       {desktop ? (
         <div className="g-inset space-y-2">
           <div className="flex items-center gap-2 text-sm">
-            {tag && !githubOff && <span className={`g-tag ${tag}`}>{st.kind === 'up-to-date' ? 'Up to date' : st.kind === 'ready' ? 'Ready' : st.kind === 'failed' ? 'Failed' : 'Unavailable'}</span>}
+            {tag && !githubOff && <span className={`g-tag ${tag}`}>{st.kind === 'up-to-date' ? 'Up to date' : st.kind === 'ready' ? 'Ready' : st.kind === 'available' ? 'Available' : st.kind === 'failed' ? 'Failed' : 'Unavailable'}</span>}
             <span className="text-text min-w-0">
               {githubOff ? 'Checking GitHub is off.' : describeUpdateState(st, github ? 'GitHub' : 'the server')}
             </span>
@@ -184,9 +197,14 @@ function ThisAppCard() {
           <div className="flex gap-2 pt-1">
             {st.kind === 'ready' ? (
               <button className="g-btn g-btn-pri g-btn-sm" onClick={() => void restart()} disabled={restarting}>
-                {restarting ? 'Restarting…' : 'Restart to update'}
+                {restarting ? 'Restarting…' : 'Restart to finish'}
               </button>
-            ) : (
+            ) : st.kind === 'available' || (st.kind === 'failed' && st.version) ? (
+              <button className="g-btn g-btn-pri g-btn-sm" onClick={() => setOfferOpen(true)}>
+                {st.kind === 'available' ? `Update to ${st.version}…` : 'Try again…'}
+              </button>
+            ) : null}
+            {st.kind !== 'ready' && (
               <button
                 className="g-btn g-btn-ghost g-btn-sm"
                 onClick={() => {
@@ -198,6 +216,20 @@ function ThisAppCard() {
                 {st.kind === 'checking' ? 'Checking…' : 'Check for updates'}
               </button>
             )}
+            {offerOpen && (
+              <UpdateOfferDialog
+                st={shownUpdateState(st)}
+                onClose={() => setOfferOpen(false)}
+                onLater={() => {
+                  setOfferOpen(false);
+                  if (st.kind === 'available' || st.kind === 'failed') putOffUpdate(st.version ?? '');
+                }}
+                onSkip={() => {
+                  setOfferOpen(false);
+                  if (st.kind === 'available' || st.kind === 'failed') skipUpdate(st.version ?? '');
+                }}
+              />
+            )}
             {keyChange && (
               <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => void trustHostKey()}>
                 Trust the new key…
@@ -207,9 +239,72 @@ function ThisAppCard() {
         </div>
       ) : (
         <p className="text-sm text-subtext-0">
-          This page is served live by your host, so it's always current. The desktop and Android apps update
-          themselves, from GitHub Releases or from this server, as each device chooses.
+          This page is served live by your host, so it's always current. The desktop and Android apps check
+          GitHub Releases or this server, as each device chooses, and ask before they download a new version.
         </p>
+      )}
+    </div>
+  );
+}
+
+/** "Update the server now?" with what it would bring: how far behind the host is and the
+ * patch-note entries the update adds. When the host can't tell, one line says so and the
+ * update can still go ahead. */
+function HostUpdateConfirm({ preview, apps, onCancel, onConfirm }: { preview: HostUpdatePreview | null; apps: string | null; onCancel: () => void; onConfirm: () => void }) {
+  const incoming = preview?.changelog?.incoming ? parsePatchNotes(preview.changelog.incoming) : [];
+  const current = preview?.changelog?.current ? parsePatchNotes(preview.changelog.current) : [];
+  const fresh = entriesNotIn(incoming, current);
+  const releases = onlyEntries(incoming, fresh);
+  const behind = preview?.behind ?? null;
+  const lead = !preview
+    ? 'Checking what the update would bring…'
+    : !preview.known
+      ? preview.why ?? "Can't tell what's coming."
+      : behind === 0
+        ? 'The host is already on the latest code. Updating rebuilds it anyway.'
+        : `The host is ${behind} commit${behind === 1 ? '' : 's'} behind${fresh.length ? `, with ${fresh.length} new patch note${fresh.length === 1 ? '' : 's'}` : ', with no new patch notes'}.`;
+  return (
+    <PatchNotesDialog
+      title="Update the server now?"
+      lead={
+        <>
+          <p>{lead}</p>
+          <p className="mt-1">
+            The host pulls the latest code, checks it, rebuilds, and restarts the server (a minute or two offline){apps ? `, then builds ${apps}` : ''}.
+          </p>
+        </>
+      }
+      releases={releases}
+      empty={preview?.known && behind ? 'No new patch notes in these commits.' : null}
+      onClose={onCancel}
+      actions={
+        <>
+          <button className="g-btn g-btn-ghost g-btn-sm" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="g-btn g-btn-gilt g-btn-sm" onClick={onConfirm} disabled={!preview}>
+            Update the server
+          </button>
+        </>
+      }
+    />
+  );
+}
+
+/** Settings → Updates → Patch notes: the whole history this build carries, its own release marked. */
+function PatchNotesCard() {
+  const [all, setAll] = useState(false);
+  // The newest few releases at first; the rest on request, so the page stays short.
+  const shown = all ? BUNDLED_NOTES : BUNDLED_NOTES.filter(hasEntries).slice(0, 3);
+  return (
+    <div className="g-card p-5 space-y-3" data-testid="patch-notes">
+      <div className="g-stitle">Patch notes</div>
+      <p className="text-sm text-subtext-0">What each version fixed and added.</p>
+      <PatchNotesList releases={shown} current={THIS_RELEASE} />
+      {!all && shown.length < BUNDLED_NOTES.length && (
+        <button className="g-btn g-btn-ghost g-btn-sm" onClick={() => setAll(true)}>
+          Show every version
+        </button>
       )}
     </div>
   );
@@ -258,11 +353,21 @@ function HostUpdateCard() {
   const [polling, setPolling] = useState(false);
   const [starting, setStarting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The confirm: what the update would bring. undefined: closed; null: still asking the host.
+  const [preview, setPreview] = useState<HostUpdatePreview | null | undefined>(undefined);
   const armedAt = useRef(0);
   const statusRef = useRef<HostUpdateStatus | null>(null);
   statusRef.current = status;
   const logRef = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
+  // This device, for what the host's desktop build means to it.
+  const desktop = isDesktopApp();
+  const source = useUpdateSource();
+  const appState = useUpdateState();
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    if (desktop) void appVersion().then(setVersion);
+  }, [desktop]);
 
   // Owner only, on a host that has the feature; then read the status once, and
   // follow it if an update is running.
@@ -340,11 +445,15 @@ function HostUpdateCard() {
   // An older host doesn't say; only a definite "no" disables the button.
   const notInstalled = status?.updaterInstalled === false;
 
+  // First what's coming (the host fetches, never pulls), then the owner's word.
+  const ask = () => {
+    setPreview(null);
+    previewHostUpdate()
+      .then(setPreview)
+      .catch((e) => setPreview({ known: false, why: `Couldn't ask the host what's coming: ${why(e)}`, behind: null, changelog: null }));
+  };
   const start = async () => {
-    const ok = await confirmDialog(
-      `Update the server now? The host pulls the latest code, checks it, rebuilds, and restarts the server (a minute or two offline)${apps.length ? `, then builds ${appNames}` : ''}.`,
-    );
-    if (!ok) return;
+    setPreview(undefined);
     setStarting(true);
     setErr(null);
     try {
@@ -372,8 +481,8 @@ function HostUpdateCard() {
         <div className="g-stitle">Update the server</div>
         <button
           className="g-btn g-btn-gilt g-btn-sm"
-          onClick={() => void start()}
-          disabled={starting || running || notInstalled}
+          onClick={ask}
+          disabled={starting || running || notInstalled || preview !== undefined}
           title={notInstalled ? 'Run ops/install.sh on the host once' : undefined}
         >
           {starting ? 'Starting…' : running ? 'Updating…' : 'Update the server'}
@@ -382,7 +491,7 @@ function HostUpdateCard() {
       <p className="text-sm text-subtext-0">
         Pulls the latest code on the host, checks it, rebuilds and restarts the server.{' '}
         {apps.length
-          ? `Then it builds ${appNames}, and devices pick the new ${apps.length > 1 ? 'apps' : 'app'} up on their own.`
+          ? `Then it builds ${appNames}. Devices that update from this server pick the new ${apps.length > 1 ? 'apps' : 'app'} up on their own; those that update from GitHub Releases don't.`
           : "This host doesn't build apps; devices update from GitHub releases."}
       </p>
       {notInstalled && (
@@ -392,6 +501,9 @@ function HostUpdateCard() {
         </p>
       )}
       {err && <p className="text-sm text-error">{err}</p>}
+      {preview !== undefined && (
+        <HostUpdateConfirm preview={preview} apps={apps.length ? appNames : null} onCancel={() => setPreview(undefined)} onConfirm={() => void start()} />
+      )}
 
       {status && (
         <>
@@ -424,6 +536,12 @@ function HostUpdateCard() {
               apps.map((a) => (
                 <ClientLine key={a} label={a === 'desktop' ? 'Desktop app' : 'Android app'} line={clients[a]} />
               ))}
+            {showClients && apps.includes('desktop') && (
+              <DesktopBuildNote
+                note={hostDesktopBuildNote({ desktop, source, version, line: clients.desktop, ready: appState.kind === 'ready' })}
+                busy={appState.kind === 'checking' || appState.kind === 'downloading'}
+              />
+            )}
           </dl>
           {launchd && (
             <div className="g-inset space-y-2 text-sm">
@@ -470,6 +588,25 @@ function HostUpdateCard() {
 function LogBlock({ text }: { text: string }) {
   const pre = <pre className="font-mono text-xs text-subtext-1 whitespace-pre-wrap break-words">{text}</pre>;
   return text.split('\n').length > 8 ? <ScrollArea className="h-40">{pre}</ScrollArea> : pre;
+}
+
+/** Under "Desktop app built X": whether this device gets that build, and, when it updates from GitHub
+ * Releases, a switch to This server through the same path as the "Updates from" select. */
+function DesktopBuildNote({ note, busy }: { note: ReturnType<typeof hostDesktopBuildNote>; busy: boolean }) {
+  if (!note) return null;
+  return (
+    <>
+      <dt />
+      <dd className="text-xs text-subtext-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span>{note.text}</span>
+        {note.offerSwitch && (
+          <button className="g-lnk" disabled={busy} onClick={() => void switchUpdateSource('host')}>
+            Update from This server
+          </button>
+        )}
+      </dd>
+    </>
+  );
 }
 
 function ClientLine({ label, line }: { label: string; line: string | null }) {

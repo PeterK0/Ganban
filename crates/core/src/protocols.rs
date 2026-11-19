@@ -171,8 +171,8 @@ pub struct LimitsV1 {
 /// coerces: unknown fields, unknown enum values, out-of-range budgets/limits
 /// are all refusals with a reason.
 pub fn validate_frontmatter(json_str: &str) -> Result<FrontmatterV1> {
-    let fm: FrontmatterV1 = serde_json::from_str(json_str)
-        .map_err(|e| AppError::InvalidInput(format!("frontmatter rejected: {e}")))?;
+    let fm: FrontmatterV1 =
+        serde_json::from_str(json_str).map_err(|e| AppError::InvalidInput(format!("frontmatter rejected: {e}")))?;
     if fm.protocol != 1 {
         return Err(AppError::InvalidInput(format!(
             "frontmatter rejected: unsupported protocol format version {} (this build understands 1)",
@@ -336,10 +336,7 @@ fn validate_web(web: &WebV1) -> Result<()> {
                     .split(':')
                     .next()
                     .unwrap_or("");
-                let covered = web
-                    .domains
-                    .iter()
-                    .any(|d| host == d || host.ends_with(&format!(".{d}")));
+                let covered = web.domains.iter().any(|d| host == d || host.ends_with(&format!(".{d}")));
                 if !covered {
                     return Err(AppError::InvalidInput(format!(
                         "frontmatter rejected: web.steps[{i}] navigates to '{host}', which is outside web.domains"
@@ -352,7 +349,9 @@ fn validate_web(web: &WebV1) -> Result<()> {
                         "frontmatter rejected: web.steps[{i}] ({op}) needs a locator bundle object"
                     )));
                 }
-                if op == "extract" && s.get("as").and_then(serde_json::Value::as_str).map(str::trim).map_or(true, str::is_empty) {
+                if op == "extract"
+                    && s.get("as").and_then(serde_json::Value::as_str).map(str::trim).map_or(true, str::is_empty)
+                {
                     return Err(AppError::InvalidInput(format!(
                         "frontmatter rejected: web.steps[{i}] extract needs 'as' (the output name)"
                     )));
@@ -364,7 +363,9 @@ fn validate_web(web: &WebV1) -> Result<()> {
     if let Some(outputs) = &web.outputs {
         for o in outputs {
             if o.name.trim().is_empty() {
-                return Err(AppError::InvalidInput("frontmatter rejected: a web.outputs entry has an empty name".into()));
+                return Err(AppError::InvalidInput(
+                    "frontmatter rejected: a web.outputs entry has an empty name".into(),
+                ));
             }
             if !matches!(o.r#type.as_str(), "string" | "number" | "date") {
                 return Err(AppError::InvalidInput(format!(
@@ -453,10 +454,8 @@ pub async fn upsert_protocol_version(
     }
 
     // Protocol row (slug is the stable identity).
-    let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM protocols WHERE slug = ?")
-        .bind(slug)
-        .fetch_optional(db)
-        .await?;
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM protocols WHERE slug = ?").bind(slug).fetch_optional(db).await?;
     let protocol_id = match existing {
         Some(id) => {
             sqlx::query("UPDATE protocols SET name = ?, task_class = ?, updated_at = datetime('now') WHERE id = ?")
@@ -477,14 +476,13 @@ pub async fn upsert_protocol_version(
     };
 
     // Next immutable version.
-    let next: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(version) FROM protocol_versions WHERE protocol_id = ?",
-    )
-    .bind(protocol_id)
-    .fetch_one(db)
-    .await?
-    .unwrap_or(0)
-        + 1;
+    let next: i64 =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(version) FROM protocol_versions WHERE protocol_id = ?")
+            .bind(protocol_id)
+            .fetch_one(db)
+            .await?
+            .unwrap_or(0)
+            + 1;
     let hash = content_hash(frontmatter_json, briefing_md);
     let status = if activate { "approved" } else { "draft" };
     sqlx::query(
@@ -535,13 +533,12 @@ pub async fn active_protocol_for_task_class(
     .fetch_optional(db)
     .await?;
     let Some(rec) = rec else { return Ok(None) };
-    let ver: Option<ProtocolVersion> = sqlx::query_as(
-        "SELECT * FROM protocol_versions WHERE protocol_id = ? AND version = ? AND status = 'approved'",
-    )
-    .bind(rec.id)
-    .bind(rec.active_version)
-    .fetch_optional(db)
-    .await?;
+    let ver: Option<ProtocolVersion> =
+        sqlx::query_as("SELECT * FROM protocol_versions WHERE protocol_id = ? AND version = ? AND status = 'approved'")
+            .bind(rec.id)
+            .bind(rec.active_version)
+            .fetch_optional(db)
+            .await?;
     Ok(ver.map(|v| (rec, v)))
 }
 
@@ -613,7 +610,8 @@ pub async fn mark_version_dryrun(db: &Db, protocol_id: i64, version: i64) -> Res
 /// PASSED a dry-run (status `dryrun`) first. The previously-active version
 /// stays `approved` in history — rollback is re-activating it.
 pub async fn approve_and_activate(db: &Db, slug: &str, version: i64) -> Result<()> {
-    let rec = get_protocol(db, slug).await?.ok_or_else(|| AppError::NotFound(format!("protocol '{slug}' not found")))?;
+    let rec =
+        get_protocol(db, slug).await?.ok_or_else(|| AppError::NotFound(format!("protocol '{slug}' not found")))?;
     let ver = get_version(db, rec.id, version)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("version {version} not found")))?;
@@ -660,7 +658,8 @@ mod tests {
         let err = validate_frontmatter(bad).unwrap_err().to_string();
         assert!(err.contains("rejected"), "unknown top-level field must be refused: {err}");
 
-        let bad_nested = r#"{"protocol":1,"task_class":"x","trigger":{"kind":"manual","cron":"* *"},"engine":{"runner":"ollama"}}"#;
+        let bad_nested =
+            r#"{"protocol":1,"task_class":"x","trigger":{"kind":"manual","cron":"* *"},"engine":{"runner":"ollama"}}"#;
         assert!(validate_frontmatter(bad_nested).is_err(), "unknown nested field must be refused");
     }
 
@@ -703,15 +702,31 @@ mod tests {
         let db = test_db("gate").await;
 
         // v1: manual → may activate directly.
-        let (pid, v1, h1) = upsert_protocol_version(&db, "structure_toc", "Auto ToC", &fm("structure_toc", "ollama"), "read the contents page", None, true)
-            .await
-            .unwrap();
+        let (pid, v1, h1) = upsert_protocol_version(
+            &db,
+            "structure_toc",
+            "Auto ToC",
+            &fm("structure_toc", "ollama"),
+            "read the contents page",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(v1, 1);
 
         // Editing NEVER mutates v1 — it creates v2.
-        let (pid2, v2, h2) = upsert_protocol_version(&db, "structure_toc", "Auto ToC", &fm("structure_toc", "pi"), "read the contents page", None, true)
-            .await
-            .unwrap();
+        let (pid2, v2, h2) = upsert_protocol_version(
+            &db,
+            "structure_toc",
+            "Auto ToC",
+            &fm("structure_toc", "pi"),
+            "read the contents page",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(pid, pid2);
         assert_eq!(v2, 2);
         assert_ne!(h1, h2, "different engine, different content hash");
@@ -720,11 +735,12 @@ mod tests {
         let (rec, ver) = active_protocol_for_task_class(&db, "structure_toc").await.unwrap().unwrap();
         assert_eq!(rec.active_version, Some(2));
         assert_eq!(ver.version, 2);
-        let v1_row: ProtocolVersion = sqlx::query_as("SELECT * FROM protocol_versions WHERE protocol_id = ? AND version = 1")
-            .bind(pid)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+        let v1_row: ProtocolVersion =
+            sqlx::query_as("SELECT * FROM protocol_versions WHERE protocol_id = ? AND version = 1")
+                .bind(pid)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(v1_row.content_hash, h1);
 
         // A non-manual trigger cannot activate without the dry-run harness.
@@ -739,9 +755,8 @@ mod tests {
             .to_string();
         assert!(err.contains("dry-run"), "non-manual activation must be refused: {err}");
         // …but it may be stored as a draft.
-        let (_, v3, _) = upsert_protocol_version(&db, "structure_toc", "Auto ToC", &routine_fm, "", None, false)
-            .await
-            .unwrap();
+        let (_, v3, _) =
+            upsert_protocol_version(&db, "structure_toc", "Auto ToC", &routine_fm, "", None, false).await.unwrap();
         assert_eq!(v3, 3);
         let (rec, _) = active_protocol_for_task_class(&db, "structure_toc").await.unwrap().unwrap();
         assert_eq!(rec.active_version, Some(2), "draft must not steal activation");
@@ -791,51 +806,68 @@ mod tests {
                 "trigger": { "kind": "manual" }, "engine": { "runner": "ollama" },
                 "web": web
             });
-            if let Some(h) = heal { fm["heal"] = h; }
+            if let Some(h) = heal {
+                fm["heal"] = h;
+            }
             fm.to_string()
         };
         let loc = serde_json::json!({ "css": "td.v", "text": "BDI" });
 
         // A well-formed demonstration validates.
-        let ok = base(serde_json::json!({
-            "domains": ["balticexchange.com"],
-            "steps": [
-                { "op": "navigate", "url": "https://www.balticexchange.com/indices" },
-                { "op": "wait_for", "locator": loc, "timeout_ms": 8000 },
-                { "op": "extract", "locator": loc, "as": "index_value", "type": "number" }
-            ],
-            "outputs": [{ "name": "index_value", "type": "number", "required": true }]
-        }), Some(serde_json::json!({ "allow": "auto", "budget_cents": 20 })));
+        let ok = base(
+            serde_json::json!({
+                "domains": ["balticexchange.com"],
+                "steps": [
+                    { "op": "navigate", "url": "https://www.balticexchange.com/indices" },
+                    { "op": "wait_for", "locator": loc, "timeout_ms": 8000 },
+                    { "op": "extract", "locator": loc, "as": "index_value", "type": "number" }
+                ],
+                "outputs": [{ "name": "index_value", "type": "number", "required": true }]
+            }),
+            Some(serde_json::json!({ "allow": "auto", "budget_cents": 20 })),
+        );
         validate_frontmatter(&ok).unwrap();
 
         // Navigating outside the derived allowlist is a forgery — rejected.
-        let bad = base(serde_json::json!({
-            "domains": ["balticexchange.com"],
-            "steps": [{ "op": "navigate", "url": "https://pastebin.com/x" }]
-        }), None);
+        let bad = base(
+            serde_json::json!({
+                "domains": ["balticexchange.com"],
+                "steps": [{ "op": "navigate", "url": "https://pastebin.com/x" }]
+            }),
+            None,
+        );
         let err = validate_frontmatter(&bad).unwrap_err().to_string();
         assert!(err.contains("outside web.domains"), "{err}");
 
         // Unknown op — rejected with the allowlist named.
-        let bad = base(serde_json::json!({
-            "domains": ["a.com"],
-            "steps": [{ "op": "exec_js", "locator": loc }]
-        }), None);
+        let bad = base(
+            serde_json::json!({
+                "domains": ["a.com"],
+                "steps": [{ "op": "exec_js", "locator": loc }]
+            }),
+            None,
+        );
         assert!(validate_frontmatter(&bad).unwrap_err().to_string().contains("unknown"));
 
         // Session references are refused until the registry exists (D1).
-        let bad = base(serde_json::json!({
-            "domains": ["a.com"],
-            "steps": [{ "op": "navigate", "url": "https://a.com/" }],
-            "session": "my-login"
-        }), None);
+        let bad = base(
+            serde_json::json!({
+                "domains": ["a.com"],
+                "steps": [{ "op": "navigate", "url": "https://a.com/" }],
+                "session": "my-login"
+            }),
+            None,
+        );
         assert!(validate_frontmatter(&bad).unwrap_err().to_string().contains("Phase D1"));
 
         // Unknown keys inside web are rejected (deny_unknown_fields).
-        let bad = base(serde_json::json!({
-            "domains": ["a.com"], "steps": [{ "op": "navigate", "url": "https://a.com/" }],
-            "allow_everything": true
-        }), None);
+        let bad = base(
+            serde_json::json!({
+                "domains": ["a.com"], "steps": [{ "op": "navigate", "url": "https://a.com/" }],
+                "allow_everything": true
+            }),
+            None,
+        );
         assert!(validate_frontmatter(&bad).is_err());
     }
 }

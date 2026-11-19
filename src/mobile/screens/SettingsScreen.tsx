@@ -7,7 +7,7 @@ import { Button, Screen, SectionHeader, Spinner, useAsync, Chevron } from "../ui
 import AccountScreen from "./AccountScreen";
 import { buildLabel } from "../../lib/build";
 import UsersScreen from "./UsersScreen";
-import { UpdateSection } from "../AppUpdate";
+import { PatchNotesSection, UpdateSection } from "../AppUpdate";
 import RailSwitches from "../../components/RailSwitches";
 import { offeredRails, useRailTabs } from "../../store/railTabs";
 
@@ -100,6 +100,8 @@ export default function SettingsScreen({ onDisconnect }: { onDisconnect: () => v
 
       {/* Android only (renders nothing elsewhere). */}
       <UpdateSection />
+      {/* Every phone, the browser included. */}
+      <PatchNotesSection />
 
       <SectionHeader>Connection</SectionHeader>
       <div className="px-4 space-y-2">

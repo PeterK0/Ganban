@@ -349,10 +349,14 @@ mod tests {
     #[test]
     fn pieces_cover_a_range_exactly() {
         let l = Layout::new(vec![entry("a.txt", 100), entry("b.txt", 50)]);
-        let total: u64 = l.pieces(0, l.len() - 1).iter().map(|p| match p {
-            Piece::Bytes(b) => b.len() as u64,
-            Piece::File { len, .. } => *len,
-        }).sum();
+        let total: u64 = l
+            .pieces(0, l.len() - 1)
+            .iter()
+            .map(|p| match p {
+                Piece::Bytes(b) => b.len() as u64,
+                Piece::File { len, .. } => *len,
+            })
+            .sum();
         assert_eq!(total, l.len());
         // Bytes 50..=70 sit inside a.txt (its data starts at 30 + 5 + 9).
         assert_eq!(l.pieces(50, 70), vec![Piece::File { entry: 0, offset: 6, len: 21 }]);

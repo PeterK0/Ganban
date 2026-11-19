@@ -47,9 +47,9 @@ async fn ledger_sum(db: &Db, ent: &Entity, la: i64) -> i64 {
     .unwrap()
 }
 
-const HEADER: &str = "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n";
+const HEADER: &str = "Kind,Account,Time,Booked,Text,Amount,Fee,Currency,Balance,Other,Fx\n";
 
-fn revolut(lines: &[&str]) -> Vec<u8> {
+fn sample(lines: &[&str]) -> Vec<u8> {
     let mut s = HEADER.to_string();
     for l in lines {
         s.push_str(l);
@@ -60,7 +60,12 @@ fn revolut(lines: &[&str]) -> Vec<u8> {
 
 fn create(kind: &str, name: &str, currency: &str) -> AccountChoice {
     AccountChoice::Create {
-        create: NewAccount { kind: kind.into(), name: name.into(), institution: Some("Revolut".into()), currency: currency.into() },
+        create: NewAccount {
+            kind: kind.into(),
+            name: name.into(),
+            institution: Some("Sample Bank".into()),
+            currency: currency.into(),
+        },
     }
 }
 
@@ -81,16 +86,22 @@ fn counter(e: &Entry, la: i64) -> bool {
     e.lines.iter().any(|l| l.ledger_account_id == la)
 }
 
-const CARD: &str = "Card Payment,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,COMPLETED,980.00";
-const POCKET: &str = "Transfer,Current,2026-10-02 09:00:00,2026-10-02 09:00:00,To EUR Holiday,-50.00,0.00,EUR,COMPLETED,930.00";
+const CARD: &str = "card,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,980.00,,";
+const POCKET: &str =
+    "transfer,Current,2026-10-02 09:00:00,2026-10-02 09:00:00,To EUR Holiday,-50.00,0.00,EUR,930.00,Holiday,";
 
 #[tokio::test]
 async fn importing_twice_adds_nothing() {
     let db = test_db("twice").await;
     let ent = user(&db, 7).await;
-    let file = revolut(&[CARD, POCKET]);
-    let m = || map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR")), ("revolut:pocket:holiday:EUR", create("savings", "Holiday", "EUR"))]);
-    let first = import_file(&db, &ent, "statement.csv", &file, "revolut", m()).await.unwrap();
+    let file = sample(&[CARD, POCKET]);
+    let m = || {
+        map(vec![
+            ("sample:current:EUR", create("current", "Everyday", "EUR")),
+            ("sample:holiday:EUR", create("savings", "Holiday", "EUR")),
+        ])
+    };
+    let first = import_file(&db, &ent, "statement.csv", &file, "sample", m()).await.unwrap();
     assert_eq!((first.created, first.duplicates), (2, 0));
     let everyday = account_id(&db, &ent, "Everyday").await;
     // The opening balance comes from the running balance before the first line.
@@ -98,8 +109,11 @@ async fn importing_twice_adds_nothing() {
     assert_eq!(a.balance_minor + a.draft_balance_minor, 93_000);
 
     let holiday = account_id(&db, &ent, "Holiday").await;
-    let again = map(vec![("revolut:current:EUR", AccountChoice::Existing(everyday)), ("revolut:pocket:holiday:EUR", AccountChoice::Existing(holiday))]);
-    let second = import_file(&db, &ent, "statement.csv", &file, "revolut", again).await.unwrap();
+    let again = map(vec![
+        ("sample:current:EUR", AccountChoice::Existing(everyday)),
+        ("sample:holiday:EUR", AccountChoice::Existing(holiday)),
+    ]);
+    let second = import_file(&db, &ent, "statement.csv", &file, "sample", again).await.unwrap();
     assert_eq!((second.created, second.duplicates, second.paired), (0, 2, 0));
     assert_eq!(entries_of(&db, &ent, everyday).await.len(), 3, "opening + two lines");
 }
@@ -108,22 +122,37 @@ async fn importing_twice_adds_nothing() {
 async fn a_pocket_move_nets_to_zero_in_clearing() {
     let db = test_db("pocket").await;
     let ent = user(&db, 7).await;
-    let m = map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR")), ("revolut:pocket:holiday:EUR", create("savings", "Holiday", "EUR"))]);
-    let r = import_file(&db, &ent, "s.csv", &revolut(&[POCKET]), "revolut", m).await.unwrap();
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Everyday", "EUR")),
+        ("sample:holiday:EUR", create("savings", "Holiday", "EUR")),
+    ]);
+    let r = import_file(&db, &ent, "s.csv", &sample(&[POCKET]), "sample", m).await.unwrap();
     assert_eq!((r.created, r.paired, r.review), (1, 1, 0));
     let clearing = sys_la(&db, &ent, system::TRANSFERS_CLEARING).await;
     assert_eq!(ledger_sum(&db, &ent, clearing).await, 0);
     let holiday = account_id(&db, &ent, "Holiday").await;
     let side = entries_of(&db, &ent, holiday).await;
-    let written = side.iter().find(|e| e.source_line_id.is_none() && e.notes.as_deref() == Some(crate::finance::pairing::COUNTERPART_NOTE)).unwrap();
+    let written = side
+        .iter()
+        .find(|e| e.source_line_id.is_none() && e.notes.as_deref() == Some(crate::finance::pairing::COUNTERPART_NOTE))
+        .unwrap();
     assert!(counter(written, clearing));
     assert_eq!(written.pair.as_ref().unwrap().status, "auto");
 
     // The pocket's own export arrives later: its line takes over the written side.
-    let pocket_file = revolut(&["Transfer,Savings,2026-10-02 09:00:00,2026-10-02 09:00:00,From EUR Everyday,50.00,0.00,EUR,COMPLETED,"]);
-    let r = import_file(&db, &ent, "p.csv", &pocket_file, "revolut", map(vec![("revolut:savings:EUR", AccountChoice::Existing(holiday))]))
-        .await
-        .unwrap();
+    let pocket_file = sample(&[
+        "transfer,Savings,2026-10-02 09:00:00,2026-10-02 09:00:00,From EUR Everyday,50.00,0.00,EUR,,Everyday,",
+    ]);
+    let r = import_file(
+        &db,
+        &ent,
+        "p.csv",
+        &pocket_file,
+        "sample",
+        map(vec![("sample:savings:EUR", AccountChoice::Existing(holiday))]),
+    )
+    .await
+    .unwrap();
     assert_eq!((r.created, r.duplicates), (0, 1));
     let side = entries_of(&db, &ent, holiday).await;
     assert!(side.iter().any(|e| e.id == written.id && e.source_line_id.is_some() && e.notes.is_none()));
@@ -143,12 +172,15 @@ async fn an_fx_pair_posts_its_difference() {
     let db = test_db("fx").await;
     let ent = user(&db, 7).await;
     rates::store_rates(&db, &[("2026-10-01".into(), "GBP".into(), 0.85)], "test").await.unwrap();
-    let file = revolut(&[
-        "Exchange,Current,2026-10-01 12:00:00,2026-10-01 12:00:00,Exchanged to GBP,-10.00,0.00,EUR,COMPLETED,",
-        "Exchange,Current,2026-10-01 12:00:01,2026-10-01 12:00:01,Exchanged to GBP,8.61,0.00,GBP,COMPLETED,",
+    let file = sample(&[
+        "exchange,Current,2026-10-01 12:00:00,2026-10-01 12:00:00,Exchanged to GBP,-10.00,0.00,EUR,,,GBP",
+        "exchange,Current,2026-10-01 12:00:01,2026-10-01 12:00:01,Exchanged to GBP,8.61,0.00,GBP,,,",
     ]);
-    let m = map(vec![("revolut:current:EUR", create("current", "Euro", "EUR")), ("revolut:current:GBP", create("current", "Pounds", "GBP"))]);
-    let r = import_file(&db, &ent, "fx.csv", &file, "revolut", m).await.unwrap();
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Euro", "EUR")),
+        ("sample:current:GBP", create("current", "Pounds", "GBP")),
+    ]);
+    let r = import_file(&db, &ent, "fx.csv", &file, "sample", m).await.unwrap();
     assert_eq!((r.created, r.paired, r.review), (2, 1, 0));
     // 8.61 GBP at 0.85 is 10.13 EUR for 10.00 EUR given: a 0.13 realised gain.
     let clearing = sys_la(&db, &ent, system::TRANSFERS_CLEARING).await;
@@ -163,17 +195,26 @@ async fn an_fx_pair_posts_its_difference() {
 async fn a_refund_goes_to_the_original_category() {
     let db = test_db("refund").await;
     let ent = user(&db, 7).await;
-    let m = map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR"))]);
-    import_file(&db, &ent, "a.csv", &revolut(&[CARD]), "revolut", m).await.unwrap();
+    let m = map(vec![("sample:current:EUR", create("current", "Everyday", "EUR"))]);
+    import_file(&db, &ent, "a.csv", &sample(&[CARD]), "sample", m).await.unwrap();
     let everyday = account_id(&db, &ent, "Everyday").await;
     let groceries = la(&db, &ent, "Groceries").await;
     let card = entries_of(&db, &ent, everyday).await.into_iter().find(|e| e.source_line_id.is_some()).unwrap();
-    categorise(&db, &ent, card.id, vec![Split { ledger_account_id: groceries, amount_minor: -2_000, memo: None }]).await.unwrap();
-
-    let refund = revolut(&["Card Refund,Current,2026-10-05 09:00:00,2026-10-05 10:00:00,Green Market,5.00,0.00,EUR,COMPLETED,"]);
-    let r = import_file(&db, &ent, "b.csv", &refund, "revolut", map(vec![("revolut:current:EUR", AccountChoice::Existing(everyday))]))
+    categorise(&db, &ent, card.id, vec![Split { ledger_account_id: groceries, amount_minor: -2_000, memo: None }])
         .await
         .unwrap();
+
+    let refund = sample(&["refund,Current,2026-10-05 09:00:00,2026-10-05 10:00:00,Green Market,5.00,0.00,EUR,,,"]);
+    let r = import_file(
+        &db,
+        &ent,
+        "b.csv",
+        &refund,
+        "sample",
+        map(vec![("sample:current:EUR", AccountChoice::Existing(everyday))]),
+    )
+    .await
+    .unwrap();
     assert_eq!((r.created, r.refunds), (1, 1));
     let back = entries_of(&db, &ent, everyday).await.into_iter().find(|e| e.date == "2026-10-05").unwrap();
     assert!(counter(&back, groceries));
@@ -191,11 +232,19 @@ async fn a_line_in_a_closed_month_is_skipped_with_a_warning() {
         .execute(&db)
         .await
         .unwrap();
-    let october = "Card Payment,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,COMPLETED,";
-    let file = revolut(&[october, "Card Payment,Current,2026-11-02 09:00:00,2026-11-02 10:00:00,Green Market,-3.00,0.00,EUR,COMPLETED,"]);
-    let r = import_file(&db, &ent, "c.csv", &file, "revolut", map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR"))]))
-        .await
-        .unwrap();
+    let october = "card,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green Market,-20.00,0.00,EUR,,,";
+    let file =
+        sample(&[october, "card,Current,2026-11-02 09:00:00,2026-11-02 10:00:00,Green Market,-3.00,0.00,EUR,,,"]);
+    let r = import_file(
+        &db,
+        &ent,
+        "c.csv",
+        &file,
+        "sample",
+        map(vec![("sample:current:EUR", create("current", "Everyday", "EUR"))]),
+    )
+    .await
+    .unwrap();
     assert_eq!(r.created, 1);
     assert!(r.warnings.iter().any(|w| w == "1 lines skipped: they fall in a closed month"), "{:?}", r.warnings);
 }
@@ -204,10 +253,17 @@ async fn a_line_in_a_closed_month_is_skipped_with_a_warning() {
 async fn a_fee_line_lands_on_bank_fees() {
     let db = test_db("fee_kind").await;
     let ent = user(&db, 7).await;
-    let file = revolut(&["Fee,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Plan fee,-7.99,0.00,EUR,COMPLETED,"]);
-    import_file(&db, &ent, "f.csv", &file, "revolut", map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR"))]))
-        .await
-        .unwrap();
+    let file = sample(&["fee,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Plan fee,-7.99,0.00,EUR,,,"]);
+    import_file(
+        &db,
+        &ent,
+        "f.csv",
+        &file,
+        "sample",
+        map(vec![("sample:current:EUR", create("current", "Everyday", "EUR"))]),
+    )
+    .await
+    .unwrap();
     let everyday = account_id(&db, &ent, "Everyday").await;
     let fee = entries_of(&db, &ent, everyday).await.into_iter().find(|e| e.source_line_id.is_some()).unwrap();
     assert!(counter(&fee, sys_la(&db, &ent, crate::finance::system::BANK_FEES).await));
@@ -231,21 +287,29 @@ async fn a_rule_categorises_and_a_second_fix_suggests_one() {
     )
     .await
     .unwrap();
-    let file = revolut(&[
+    let file = sample(&[
         CARD,
-        "Card Payment,Current,2026-10-03 09:00:00,2026-10-03 10:00:00,City Bus 0412,-2.00,0.00,EUR,COMPLETED,",
-        "Card Payment,Current,2026-10-04 09:00:00,2026-10-04 10:00:00,City Bus 0977,-2.00,0.00,EUR,COMPLETED,",
+        "card,Current,2026-10-03 09:00:00,2026-10-03 10:00:00,City Bus 0412,-2.00,0.00,EUR,,,",
+        "card,Current,2026-10-04 09:00:00,2026-10-04 10:00:00,City Bus 0977,-2.00,0.00,EUR,,,",
     ]);
-    let r = import_file(&db, &ent, "a.csv", &file, "revolut", map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR"))]))
-        .await
-        .unwrap();
+    let r = import_file(
+        &db,
+        &ent,
+        "a.csv",
+        &file,
+        "sample",
+        map(vec![("sample:current:EUR", create("current", "Everyday", "EUR"))]),
+    )
+    .await
+    .unwrap();
     assert_eq!((r.created, r.categorised_by_rules), (3, 1));
     let everyday = account_id(&db, &ent, "Everyday").await;
     let all = entries_of(&db, &ent, everyday).await;
     assert!(counter(all.iter().find(|e| e.date == "2026-10-01").unwrap(), groceries));
 
     let bus: Vec<&Entry> = all.iter().filter(|e| e.description.starts_with("City Bus")).collect();
-    let fix = |id| categorise(&db, &ent, id, vec![Split { ledger_account_id: transport, amount_minor: -200, memo: None }]);
+    let fix =
+        |id| categorise(&db, &ent, id, vec![Split { ledger_account_id: transport, amount_minor: -200, memo: None }]);
     fix(bus[0].id).await.unwrap();
     assert_eq!(suggest_rule(&db, &ent, bus[0].id).await.unwrap(), None, "one fix is not a habit");
     fix(bus[1].id).await.unwrap();
@@ -263,9 +327,13 @@ async fn a_rule_categorises_and_a_second_fix_suggests_one() {
 async fn an_uncertain_transfer_waits_for_review() {
     let db = test_db("review").await;
     let ent = user(&db, 7).await;
-    let file = revolut(&[CARD, "Transfer,Savings,2026-10-01 11:00:00,2026-10-01 11:00:00,Payment from Alex,20.00,0.00,EUR,COMPLETED,"]);
-    let m = map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR")), ("revolut:savings:EUR", create("savings", "Savings", "EUR"))]);
-    let r = import_file(&db, &ent, "a.csv", &file, "revolut", m).await.unwrap();
+    let file =
+        sample(&[CARD, "transfer,Savings,2026-10-01 11:00:00,2026-10-01 11:00:00,Payment from Alex,20.00,0.00,EUR,,,"]);
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Everyday", "EUR")),
+        ("sample:savings:EUR", create("savings", "Savings", "EUR")),
+    ]);
+    let r = import_file(&db, &ent, "a.csv", &file, "sample", m).await.unwrap();
     assert_eq!((r.paired, r.review), (0, 1));
     let pairs = crate::finance::pairing::list_pairs(&db, &ent, Some("review")).await.unwrap();
     let clearing = sys_la(&db, &ent, system::TRANSFERS_CLEARING).await;
@@ -297,9 +365,16 @@ async fn another_users_account_is_not_found() {
     )
     .await
     .unwrap();
-    let err = import_file(&db, &mia, "a.csv", &revolut(&[CARD]), "revolut", map(vec![("revolut:current:EUR", AccountChoice::Existing(hers.id))]))
-        .await
-        .unwrap_err();
+    let err = import_file(
+        &db,
+        &mia,
+        "a.csv",
+        &sample(&[CARD]),
+        "sample",
+        map(vec![("sample:current:EUR", AccountChoice::Existing(hers.id))]),
+    )
+    .await
+    .unwrap_err();
     assert!(err.is_not_found(), "{err}");
     assert!(entries_of(&db, &ana, hers.id).await.is_empty());
 }
@@ -308,24 +383,41 @@ async fn another_users_account_is_not_found() {
 async fn preview_matches_known_accounts_and_profiles_round_trip() {
     let db = test_db("preview").await;
     let ent = user(&db, 7).await;
-    let file = revolut(&[CARD]);
+    let file = sample(&[CARD]);
     let p = preview(&db, &ent, &file, None).await.unwrap();
     assert_eq!(p.accounts[0].matched_account_id, None);
-    import_file(&db, &ent, "a.csv", &file, "revolut", map(vec![("revolut:current:EUR", create("current", "Revolut Current (EUR)", "EUR"))]))
-        .await
-        .unwrap();
+    import_file(
+        &db,
+        &ent,
+        "a.csv",
+        &file,
+        "sample",
+        map(vec![("sample:current:EUR", create("current", "Current (EUR)", "EUR"))]),
+    )
+    .await
+    .unwrap();
     let p = preview(&db, &ent, &file, None).await.unwrap();
     assert!(p.accounts[0].matched_account_id.is_some());
 
-    let mapping: super::Mapping =
-        serde_json::from_value(serde_json::json!({ "bookedDate": "Datum", "description": ["Text"], "amount": "Betrag" })).unwrap();
+    let mapping: super::Mapping = serde_json::from_value(
+        serde_json::json!({ "bookedDate": "Datum", "description": ["Text"], "amount": "Betrag" }),
+    )
+    .unwrap();
     save_profile(&db, &ent, ProfileInput { key: "mybank".into(), name: "My bank".into(), mapping }).await.unwrap();
     let keys: Vec<String> = list_profiles(&db, &ent).await.unwrap().into_iter().map(|p| p.key).collect();
-    assert_eq!(keys, ["revolut", "piraeus", "mybank"]);
+    // The built-in formats first, then the user's own.
+    assert!(keys.contains(&"sample".to_string()));
+    assert_eq!(keys.last().map(String::as_str), Some("mybank"));
     let csv = "Datum;Text;Betrag\n01.10.2026;Bakery;-3,20\n";
     let p = preview(&db, &ent, csv.as_bytes(), Some("mybank")).await.unwrap();
     assert_eq!(p.rows[0].amount_minor, -320);
-    assert!(save_profile(&db, &ent, ProfileInput { key: "revolut".into(), name: "x".into(), mapping: Default::default() }).await.is_err());
+    assert!(save_profile(
+        &db,
+        &ent,
+        ProfileInput { key: "sample".into(), name: "x".into(), mapping: Default::default() }
+    )
+    .await
+    .is_err());
     delete_profile(&db, &ent, "mybank").await.unwrap();
     assert!(delete_profile(&db, &ent, "mybank").await.unwrap_err().is_not_found());
     assert!(preview(&db, &ent, csv.as_bytes(), Some("mybank")).await.unwrap_err().is_not_found());
@@ -335,8 +427,11 @@ async fn preview_matches_known_accounts_and_profiles_round_trip() {
 async fn rejecting_a_fresh_pocket_move_deletes_the_written_side() {
     let db = test_db("reject_fresh").await;
     let ent = user(&db, 7).await;
-    let m = map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR")), ("revolut:pocket:holiday:EUR", create("savings", "Holiday", "EUR"))]);
-    import_file(&db, &ent, "s.csv", &revolut(&[POCKET]), "revolut", m).await.unwrap();
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Everyday", "EUR")),
+        ("sample:holiday:EUR", create("savings", "Holiday", "EUR")),
+    ]);
+    import_file(&db, &ent, "s.csv", &sample(&[POCKET]), "sample", m).await.unwrap();
     let pair = crate::finance::pairing::list_pairs(&db, &ent, None).await.unwrap().remove(0);
     let p = crate::finance::pairing::resolve_pair(&db, &ent, pair.id, false).await.unwrap();
     assert_eq!(p.status, "rejected");
@@ -361,8 +456,11 @@ async fn a_rule_on_a_transfer_leg_doesnt_stop_the_pairing() {
         learned: false,
     };
     create_rule(&db, &ent, rule).await.unwrap();
-    let m = map(vec![("revolut:current:EUR", create("current", "Everyday", "EUR")), ("revolut:pocket:holiday:EUR", create("savings", "Holiday", "EUR"))]);
-    let r = import_file(&db, &ent, "s.csv", &revolut(&[POCKET]), "revolut", m).await.unwrap();
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Everyday", "EUR")),
+        ("sample:holiday:EUR", create("savings", "Holiday", "EUR")),
+    ]);
+    let r = import_file(&db, &ent, "s.csv", &sample(&[POCKET]), "sample", m).await.unwrap();
     assert_eq!((r.paired, r.categorised_by_rules), (1, 0));
     assert_eq!(ledger_sum(&db, &ent, shopping).await, 0);
 }
@@ -372,12 +470,15 @@ async fn rejecting_an_fx_pair_removes_its_adjustment() {
     let db = test_db("fx_reject").await;
     let ent = user(&db, 7).await;
     rates::store_rates(&db, &[("2026-10-01".into(), "GBP".into(), 0.85)], "test").await.unwrap();
-    let file = revolut(&[
-        "Exchange,Current,2026-10-01 12:00:00,2026-10-01 12:00:00,Exchanged to GBP,-10.00,0.00,EUR,COMPLETED,",
-        "Exchange,Current,2026-10-01 12:00:01,2026-10-01 12:00:01,Exchanged to GBP,8.61,0.00,GBP,COMPLETED,",
+    let file = sample(&[
+        "exchange,Current,2026-10-01 12:00:00,2026-10-01 12:00:00,Exchanged to GBP,-10.00,0.00,EUR,,,GBP",
+        "exchange,Current,2026-10-01 12:00:01,2026-10-01 12:00:01,Exchanged to GBP,8.61,0.00,GBP,,,",
     ]);
-    let m = map(vec![("revolut:current:EUR", create("current", "Euro", "EUR")), ("revolut:current:GBP", create("current", "Pounds", "GBP"))]);
-    import_file(&db, &ent, "fx.csv", &file, "revolut", m).await.unwrap();
+    let m = map(vec![
+        ("sample:current:EUR", create("current", "Euro", "EUR")),
+        ("sample:current:GBP", create("current", "Pounds", "GBP")),
+    ]);
+    import_file(&db, &ent, "fx.csv", &file, "sample", m).await.unwrap();
     let pair = crate::finance::pairing::list_pairs(&db, &ent, None).await.unwrap().remove(0);
     let adjust = pair.adjust_entry_id.unwrap();
     let p = crate::finance::pairing::resolve_pair(&db, &ent, pair.id, false).await.unwrap();
@@ -402,20 +503,21 @@ const MOVES: [&str; 9] = [
     "2026-10-10 13:00:00",
 ];
 
-/// A Revolut export of [`MOVES`]: the current account's side in time order, then the
+/// An export of [`MOVES`]: the current account's side in time order, then the
 /// savings side backwards, so line order and time order disagree.
 fn pocket_moves() -> Vec<u8> {
-    let mut lines: Vec<String> = MOVES
-        .iter()
-        .map(|t| format!("Transfer,Current,{t},{t},Pocket Withdrawal,30.00,0.00,EUR,COMPLETED,"))
-        .collect();
-    lines.extend(MOVES.iter().rev().map(|t| format!("Transfer,Savings,{t},{t},Pocket Withdrawal,-30.00,0.00,EUR,COMPLETED,")));
+    let mut lines: Vec<String> =
+        MOVES.iter().map(|t| format!("transfer,Current,{t},{t},Pocket Withdrawal,30.00,0.00,EUR,,,")).collect();
+    lines.extend(MOVES.iter().rev().map(|t| format!("transfer,Savings,{t},{t},Pocket Withdrawal,-30.00,0.00,EUR,,,")));
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-    revolut(&refs)
+    sample(&refs)
 }
 
 fn current_and_savings() -> HashMap<String, AccountChoice> {
-    map(vec![("revolut:current:EUR", create("current", "Current", "EUR")), ("revolut:savings:EUR", create("savings", "Savings", "EUR"))])
+    map(vec![
+        ("sample:current:EUR", create("current", "Current", "EUR")),
+        ("sample:savings:EUR", create("savings", "Savings", "EUR")),
+    ])
 }
 
 /// Pairs with this status whose two legs the bank stamped at the same second.
@@ -434,14 +536,19 @@ async fn same_moment_pairs(db: &Db, ent: &Entity, status: &str) -> i64 {
 }
 
 async fn pair_count(db: &Db, ent: &Entity, status: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = ?").bind(ent.id).bind(status).fetch_one(db).await.unwrap()
+    sqlx::query_scalar("SELECT COUNT(*) FROM fin_pairs WHERE entity_id = ? AND status = ?")
+        .bind(ent.id)
+        .bind(status)
+        .fetch_one(db)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
 async fn repeated_pocket_moves_pair_by_the_banks_time() {
     let db = test_db("pocket_runs").await;
     let ent = user(&db, 7).await;
-    let r = import_file(&db, &ent, "r.csv", &pocket_moves(), "revolut", current_and_savings()).await.unwrap();
+    let r = import_file(&db, &ent, "r.csv", &pocket_moves(), "sample", current_and_savings()).await.unwrap();
     assert_eq!((r.created, r.paired, r.review), (18, 9, 0));
     assert_eq!(same_moment_pairs(&db, &ent, "auto").await, 9, "each leg meets its own moment");
     assert_eq!(ledger_sum(&db, &ent, sys_la(&db, &ent, system::TRANSFERS_CLEARING).await).await, 0);
@@ -451,14 +558,14 @@ async fn repeated_pocket_moves_pair_by_the_banks_time() {
 async fn the_same_amount_to_two_accounts_waits_and_bulk_accepts() {
     let db = test_db("ambiguous").await;
     let ent = user(&db, 7).await;
-    let file = revolut(&[
-        "Transfer,Current,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer out,-30.00,0.00,EUR,COMPLETED,",
-        "Transfer,Savings,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,COMPLETED,",
-        "Transfer,Vault,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,COMPLETED,",
+    let file = sample(&[
+        "transfer,Current,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer out,-30.00,0.00,EUR,,,",
+        "transfer,Savings,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,,,",
+        "transfer,Vault,2026-10-01 10:00:00,2026-10-01 10:00:00,Transfer in,30.00,0.00,EUR,,,",
     ]);
     let mut m = current_and_savings();
-    m.insert("revolut:vault:EUR".into(), create("savings", "Vault", "EUR"));
-    let r = import_file(&db, &ent, "a.csv", &file, "revolut", m).await.unwrap();
+    m.insert("sample:vault:EUR".into(), create("savings", "Vault", "EUR"));
+    let r = import_file(&db, &ent, "a.csv", &file, "sample", m).await.unwrap();
     assert_eq!((r.paired, r.review), (0, 1));
     // A re-score leaves a real choice alone.
     let re = pairing::rescore_pairs(&db, &ent).await.unwrap();
@@ -475,7 +582,7 @@ async fn the_same_amount_to_two_accounts_waits_and_bulk_accepts() {
 async fn waiting_pairs_are_rescored_once_and_again_changes_nothing() {
     let db = test_db("rescore").await;
     let ent = user(&db, 7).await;
-    import_file(&db, &ent, "r.csv", &pocket_moves(), "revolut", current_and_savings()).await.unwrap();
+    import_file(&db, &ent, "r.csv", &pocket_moves(), "sample", current_and_savings()).await.unwrap();
     // Put the books back the way older rules left them: every move waiting for review,
     // most with the wrong leg.
     let ids: Vec<i64> = pairing::list_pairs(&db, &ent, None).await.unwrap().iter().map(|p| p.id).collect();
@@ -521,4 +628,83 @@ async fn waiting_pairs_are_rescored_once_and_again_changes_nothing() {
     let after: Vec<(i64, i64, i64, String)> =
         sqlx::query_as("SELECT id, entry_a, entry_b, status FROM fin_pairs ORDER BY id").fetch_all(&db).await.unwrap();
     assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn data_from_a_format_this_build_lacks_still_lists_and_maps() {
+    // Accounts and a batch imported by a build that had a built-in format this one doesn't.
+    let db = test_db("gone_format").await;
+    let ent = user(&db, 7).await;
+    let input = FinAccountInput {
+        kind: "current".into(),
+        name: "Old Bank".into(),
+        institution: Some("Old Bank".into()),
+        currency: "EUR".into(),
+        iban_mask: None,
+        profile_key: Some("gone-format".into()),
+        opening_balance_minor: None,
+        opening_date: None,
+    };
+    let old = create_account(&db, &ent, input).await.unwrap();
+    sqlx::query(
+        "INSERT INTO fin_import_batches (entity_id, file_name, profile_key, imported_at, status) \
+         VALUES (?, 'old.xlsx', 'gone-format', '2026-01-01T00:00:00Z', 'done')",
+    )
+    .bind(ent.id)
+    .execute(&db)
+    .await
+    .unwrap();
+    let listed = list_accounts(&db, &ent, false).await.unwrap();
+    assert_eq!(listed.iter().find(|a| a.id == old.id).and_then(|a| a.profile_key.as_deref()), Some("gone-format"));
+    assert!(list_profiles(&db, &ent).await.unwrap().iter().all(|p| p.key != "gone-format"));
+
+    // That bank's file isn't recognised: the preview hands it to the wizard.
+    let csv = "Posted;Memo;Value\n01.10.2026;Bakery;-3,20\n";
+    let p = preview(&db, &ent, csv.as_bytes(), None).await.unwrap();
+    assert_eq!((p.profile_key.as_deref(), p.rows.len()), (None, 0));
+    assert_eq!(p.sample[0], ["Posted", "Memo", "Value"]);
+    // Mapped once, it imports into the account the old build made.
+    let mapping: super::Mapping = serde_json::from_value(
+        serde_json::json!({ "bookedDate": "Posted", "description": ["Memo"], "amount": "Value" }),
+    )
+    .unwrap();
+    save_profile(&db, &ent, ProfileInput { key: "oldbank".into(), name: "Old bank".into(), mapping }).await.unwrap();
+    let r = import_file(
+        &db,
+        &ent,
+        "new.csv",
+        csv.as_bytes(),
+        "oldbank",
+        map(vec![("oldbank:imported account:EUR", AccountChoice::Existing(old.id))]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.created, 1);
+}
+
+#[tokio::test]
+async fn a_saved_layout_is_recognised_by_its_columns() {
+    let db = test_db("saved_layout").await;
+    let ent = user(&db, 7).await;
+    let col = |n: &str| Some(super::profiles::mapping::ColRef::Name(n.into()));
+    let narrow = super::profiles::mapping::Mapping {
+        booked_date: col("Booked on"),
+        description: vec![super::profiles::mapping::ColRef::Name("Text".into())],
+        amount: col("Amount"),
+        ..Default::default()
+    };
+    let wide = super::profiles::mapping::Mapping { payee: col("Counterparty"), currency: col("Ccy"), ..narrow.clone() };
+    for (key, name, mapping) in [("user:narrow", "Narrow", narrow), ("user:wide", "Wide", wide)] {
+        save_profile(&db, &ent, ProfileInput { key: key.into(), name: name.into(), mapping }).await.unwrap();
+    }
+    // Every column of both fits: the more specific layout wins.
+    let file = "Booked on,Text,Counterparty,Amount,Ccy\n2026-10-01,Card,Corner Bakery,-3.20,EUR\n";
+    let r = preview(&db, &ent, file.as_bytes(), None).await.unwrap();
+    assert_eq!((r.profile_key.as_deref(), r.rows.len()), (Some("user:wide"), 1));
+    // Without the payee and currency columns only the narrow one fits.
+    let r = preview(&db, &ent, "Booked on,Text,Amount\n2026-10-01,Card,-3.20\n".as_bytes(), None).await.unwrap();
+    assert_eq!(r.profile_key.as_deref(), Some("user:narrow"));
+    // Other columns: none fits, and the wizard gets a guess.
+    let r = preview(&db, &ent, "Date,Details,Amount\n2026-10-01,Card,-3.20\n".as_bytes(), None).await.unwrap();
+    assert!(r.profile_key.is_none() && r.suggested_mapping.is_some());
 }

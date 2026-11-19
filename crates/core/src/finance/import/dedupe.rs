@@ -7,9 +7,9 @@
 //! matcher pairs the file's lines with the stored ones by the strongest thing both
 //! sides have:
 //!
-//! 1. the bank's timestamp, to the second (Revolut's Started Date), with the balance
-//!    agreeing when both have one;
-//! 2. else the running balance after the line (Piraeus);
+//! 1. the bank's timestamp, to the second (`occurred_at`), with the balance agreeing
+//!    when both have one;
+//! 2. else the running balance after the line (a file with dates but no times);
 //! 3. else nothing: the lines are interchangeable, so the file adds only as many as
 //!    it has beyond what's stored (two €3.20 coffees stay two, and a re-import adds
 //!    none).
@@ -50,7 +50,13 @@ pub fn group_key(account_id: i64, booked_date: &str, amount_minor: i64, currency
 }
 
 pub fn group_of(account_id: i64, row: &ParsedRow) -> String {
-    group_key(account_id, &row.booked_date.format("%Y-%m-%d").to_string(), row.amount_minor, &row.currency, &row.description)
+    group_key(
+        account_id,
+        &row.booked_date.format("%Y-%m-%d").to_string(),
+        row.amount_minor,
+        &row.currency,
+        &row.description,
+    )
 }
 
 /// A timestamp to the second, rounded (an XLSX serial can land a hair off).
@@ -79,7 +85,11 @@ pub struct Incoming {
 
 impl Incoming {
     pub fn of(account_id: i64, row: &ParsedRow) -> Self {
-        Incoming { group: group_of(account_id, row), occurred_at: row.occurred_at.map(second), balance_minor: row.balance_minor }
+        Incoming {
+            group: group_of(account_id, row),
+            occurred_at: row.occurred_at.map(second),
+            balance_minor: row.balance_minor,
+        }
     }
 }
 
@@ -159,11 +169,9 @@ pub fn plan(rows: &[Incoming], stored: &[Stored]) -> Vec<Verdict> {
         .collect()
 }
 
-/// The raw column a stored Revolut line keeps its timestamp in (`profiles::revolut`).
-const REVOLUT_STARTED: &str = "Started Date";
-
-/// Fills in the group (and Revolut's timestamp) of lines stored before dedupe had
-/// groups, so they match like new ones. Idempotent; runs at startup.
+/// Fills in the group (and the bank's timestamp, from the raw column a built-in format
+/// keeps it in) of lines stored before dedupe had groups, so they match like new ones.
+/// Idempotent; runs at startup.
 pub(crate) async fn backfill(pool: &crate::Db) -> Result<()> {
     type Row = (i64, i64, String, i64, String, String, String);
     loop {
@@ -176,19 +184,20 @@ pub(crate) async fn backfill(pool: &crate::Db) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut tx = pool.begin().await?;
+        let mut tx = crate::db::begin_write(pool).await?;
         for (id, account, date, amount, currency, description, raw) in rows {
             let occurred = serde_json::from_str::<serde_json::Value>(&raw)
                 .ok()
-                .and_then(|v| v.get(REVOLUT_STARTED).and_then(|s| s.as_str()).map(str::to_string))
-                .and_then(|s| NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok())
+                .and_then(|v| super::profiles::time_from_raw(&v, |f| f.occurred_at_column))
                 .map(second);
-            sqlx::query("UPDATE fin_source_lines SET dedupe_key = ?, occurred_at = COALESCE(occurred_at, ?) WHERE id = ?")
-                .bind(group_key(account, &date, amount, &currency, &description))
-                .bind(occurred)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE fin_source_lines SET dedupe_key = ?, occurred_at = COALESCE(occurred_at, ?) WHERE id = ?",
+            )
+            .bind(group_key(account, &date, amount, &currency, &description))
+            .bind(occurred)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
     }
@@ -203,7 +212,13 @@ mod tests {
     }
 
     fn st(id: i64, group: &str, at: Option<&str>, balance: Option<i64>) -> Stored {
-        Stored { line_id: id, group: group.into(), occurred_at: at.map(str::to_string), balance_minor: balance, hash: format!("h{id}") }
+        Stored {
+            line_id: id,
+            group: group.into(),
+            occurred_at: at.map(str::to_string),
+            balance_minor: balance,
+            hash: format!("h{id}"),
+        }
     }
 
     fn new_count(v: &[Verdict]) -> usize {
@@ -212,7 +227,10 @@ mod tests {
 
     #[test]
     fn the_group_ignores_case_and_spacing_of_the_description() {
-        assert_eq!(group_key(1, "2026-10-01", -320, "eur", "Cafe  Nero "), group_key(1, "2026-10-01", -320, "EUR", "cafe nero"));
+        assert_eq!(
+            group_key(1, "2026-10-01", -320, "eur", "Cafe  Nero "),
+            group_key(1, "2026-10-01", -320, "EUR", "cafe nero")
+        );
         assert_ne!(group_key(1, "2026-10-01", -320, "EUR", "Cafe"), group_key(2, "2026-10-01", -320, "EUR", "Cafe"));
     }
 
@@ -235,7 +253,7 @@ mod tests {
         let stored = [st(1, "c", Some("2026-10-01 08:05:00"), Some(9_700))];
         assert_eq!(new_count(&plan(&[inc("c", Some("2026-10-01 15:00:00"), Some(9_400))], &stored)), 1);
         assert_eq!(plan(&[inc("c", Some("2026-10-01 08:05:00"), Some(9_700))], &stored), vec![Verdict::Known(1)]);
-        // By balance alone (Piraeus).
+        // By balance alone (a file with no times).
         let stored = [st(1, "c", None, Some(9_700))];
         assert_eq!(new_count(&plan(&[inc("c", None, Some(9_400)), inc("c", None, Some(9_700))], &stored)), 1);
     }

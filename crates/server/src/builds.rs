@@ -89,10 +89,7 @@ fn project_root() -> Option<PathBuf> {
 /// depending on how the build was invoked, so check both.
 fn discover_repo(root: &Path, out: &mut Vec<DiscoveredBuild>) {
     for profile in ["release", "debug"] {
-        collect_dir(
-            &root.join(format!("src-tauri/gen/android/app/build/outputs/apk/universal/{profile}")),
-            out,
-        );
+        collect_dir(&root.join(format!("src-tauri/gen/android/app/build/outputs/apk/universal/{profile}")), out);
         for target_base in ["target", "src-tauri/target"] {
             let bundle = root.join(format!("{target_base}/{profile}/bundle"));
             for sub in ["dmg", "msi", "nsis", "appimage", "deb", "rpm"] {

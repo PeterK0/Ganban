@@ -62,7 +62,11 @@ fn call_key(method: &str, path: &str) -> String {
         .split('/')
         .map(|seg| {
             let digits = seg.chars().filter(|c| c.is_ascii_digit()).count();
-            if !seg.is_empty() && (digits == seg.len() || (seg.len() > 16 && digits > 0)) { ":id".to_string() } else { seg.to_string() }
+            if !seg.is_empty() && (digits == seg.len() || (seg.len() > 16 && digits > 0)) {
+                ":id".to_string()
+            } else {
+                seg.to_string()
+            }
         })
         .collect();
     let mut key = format!("{method} {}", segs.join("/"));
@@ -165,9 +169,7 @@ async fn ensure_schema(db: &Db) {
     )
     .execute(db)
     .await;
-    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_host_metrics_ts ON host_metrics(ts)")
-        .execute(db)
-        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_host_metrics_ts ON host_metrics(ts)").execute(db).await;
     // Hosts that sampled before GPU landed (best-effort; fails = exists).
     let _ = sqlx::query("ALTER TABLE host_metrics ADD COLUMN gpu_pct REAL").execute(db).await;
 }
@@ -277,9 +279,7 @@ pub fn spawn_sampler(db: Db, data_dir: std::path::PathBuf, mut stop_rx: tokio::s
             .bind(s.db_bytes)
             .execute(&db)
             .await;
-            let _ = sqlx::query("DELETE FROM host_metrics WHERE ts < datetime('now', '-7 days')")
-                .execute(&db)
-                .await;
+            let _ = sqlx::query("DELETE FROM host_metrics WHERE ts < datetime('now', '-7 days')").execute(&db).await;
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 _ = stop_rx.changed() => {
@@ -362,7 +362,6 @@ pub async fn stats_handler(
         })).collect::<Vec<_>>(),
     })))
 }
-
 
 #[cfg(test)]
 mod traffic_tests {

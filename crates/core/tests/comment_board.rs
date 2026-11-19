@@ -43,7 +43,14 @@ async fn task(db: &Db, project_id: i64, title: &str) -> i64 {
 }
 
 fn input(task_id: i64, content: &str, tags: Vec<i64>, parent_id: Option<i64>) -> CreateCommentInput {
-    CreateCommentInput { task_id, content: content.into(), user_id: Some(1), parent_id, profile_id: None, task_ids: tags }
+    CreateCommentInput {
+        task_id,
+        content: content.into(),
+        user_id: Some(1),
+        parent_id,
+        profile_id: None,
+        task_ids: tags,
+    }
 }
 
 async fn board_ids(db: &Db, pid: i64, filter: Option<Vec<i64>>) -> Vec<i64> {
@@ -64,7 +71,8 @@ async fn one_update_tagged_on_two_tasks() {
     let other = task(&db, p, "Something else").await;
     let elsewhere = task(&db, project(&db, "Other project").await, "Not here").await;
 
-    let eod = ops::create_comment(&db, input(vessels, "Ch16–19 done", vec![answers, answers, vessels], None)).await.unwrap();
+    let eod =
+        ops::create_comment(&db, input(vessels, "Ch16–19 done", vec![answers, answers, vessels], None)).await.unwrap();
     assert_eq!(eod.task_ids, vec![vessels, answers], "home first, extras deduped (home not repeated)");
 
     // Both task threads show it; an untagged task's doesn't.
@@ -284,7 +292,11 @@ async fn comment_tags_sync_both_ways() {
     let rcm = local_id(&replica, "comments", &uuid_of(&host, "comments", cm.id).await).await;
     assert_ne!((ra, rb), (a, b), "id spaces really differ (else this test proves nothing)");
     let in_rb = ops::get_task_comments(&replica, rb).await.unwrap();
-    assert_eq!(in_rb.iter().find(|x| x.id == rcm).map(|x| x.task_ids.clone()), Some(vec![ra, rb]), "tag pulled + remapped");
+    assert_eq!(
+        in_rb.iter().find(|x| x.id == rcm).map(|x| x.task_ids.clone()),
+        Some(vec![ra, rb]),
+        "tag pulled + remapped"
+    );
 
     // Replica (offline) retags B → C; the push lands on the host's ids.
     ops::set_comment_tags(&replica, rcm, vec![ra, rc]).await.unwrap();

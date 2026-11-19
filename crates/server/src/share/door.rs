@@ -44,7 +44,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use super::zip::{Entry, Layout, Piece};
 use super::{page, LinkRow, LiveFile};
 
-const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'";
+const CSP: &str =
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'";
 /// The unlock cookie's name (scoped to the link's path, so one per link).
 const COOKIE: &str = "gs";
 
@@ -102,7 +103,12 @@ fn bucket(ip: IpAddr) -> IpAddr {
 }
 
 /// Count `q`'s entries in the window, after pruning.
-fn live<K: std::hash::Hash + Eq>(map: &mut HashMap<K, VecDeque<Instant>>, key: &K, window: Duration, now: Instant) -> usize {
+fn live<K: std::hash::Hash + Eq>(
+    map: &mut HashMap<K, VecDeque<Instant>>,
+    key: &K,
+    window: Duration,
+    now: Instant,
+) -> usize {
     match map.get_mut(key) {
         Some(q) => {
             prune(q, window, now);
@@ -113,7 +119,13 @@ fn live<K: std::hash::Hash + Eq>(map: &mut HashMap<K, VecDeque<Instant>>, key: &
 }
 
 /// Add a failure to `key`'s queue, keeping the map bounded.
-fn push<K: std::hash::Hash + Eq>(map: &mut HashMap<K, VecDeque<Instant>>, key: K, window: Duration, cap: usize, now: Instant) {
+fn push<K: std::hash::Hash + Eq>(
+    map: &mut HashMap<K, VecDeque<Instant>>,
+    key: K,
+    window: Duration,
+    cap: usize,
+    now: Instant,
+) {
     if map.len() > 10_000 {
         map.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < window));
     }
@@ -264,11 +276,7 @@ fn client_ip(peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
 
 /// The live link `token` names, or the response refusing it.
 async fn open(d: &Door, token: &str, ip: IpAddr) -> Result<LinkRow, Response> {
-    let row = if super::token_shaped(token) {
-        super::link_by_token(&d.db, token).await.map_err(oops)?
-    } else {
-        None
-    };
+    let row = if super::token_shaped(token) { super::link_by_token(&d.db, token).await.map_err(oops)? } else { None };
     match row {
         Some(link) if link.is_live(Utc::now()) => Ok(link),
         Some(_) => Err(unavailable()),
@@ -410,7 +418,8 @@ pub(crate) fn parse_range(raw: Option<&str>, len: u64) -> Want {
     }
     let Some((a, b)) = spec.trim().split_once('-') else { return Want::Full };
     let (a, b) = (a.trim(), b.trim());
-    let num = |s: &str| if s.bytes().all(|c| c.is_ascii_digit()) && !s.is_empty() { s.parse::<u64>().ok() } else { None };
+    let num =
+        |s: &str| if s.bytes().all(|c| c.is_ascii_digit()) && !s.is_empty() { s.parse::<u64>().ok() } else { None };
     match (a.is_empty(), b.is_empty()) {
         // bytes=-n: the last n bytes.
         (true, false) => match num(b) {
@@ -567,7 +576,10 @@ fn busy() -> Response {
 }
 
 /// `s`, holding a download slot until it ends (or the client goes away).
-fn holding<S>(permit: tokio::sync::OwnedSemaphorePermit, s: S) -> impl futures_util::Stream<Item = S::Item> + Send + 'static
+fn holding<S>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    s: S,
+) -> impl futures_util::Stream<Item = S::Item> + Send + 'static
 where
     S: futures_util::Stream + Send + 'static,
     S::Item: Send,
@@ -630,7 +642,12 @@ async fn file_handler(
     if method == Method::GET {
         tracing::info!(
             "share door: link {} '{}': file {} '{}' ({}, {}) to {ip}",
-            link.id, link.label, n, f.row.zip_name(), page::fmt_bytes(len), describe(&want)
+            link.id,
+            link.label,
+            n,
+            f.row.zip_name(),
+            page::fmt_bytes(len),
+            describe(&want)
         );
     }
     let path = f.path.clone();
@@ -698,7 +715,11 @@ async fn zip_handler(
     if method == Method::GET {
         tracing::info!(
             "share door: link {} '{}': zip of {} files ({}, {}) to {ip}",
-            link.id, link.label, files.len(), page::fmt_bytes(len), describe(&want)
+            link.id,
+            link.label,
+            files.len(),
+            page::fmt_bytes(len),
+            describe(&want)
         );
     }
     let name = format!("{}.zip", super::clean_segment(&link.label));

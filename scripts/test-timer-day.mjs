@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 if (!process.env.TZ_CHILD) {
-  // Re-run this file under fixed timezones: UTC+2 (the owner's) and UTC-5.
-  for (const tz of ['Europe/Athens', 'America/New_York']) {
+  // Re-run this file under fixed timezones: UTC+2 and UTC-5, both with daylight saving.
+  for (const tz of ['Europe/Helsinki', 'America/New_York']) {
     execSync(`node ${fileURLToPath(import.meta.url)}`, { stdio: 'inherit', env: { ...process.env, TZ: tz, TZ_CHILD: '1' } });
   }
   process.exit(0);

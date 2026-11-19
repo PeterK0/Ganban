@@ -5,8 +5,9 @@
 //!
 //! One import per user at a time. Jobs live in this process's memory: each user's
 //! latest job is kept until their next one starts, so a refreshed page finds the
-//! import it started. After a restart the job is gone; its batch stays `running`, and
-//! running the same file again finishes it (see [`pipeline::import_file_with`]).
+//! import it started. After a restart the job is gone: at startup [`mark_interrupted`]
+//! marks its batch `failed`, [`interrupted`] lists it for the Import screen, and the next
+//! import (the same file or another) finishes its lines (see [`pipeline::import_file_with`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,7 +119,17 @@ pub fn start_with(db: &Db, ent: &Entity, req: ImportRequest, mut opts: ImportOpt
             })
         };
         let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(progress);
-        pipeline::import_file_with(&db, &ent, &req.file_name, &req.bytes, &req.profile_key, req.account_map, &opts, &*progress).await
+        pipeline::import_file_with(
+            &db,
+            &ent,
+            &req.file_name,
+            &req.bytes,
+            &req.profile_key,
+            req.account_map,
+            &opts,
+            &*progress,
+        )
+        .await
     });
     // A second task records the outcome, so even a panic in the import ends the job.
     tokio::spawn(async move {
@@ -175,4 +186,41 @@ pub fn status(db: &Db, ent: &Entity, job_id: Option<u64>) -> Result<Option<Impor
             None => Err(AppError::NotFound("import job".into())),
         },
     }
+}
+
+/// An import a host restart (or a failure) cut short: some of its lines are in, not yet
+/// paired or ruled. The next import finishes them.
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+pub struct Interrupted {
+    pub batch_id: i64,
+    pub file_name: String,
+    pub imported_at: String,
+    /// The lines it stored before it stopped.
+    pub lines: i64,
+}
+
+/// At host startup: no import job survived the restart, so every batch still `running`
+/// was cut short. Mark it `failed`; the next import still finishes its lines.
+pub async fn mark_interrupted(db: &Db) -> Result<u64> {
+    let r = sqlx::query("UPDATE fin_import_batches SET status = 'failed' WHERE status = 'running'").execute(db).await?;
+    Ok(r.rows_affected())
+}
+
+/// The user's imports that stopped with lines in and nobody finishing them: none while
+/// an import of theirs runs (it finishes them). Only the lines the next import's final pass
+/// takes count (the same rule as its resume), so a batch with nothing to finish isn't listed.
+pub async fn interrupted(db: &Db, ent: &Entity) -> Result<Vec<Interrupted>> {
+    if is_running(db, ent) {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_as(
+        "SELECT b.id AS batch_id, b.file_name, b.imported_at, COUNT(DISTINCT s.id) AS lines \
+         FROM fin_import_batches b JOIN fin_source_lines s ON s.batch_id = b.id \
+         JOIN fin_entries e ON e.source_line_id = s.id AND e.status != 'reversed' \
+         WHERE b.entity_id = ? AND b.status IN ('running', 'failed') \
+         GROUP BY b.id ORDER BY b.id",
+    )
+    .bind(ent.id)
+    .fetch_all(db)
+    .await?)
 }

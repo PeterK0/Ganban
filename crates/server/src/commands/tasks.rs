@@ -56,6 +56,9 @@ pub(super) const COMMANDS: &[Command] = &[
         .run(|cx, a| Box::pin(async move { reply(ops::create_task(cx.db, a.input()?).await?) })),
     // Moving a task into an area you can see is a member's call; taking it out of a
     // restricted area widens who sees it, which is an admin's (ADR 0002).
+    // `expectedUpdatedAt` (optional): the task's `updated_at` as the client loaded it.
+    // When the task has changed since, the save is refused with a TASK_CHANGED
+    // conflict (409) carrying the current task; without it, the last write wins.
     command("update_task")
         .access(Access::Custom(|cx, a, user| {
             Box::pin(async move {
@@ -72,7 +75,19 @@ pub(super) const COMMANDS: &[Command] = &[
                 Ok(())
             })
         }))
-        .run(|cx, a| Box::pin(async move { reply(ops::update_task(cx.db, a.id(TASK)?, a.input()?).await?) })),
+        .run(|cx, a| {
+            Box::pin(async move {
+                let expected = match a.opt_str("expectedUpdatedAt") {
+                    Some(s) => Some(
+                        chrono::DateTime::parse_from_rfc3339(&s)
+                            .map_err(|_| AppError::InvalidInput("invalid 'expectedUpdatedAt'".into()))?
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    None => None,
+                };
+                reply(ops::update_task_checked(cx.db, a.id(TASK)?, a.input()?, expected).await?)
+            })
+        }),
     // ----- Visibility (ADR 0002) -----
     // Who may see a task: its area's say (the default), selected members, or admins only.
     command("set_task_visibility").access(Access::Admin(TASK)).run(|cx, a| {
@@ -317,7 +332,8 @@ mod tests {
         owner(db).await;
         let a = seed(db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
         let b = seed(db, "create_project", json!({ "input": { "name": "B" } })).await["id"].as_i64().unwrap();
-        let task = |pid: i64| json!({ "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" } });
+        let task =
+            |pid: i64| json!({ "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" } });
         let ta = seed(db, "create_task", task(a)).await["id"].as_i64().unwrap();
         let tb = seed(db, "create_task", task(b)).await["id"].as_i64().unwrap();
         (a, b, ta, tb)
@@ -357,7 +373,11 @@ mod tests {
         // The client sends its local midnight with its offset: 00:00+02:00 is 22:00 UTC the day before.
         let east = http(&db, mia, "get_my_task_time_since", since("2026-11-04T00:00:00+02:00")).await.unwrap();
         assert_eq!(east, 45 * 60 + 3600 + 10 * 60);
-        assert!(http(&db, mia, "get_my_task_time_since", since("today")).await.unwrap_err().to_string().contains("since"));
+        assert!(http(&db, mia, "get_my_task_time_since", since("today"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("since"));
         // In-process (the desktop, nobody stamped): everyone's.
         let all = seed(&db, "get_my_task_time_since", since("2026-11-04T00:00:00Z")).await;
         assert_eq!(all, 15 * 60 + 3600 + 10 * 60 + 4 * 3600);
@@ -369,7 +389,12 @@ mod tests {
         let (a, _, ta, _) = world(&db).await;
         let mia = member(&db, 7, &[(a, "member")]).await;
         seed(&db, "assign_task", json!({ "taskId": ta, "userId": 7, "assignedBy": 1 })).await;
-        seed(&db, "create_comment", json!({ "input": { "task_id": ta, "user_id": 1, "content": "@user7 the budget is in" } })).await;
+        seed(
+            &db,
+            "create_comment",
+            json!({ "input": { "task_id": ta, "user_id": 1, "content": "@user7 the budget is in" } }),
+        )
+        .await;
         let draft = json!({ "projectId": a, "tool": "create_task", "args": { "title": "Draft" }, "userId": 7 });
         http(&db, mia, "submit_proposal", draft).await.unwrap();
         let mine = |db: &ganban_core::Db| {
@@ -396,7 +421,8 @@ mod tests {
 
         assert_eq!(ids(&http(&db, mia, "get_tasks", json!({ "projectId": a })).await.unwrap()), vec![ta]);
         assert!(http(&db, mia, "get_tasks", json!({ "projectId": b })).await.unwrap_err().is_not_found());
-        let new = |pid: i64| json!({ "input": { "project_id": pid, "title": "N", "status": "To Do", "priority": "Low" } });
+        let new =
+            |pid: i64| json!({ "input": { "project_id": pid, "title": "N", "status": "To Do", "priority": "Low" } });
         assert!(http(&db, mia, "create_task", new(a)).await.is_ok());
         assert!(http(&db, mia, "create_task", new(b)).await.unwrap_err().is_not_found());
 
@@ -437,17 +463,30 @@ mod tests {
         let (a, _, ta, tb) = world(&db).await;
         let mia = member(&db, 7, &[(a, "member")]).await;
         let bo = member(&db, 8, &[(a, "member")]).await;
-        let ta2 = seed(&db, "create_task", json!({ "input": { "project_id": a, "title": "T2", "status": "To Do", "priority": "Low" } }))
-            .await["id"]
+        let ta2 = seed(
+            &db,
+            "create_task",
+            json!({ "input": { "project_id": a, "title": "T2", "status": "To Do", "priority": "Low" } }),
+        )
+        .await["id"]
             .as_i64()
             .unwrap();
         let hub = crate::events::EventHub::new();
         let mut pulses = hub.subscribe();
         let list = |u: crate::AuthUser| {
             let (db, hub) = (db.clone(), hub.clone());
-            async move { super::super::run(&super::super::Ctx::http(&db, u).with_agents(hub.agents()), "get_agent_work", json!({})).await.unwrap() }
+            async move {
+                super::super::run(
+                    &super::super::Ctx::http(&db, u).with_agents(hub.agents()),
+                    "get_agent_work",
+                    json!({}),
+                )
+                .await
+                .unwrap()
+            }
         };
-        let tasks = |v: &Value| v.as_array().unwrap().iter().map(|r| r["task_id"].as_i64().unwrap()).collect::<Vec<_>>();
+        let tasks =
+            |v: &Value| v.as_array().unwrap().iter().map(|r| r["task_id"].as_i64().unwrap()).collect::<Vec<_>>();
 
         let run = Run::start(&hub, mia.id, false, a, "Scout");
         run.touch_args(&db, &json!({ "task_id": ta })).await;
@@ -462,7 +501,10 @@ mod tests {
         assert_eq!(mine[0]["task"]["title"], "T");
         assert_eq!(tasks(&list(bo).await), Vec::<i64>::new(), "Bo's windows don't see Mia's run");
         let as_mia = json!({ "userId": mia.id });
-        let bo_asks = super::super::run(&super::super::Ctx::http(&db, bo).with_agents(hub.agents()), "get_agent_work", as_mia).await.unwrap();
+        let bo_asks =
+            super::super::run(&super::super::Ctx::http(&db, bo).with_agents(hub.agents()), "get_agent_work", as_mia)
+                .await
+                .unwrap();
         assert_eq!(tasks(&bo_asks), Vec::<i64>::new(), "naming Mia doesn't make Bo see her run");
 
         // A task Mia can't see is never recorded, and one hidden mid-run drops out.
@@ -478,7 +520,10 @@ mod tests {
             let helper = run.child("Critic");
             helper.touch(&db, ta).await;
             let rows = list(mia).await;
-            assert_eq!(rows.as_array().unwrap().iter().map(|r| r["who"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Scout", "Critic"]);
+            assert_eq!(
+                rows.as_array().unwrap().iter().map(|r| r["who"].as_str().unwrap()).collect::<Vec<_>>(),
+                vec!["Scout", "Critic"]
+            );
         }
         assert_eq!(list(mia).await.as_array().unwrap().len(), 1, "the delegate's entry ends with it");
         while pulses.try_recv().is_ok() {}
@@ -493,8 +538,12 @@ mod tests {
         let (a, _, ta, _) = world(&db).await;
         let mia = member(&db, 7, &[(a, "member")]).await;
         let bo = member(&db, 8, &[(a, "member")]).await;
-        let ta2 = seed(&db, "create_task", json!({ "input": { "project_id": a, "title": "T2", "status": "To Do", "priority": "Low" } }))
-            .await["id"]
+        let ta2 = seed(
+            &db,
+            "create_task",
+            json!({ "input": { "project_id": a, "title": "T2", "status": "To Do", "priority": "Low" } }),
+        )
+        .await["id"]
             .as_i64()
             .unwrap();
 
@@ -585,5 +634,50 @@ mod tests {
         let t = update(json!({ "cost": 3.0, "area_id": area, "deadline": "2026-12-24T00:00:00Z" })).await.unwrap();
         assert_eq!((t["cost"].as_f64(), t["area_id"].as_i64()), (Some(3.0), Some(area)));
         assert!(t["deadline"].as_str().unwrap().starts_with("2026-12-24"));
+    }
+
+    /// A save that carries the `updated_at` it was based on is refused once the task has
+    /// changed since, with the current task in the conflict; one without it still saves.
+    #[tokio::test]
+    async fn update_task_refuses_a_stale_save_and_passes_one_without_a_stamp() {
+        let db = test_db("task_stamp").await;
+        let me = owner(&db).await;
+        let project = seed(&db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
+        let input = json!({ "input": { "project_id": project, "title": "t", "status": "To Do", "priority": "Low" } });
+        let loaded = seed(&db, "create_task", input).await;
+        let task = loaded["id"].as_i64().unwrap();
+        let stamp = loaded["updated_at"].clone();
+        let save = |fields: Value, stamp: Option<Value>| {
+            let mut args = json!({ "taskId": task, "input": fields });
+            if let Some(s) = stamp {
+                args["expectedUpdatedAt"] = s;
+            }
+            http(&db, me, "update_task", args)
+        };
+
+        // Based on the current version: saved.
+        let first = save(json!({ "title": "phone" }), Some(stamp.clone())).await.unwrap();
+        assert_eq!(first["title"], "phone");
+
+        // Based on the version before that: refused, and the refusal carries the task as it is.
+        let e = save(json!({ "title": "laptop" }), Some(stamp)).await.unwrap_err();
+        assert!(e.is_conflict(), "{e}");
+        assert_eq!(e.code(), Some(ganban_core::error::codes::TASK_CHANGED));
+        assert_eq!(e.current().unwrap()["title"], "phone");
+        assert_eq!(e.current().unwrap()["updated_at"], first["updated_at"]);
+        let tasks = seed(&db, "get_tasks", json!({ "projectId": project })).await;
+        assert_eq!(tasks[0]["title"], "phone", "the refused save wrote nothing");
+
+        // Based on the new version: saved again.
+        let again = save(json!({ "title": "laptop" }), Some(first["updated_at"].clone())).await.unwrap();
+        assert_eq!(again["title"], "laptop");
+
+        // No stamp (agent tools, older clients): the last write wins, as before.
+        let agent = save(json!({ "title": "agent" }), None).await.unwrap();
+        assert_eq!(agent["title"], "agent");
+
+        // A stamp that isn't a date is the caller's mistake.
+        let bad = save(json!({ "title": "x" }), Some(json!("yesterday"))).await.unwrap_err();
+        assert!(bad.is_invalid_input(), "{bad}");
     }
 }

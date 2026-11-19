@@ -248,9 +248,7 @@ pub mod pdf {
     use std::collections::BTreeMap;
 
     pub fn tool_defs() -> Vec<Value> {
-        let def = |name: &str, description: &str, parameters: Value| {
-            json!({ "type": "function", "function": { "name": name, "description": description, "parameters": parameters } })
-        };
+        let def = |name: &str, description: &str, parameters: Value| json!({ "type": "function", "function": { "name": name, "description": description, "parameters": parameters } });
         vec![
             def(
                 "get_project_files",
@@ -300,7 +298,8 @@ pub mod pdf {
 
     /// A project file that must be a PDF in this project. Returns (id, name).
     async fn require_project_pdf(db: &Db, project_id: i64, file_id: i64) -> Result<(i64, String), String> {
-        let owner = storage::project_file_project(db, file_id).await.map_err(|_| format!("file {file_id} not found"))?;
+        let owner =
+            storage::project_file_project(db, file_id).await.map_err(|_| format!("file {file_id} not found"))?;
         if owner != project_id {
             return Err("that file is not in this project".into());
         }
@@ -417,9 +416,17 @@ pub mod pdf {
             other => return Err(AppError::InvalidInput(format!("unknown PDF command: {other}"))),
         };
 
-        let file =
-            storage::store_project_file(db, root, project_id, &out_name, Some("application/pdf"), None, user_id, &bytes)
-                .await?;
+        let file = storage::store_project_file(
+            db,
+            root,
+            project_id,
+            &out_name,
+            Some("application/pdf"),
+            None,
+            user_id,
+            &bytes,
+        )
+        .await?;
         Ok(json!({ "file_id": file.id, "file_name": file.file_name, "size_bytes": file.size_bytes }))
     }
 
@@ -457,9 +464,11 @@ pub mod pdf {
             let mut doc = Document::load_mem(input).map_err(|e| format!("could not read PDF: {e}"))?;
             doc.renumber_objects_with(max_id);
             max_id = doc.max_id + 1;
-            pages.extend(doc.get_pages().into_values().map(|oid| {
-                (oid, doc.get_object(oid).map(Object::to_owned).unwrap_or(Object::Null))
-            }));
+            pages.extend(
+                doc.get_pages()
+                    .into_values()
+                    .map(|oid| (oid, doc.get_object(oid).map(Object::to_owned).unwrap_or(Object::Null))),
+            );
             objects.extend(doc.objects.clone());
         }
 
@@ -479,10 +488,7 @@ pub mod pdf {
                                 dict.extend(old);
                             }
                         }
-                        pages_root = Some((
-                            pages_root.map(|p| p.0).unwrap_or(*object_id),
-                            Object::Dictionary(dict),
-                        ));
+                        pages_root = Some((pages_root.map(|p| p.0).unwrap_or(*object_id), Object::Dictionary(dict)));
                     }
                 }
                 // Page objects re-attach below; outlines are intentionally dropped.
@@ -543,9 +549,7 @@ pub mod emailtools {
     const MSG_CAP: usize = 1500;
 
     pub fn tool_defs() -> Vec<Value> {
-        let def = |name: &str, description: &str, parameters: Value| {
-            json!({ "type": "function", "function": { "name": name, "description": description, "parameters": parameters } })
-        };
+        let def = |name: &str, description: &str, parameters: Value| json!({ "type": "function", "function": { "name": name, "description": description, "parameters": parameters } });
         vec![
             def(
                 "get_linked_threads",
@@ -648,7 +652,10 @@ pub mod emailtools {
         Ok(PreparedWrite {
             command: "draft_email_reply",
             args: json!({ "threadId": thread_id, "body": body }),
-            summary: format!("Draft a reply to “{}” (to {}) — saved to Drafts, never sent", thread.subject, last.from_addr),
+            summary: format!(
+                "Draft a reply to “{}” (to {}) — saved to Drafts, never sent",
+                thread.subject, last.from_addr
+            ),
             details: json!({ "after": { "to": last.from_addr, "subject": format!("Re: {}", thread.subject), "body_preview": preview } }),
         })
     }
@@ -670,15 +677,31 @@ mod email_tool_tests {
     #[tokio::test]
     async fn email_tools_serve_only_linked_threads_of_this_project() {
         let db = test_db("scope").await;
-        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "P" } })).await.unwrap()["id"].as_i64().unwrap();
-        let other = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Q" } })).await.unwrap()["id"].as_i64().unwrap();
-        let account = ops::create_email_account(&db, 1, "test", "imap.example.com", 993, "me@example.com", "pw", "INBOX", 90)
-            .await
+        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "P" } })).await.unwrap()["id"]
+            .as_i64()
             .unwrap();
+        let other = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Q" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let account =
+            ops::create_email_account(&db, 1, "test", "imap.example.com", 993, "me@example.com", "pw", "INBOX", 90)
+                .await
+                .unwrap();
         let mine = ops::upsert_email_thread(&db, account.id, "<root@x>", "Budget approval", None).await.unwrap();
-        ops::upsert_email_message(&db, account.id, mine, "INBOX", 1, 1, "<root@x>", "Budget approval", "Ann <ann@x.com>", None)
-            .await
-            .unwrap();
+        ops::upsert_email_message(
+            &db,
+            account.id,
+            mine,
+            "INBOX",
+            1,
+            1,
+            "<root@x>",
+            "Budget approval",
+            "Ann <ann@x.com>",
+            None,
+        )
+        .await
+        .unwrap();
         ops::set_email_message_body(&db, 1, "Please approve the Q3 budget.").await.unwrap();
         let foreign = ops::upsert_email_thread(&db, account.id, "<f@x>", "Other matter", None).await.unwrap();
 
@@ -703,14 +726,19 @@ mod email_tool_tests {
 
         // Draft proposal: validated + scoped, NEVER executed here; the summary
         // tells the user the truth about where it goes.
-        let pw = prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": mine, "body": "Approved — go ahead." }))
-            .await
-            .unwrap();
+        let pw =
+            prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": mine, "body": "Approved — go ahead." }))
+                .await
+                .unwrap();
         assert_eq!(pw.command, "draft_email_reply");
         assert!(pw.summary.contains("never sent"));
         assert_eq!(pw.details["after"]["to"], "Ann <ann@x.com>");
-        assert!(prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": foreign, "body": "x" })).await.is_err());
-        assert!(prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": mine, "body": "  " })).await.is_err());
+        assert!(prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": foreign, "body": "x" }))
+            .await
+            .is_err());
+        assert!(prepare_write(&db, 1, pid, "draft_email_reply", &j!({ "thread_id": mine, "body": "  " }))
+            .await
+            .is_err());
         assert!(is_tab_write_tool("draft_email_reply"), "drafting rides the standard gate");
     }
 }
@@ -756,7 +784,8 @@ mod tests {
             kids.push(page_id.into());
         }
         let count = kids.len() as u32;
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }));
+        doc.objects
+            .insert(pages_id, Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }));
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut out = Vec::new();
@@ -773,7 +802,10 @@ mod tests {
         let tabs = available_tabs();
         assert!(tabs.iter().any(|t| t.id == "nato" && t.tier == 1 && !t.has_tools));
         assert!(tabs.iter().any(|t| t.id == "pdf" && t.tier == 2 && t.has_tools));
-        assert!(tabs.iter().any(|t| t.id == "finance" && t.tier == 1 && !t.has_tools), "finance is in the default build");
+        assert!(
+            tabs.iter().any(|t| t.id == "finance" && t.tier == 1 && !t.has_tools),
+            "finance is in the default build"
+        );
         assert!(is_available("pdf") && !is_available("never-built"));
 
         assert!(tool_defs_for(&[]).is_empty(), "no enabled tabs → no tab tools offered");
@@ -800,16 +832,64 @@ mod tests {
     async fn pdf_tools_respect_enablement_scope_and_the_gate() {
         let db = test_db("gate").await;
         let root = test_root("gate");
-        let a = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "A" } })).await.unwrap()["id"].as_i64().unwrap();
-        let b = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "B" } })).await.unwrap()["id"].as_i64().unwrap();
-        let pdf_a = ganban_core::storage::store_project_file(&db, &root, a, "report.pdf", Some("application/pdf"), None, None, &make_pdf(5)).await.unwrap();
-        let pdf_a2 = ganban_core::storage::store_project_file(&db, &root, a, "annex.pdf", Some("application/pdf"), None, None, &make_pdf(2)).await.unwrap();
-        let pdf_b = ganban_core::storage::store_project_file(&db, &root, b, "other.pdf", Some("application/pdf"), None, None, &make_pdf(1)).await.unwrap();
-        let txt_a = ganban_core::storage::store_project_file(&db, &root, a, "notes.txt", Some("text/plain"), None, None, b"hi").await.unwrap();
+        let a = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "A" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let b = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "B" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let pdf_a = ganban_core::storage::store_project_file(
+            &db,
+            &root,
+            a,
+            "report.pdf",
+            Some("application/pdf"),
+            None,
+            None,
+            &make_pdf(5),
+        )
+        .await
+        .unwrap();
+        let pdf_a2 = ganban_core::storage::store_project_file(
+            &db,
+            &root,
+            a,
+            "annex.pdf",
+            Some("application/pdf"),
+            None,
+            None,
+            &make_pdf(2),
+        )
+        .await
+        .unwrap();
+        let pdf_b = ganban_core::storage::store_project_file(
+            &db,
+            &root,
+            b,
+            "other.pdf",
+            Some("application/pdf"),
+            None,
+            None,
+            &make_pdf(1),
+        )
+        .await
+        .unwrap();
+        let txt_a =
+            ganban_core::storage::store_project_file(&db, &root, a, "notes.txt", Some("text/plain"), None, None, b"hi")
+                .await
+                .unwrap();
 
         // Tab disabled → both the read and the write path refuse, even if called.
         assert!(execute_read(&db, a, "get_project_files", &j!({})).await.is_err());
-        assert!(prepare_write(&db, 1, a, "pdf_extract_pages", &j!({ "file_id": pdf_a.id, "start_page": 1, "end_page": 2 })).await.is_err());
+        assert!(prepare_write(
+            &db,
+            1,
+            a,
+            "pdf_extract_pages",
+            &j!({ "file_id": pdf_a.id, "start_page": 1, "end_page": 2 })
+        )
+        .await
+        .is_err());
 
         ops::set_project_tab(&db, a, "pdf", true).await.unwrap();
         assert_eq!(ops::enabled_project_tabs(&db, a).await.unwrap(), vec!["pdf".to_string()]);
@@ -819,12 +899,34 @@ mod tests {
         assert!(listing.contains("report.pdf") && listing.contains("annex.pdf"));
 
         // Scope: another project's file and non-PDFs are refused at prepare.
-        assert!(prepare_write(&db, 1, a, "pdf_extract_pages", &j!({ "file_id": pdf_b.id, "start_page": 1, "end_page": 1 })).await.is_err());
-        assert!(prepare_write(&db, 1, a, "pdf_extract_pages", &j!({ "file_id": txt_a.id, "start_page": 1, "end_page": 1 })).await.is_err());
-        assert!(prepare_write(&db, 1, a, "pdf_merge", &j!({ "file_ids": [pdf_a.id] })).await.is_err(), "merge needs >= 2 files");
+        assert!(prepare_write(
+            &db,
+            1,
+            a,
+            "pdf_extract_pages",
+            &j!({ "file_id": pdf_b.id, "start_page": 1, "end_page": 1 })
+        )
+        .await
+        .is_err());
+        assert!(prepare_write(
+            &db,
+            1,
+            a,
+            "pdf_extract_pages",
+            &j!({ "file_id": txt_a.id, "start_page": 1, "end_page": 1 })
+        )
+        .await
+        .is_err());
+        assert!(
+            prepare_write(&db, 1, a, "pdf_merge", &j!({ "file_ids": [pdf_a.id] })).await.is_err(),
+            "merge needs >= 2 files"
+        );
 
         // The happy path: prepare → (approval elsewhere) → apply lands a new project file.
-        let pw = prepare_write(&db, 1, a, "pdf_extract_pages", &j!({ "file_id": pdf_a.id, "start_page": 2, "end_page": 4 })).await.unwrap();
+        let pw =
+            prepare_write(&db, 1, a, "pdf_extract_pages", &j!({ "file_id": pdf_a.id, "start_page": 2, "end_page": 4 }))
+                .await
+                .unwrap();
         assert_eq!(pw.args["project_id"].as_i64(), Some(a), "project is forced server-side");
         assert!(pw.summary.contains("report.pdf"));
         assert_eq!(pw.details["after"]["pages"], 3);
@@ -837,10 +939,19 @@ mod tests {
         assert_eq!(page_count(&bytes), 3, "the stored blob is the 3-page extraction");
 
         // Merge through the same gate path.
-        let pw = prepare_write(&db, 1, a, "pdf_merge", &j!({ "file_ids": [pdf_a.id, pdf_a2.id], "output_name": "combined" })).await.unwrap();
+        let pw = prepare_write(
+            &db,
+            1,
+            a,
+            "pdf_merge",
+            &j!({ "file_ids": [pdf_a.id, pdf_a2.id], "output_name": "combined" }),
+        )
+        .await
+        .unwrap();
         let out = apply(&db, &root, pw.command, &pw.args).await.unwrap();
         assert_eq!(out["file_name"], "combined.pdf");
-        let bytes = std::fs::read(ganban_core::storage::project_blob_path(&root, out["file_id"].as_i64().unwrap())).unwrap();
+        let bytes =
+            std::fs::read(ganban_core::storage::project_blob_path(&root, out["file_id"].as_i64().unwrap())).unwrap();
         assert_eq!(page_count(&bytes), 7, "5 + 2 pages survive the merge");
     }
 }

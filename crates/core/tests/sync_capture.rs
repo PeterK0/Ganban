@@ -20,10 +20,7 @@ fn temp_db(tag: &str) -> PathBuf {
 }
 
 async fn mk_project(db: &Db, name: &str) -> i64 {
-    ops::create_project(db, CreateProjectInput { name: name.into(), description: None })
-        .await
-        .unwrap()
-        .id
+    ops::create_project(db, CreateProjectInput { name: name.into(), description: None }).await.unwrap().id
 }
 
 async fn mk_task(db: &Db, project_id: i64, title: &str) -> i64 {
@@ -95,20 +92,14 @@ async fn update_without_bumping_updated_at_is_still_captured() {
         .execute(&db)
         .await
         .unwrap();
-    let before: String = sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?")
-        .bind(tid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let before: String =
+        sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&db).await.unwrap();
 
     // A raw update that deliberately does NOT touch updated_at.
     sqlx::query("UPDATE tasks SET archived=1 WHERE id=?").bind(tid).execute(&db).await.unwrap();
 
-    let after: String = sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?")
-        .bind(tid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let after: String =
+        sqlx::query_scalar("SELECT updated_at FROM tasks WHERE id=?").bind(tid).fetch_one(&db).await.unwrap();
     assert_eq!(before, after, "updated_at was NOT bumped — a cursor would miss this change");
 
     let (dirty, base, _) = state_row(&db, "tasks", tid).await.expect("state row");
@@ -136,7 +127,11 @@ async fn base_snapshot_frozen_after_first_dirtying() {
 
     let (_, base, _) = state_row(&db, "tasks", tid).await.unwrap();
     let base: serde_json::Value = serde_json::from_str(&base.unwrap()).unwrap();
-    assert_eq!(base["title"], serde_json::json!("orig"), "ancestor frozen at the pre-edit value, not the intermediate one");
+    assert_eq!(
+        base["title"],
+        serde_json::json!("orig"),
+        "ancestor frozen at the pre-edit value, not the intermediate one"
+    );
 }
 
 #[tokio::test]
@@ -160,11 +155,8 @@ async fn delete_tombstones_row_and_cascaded_children() {
     let pid = mk_project(&db, "Doomed").await;
     let tid = mk_task(&db, pid, "child").await;
 
-    let task_uuid: String = sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?")
-        .bind(tid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let task_uuid: String =
+        sqlx::query_scalar("SELECT sync_uuid FROM tasks WHERE id=?").bind(tid).fetch_one(&db).await.unwrap();
 
     // Deleting the project cascades to its tasks (FK ON DELETE CASCADE).
     sqlx::query("DELETE FROM projects WHERE id=?").bind(pid).execute(&db).await.unwrap();
@@ -175,12 +167,13 @@ async fn delete_tombstones_row_and_cascaded_children() {
         .unwrap();
     assert_eq!(proj_tomb, 1, "deleted project is tombstoned");
 
-    let (cnt, base): (i64, Option<String>) =
-        sqlx::query_as("SELECT COUNT(*), MAX(base_updated_at) FROM tombstones WHERE entity_type='tasks' AND sync_uuid=?")
-            .bind(&task_uuid)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let (cnt, base): (i64, Option<String>) = sqlx::query_as(
+        "SELECT COUNT(*), MAX(base_updated_at) FROM tombstones WHERE entity_type='tasks' AND sync_uuid=?",
+    )
+    .bind(&task_uuid)
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert_eq!(cnt, 1, "cascade-deleted child is tombstoned (recursive_triggers ON)");
     assert!(base.is_some(), "tombstone carries the pre-delete updated_at for LWW");
 
@@ -208,10 +201,11 @@ async fn server_role_has_no_capture() {
 
     // ...but a mutation on the authoritative host is never dirty-tracked.
     let pid = mk_project(&db, "HostRow").await;
-    let has_state: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state WHERE entity_type='projects' AND row_id=?")
-        .bind(pid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let has_state: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sync_state WHERE entity_type='projects' AND row_id=?")
+            .bind(pid)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(has_state, 0, "host writes leave sync_state empty");
 }

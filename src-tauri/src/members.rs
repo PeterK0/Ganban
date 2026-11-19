@@ -10,58 +10,39 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn member_list(pool: State<'_, Db>, project_id: i64) -> Result<Vec<MemberInfo>, String> {
-    auth::list_project_members(pool.inner(), project_id)
-        .await
-        .map_err(|e| e.to_string())
+    auth::list_project_members(pool.inner(), project_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn member_set_role(
-    pool: State<'_, Db>,
-    project_id: i64,
-    user_id: i64,
-    role: String,
-) -> Result<(), String> {
+pub async fn member_set_role(pool: State<'_, Db>, project_id: i64, user_id: i64, role: String) -> Result<(), String> {
     if !auth::is_grantable_role(&role) {
         return Err("role must be 'admin' or 'member'".into());
     }
     // Never demote the project owner.
-    let current = auth::member_role(pool.inner(), project_id, user_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let current = auth::member_role(pool.inner(), project_id, user_id).await.map_err(|e| e.to_string())?;
     if current.as_deref() == Some(auth::ROLE_OWNER) {
         return Err("cannot change the owner's role".into());
     }
-    auth::add_project_member(pool.inner(), project_id, user_id, &role)
-        .await
-        .map_err(|e| e.to_string())
+    auth::add_project_member(pool.inner(), project_id, user_id, &role).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn member_remove(pool: State<'_, Db>, project_id: i64, user_id: i64) -> Result<(), String> {
-    let current = auth::member_role(pool.inner(), project_id, user_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let current = auth::member_role(pool.inner(), project_id, user_id).await.map_err(|e| e.to_string())?;
     if current.as_deref() == Some(auth::ROLE_OWNER) {
         return Err("cannot remove the project owner".into());
     }
-    auth::remove_project_member(pool.inner(), project_id, user_id)
-        .await
-        .map_err(|e| e.to_string())
+    auth::remove_project_member(pool.inner(), project_id, user_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn device_list(pool: State<'_, Db>, user_id: i64) -> Result<Vec<DeviceInfo>, String> {
-    auth::list_user_devices(pool.inner(), user_id)
-        .await
-        .map_err(|e| e.to_string())
+    auth::list_user_devices(pool.inner(), user_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn device_revoke(pool: State<'_, Db>, token_id: i64) -> Result<(), String> {
-    auth::revoke_device_token(pool.inner(), token_id)
-        .await
-        .map_err(|e| e.to_string())
+    auth::revoke_device_token(pool.inner(), token_id).await.map_err(|e| e.to_string())
 }
 
 /// Mint an invite for a contact, targeting their (created-if-needed) account so
@@ -76,9 +57,7 @@ pub async fn contact_invite(
     if !auth::is_grantable_role(&role) {
         return Err("role must be 'admin' or 'member'".into());
     }
-    auth::create_contact_invite(pool.inner(), contact_id, project_id, &role)
-        .await
-        .map_err(|e| e.to_string())
+    auth::create_contact_invite(pool.inner(), contact_id, project_id, &role).await.map_err(|e| e.to_string())
 }
 
 /// Add an already-account-linked contact to a project directly (no re-invite).
@@ -92,7 +71,5 @@ pub async fn contact_add_to_project(
     if !auth::is_grantable_role(&role) {
         return Err("role must be 'admin' or 'member'".into());
     }
-    auth::add_contact_to_project(pool.inner(), contact_id, project_id, &role)
-        .await
-        .map_err(|e| e.to_string())
+    auth::add_contact_to_project(pool.inner(), contact_id, project_id, &role).await.map_err(|e| e.to_string())
 }

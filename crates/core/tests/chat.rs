@@ -21,7 +21,9 @@ async fn chat_threads_and_messages_round_trip() {
     assert_eq!(chat.project_id, pid);
     assert_eq!(chat.title.as_deref(), Some("Chimney"));
 
-    ops::append_message(&db, chat.id, "user", "how do I flash a chimney?", None, None, None, None, None, None).await.unwrap();
+    ops::append_message(&db, chat.id, "user", "how do I flash a chimney?", None, None, None, None, None, None)
+        .await
+        .unwrap();
     let assistant = ops::append_message(
         &db,
         chat.id,

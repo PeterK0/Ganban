@@ -55,7 +55,10 @@ pub(super) const COMMANDS: &[Command] = &[
     }),
     command("set_user_setting").access(Access::SelfOrOwner(USER)).run(|cx, a| {
         Box::pin(async move {
-            reply(ops::set_user_setting(cx.db, a.req_i64(USER)?, a.req_str("settingKey")?, a.req_str("settingValue")?).await?)
+            reply(
+                ops::set_user_setting(cx.db, a.req_i64(USER)?, a.req_str("settingKey")?, a.req_str("settingValue")?)
+                    .await?,
+            )
         })
     }),
 ];
@@ -97,13 +100,19 @@ mod tests {
         let mia = member(&db, 7, &[(a, "member")]).await;
         let ana = member(&db, 8, &[(a, "admin")]).await;
 
-        assert!(http(&db, ana, "create_user", json!({ "input": { "username": "x", "full_name": "X" } })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, ana, "create_user", json!({ "input": { "username": "x", "full_name": "X" } }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
         assert!(http(&db, ana, "delete_user", json!({ "userId": 7 })).await.unwrap_err().is_forbidden());
 
         let setting = |uid: i64| json!({ "userId": uid, "settingKey": "theme", "settingValue": "dark" });
         http(&db, mia, "set_user_setting", setting(7)).await.unwrap();
         assert!(http(&db, ana, "set_user_setting", setting(7)).await.unwrap_err().is_forbidden());
-        assert!(http(&db, ana, "get_user_setting", json!({ "userId": 7, "settingKey": "theme" })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, ana, "get_user_setting", json!({ "userId": 7, "settingKey": "theme" }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
 
         http(&db, mia, "set_user_pin", json!({ "userId": 7, "pin": "1234" })).await.unwrap();
         assert!(http(&db, ana, "set_user_pin", json!({ "userId": 7, "pin": null })).await.unwrap_err().is_forbidden());

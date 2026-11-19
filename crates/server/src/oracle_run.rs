@@ -162,9 +162,10 @@ fn clock_instant(
             return None;
         }
         // A time inside a spring-forward gap runs when the clocks resume.
-        let local = chrono::Local.from_local_datetime(&at).earliest().or_else(|| {
-            chrono::Local.from_local_datetime(&(at + chrono::Duration::hours(1))).earliest()
-        })?;
+        let local = chrono::Local
+            .from_local_datetime(&at)
+            .earliest()
+            .or_else(|| chrono::Local.from_local_datetime(&(at + chrono::Duration::hours(1))).earliest())?;
         Some(local.with_timezone(&chrono::Utc))
     })
 }
@@ -228,9 +229,7 @@ pub fn spawn_scheduler(
                     let Ok(def) = serde_json::from_str::<Value>(&wf.definition_json) else { continue };
                     let Some(spec) = schedule_of(&def).and_then(|s| parse_schedule(&s)) else { continue };
                     let last = wf.last_run_at.as_deref().and_then(|s| {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|n| n.and_utc())
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|n| n.and_utc())
                     });
                     if !is_due(spec, last, chrono::Utc::now()) {
                         continue;
@@ -390,20 +389,20 @@ pub async fn run_workflow(
                 // Notebook cell: just this node.
                 std::collections::HashSet::from([start.to_string()])
             } else {
-            let mut set = std::collections::HashSet::from([start.to_string()]);
-            let mut queue = vec![start];
-            while let Some(n) = queue.pop() {
-                for w in &wires {
-                    if w["from"].as_str() == Some(n) {
-                        if let Some(t) = w["to"].as_str() {
-                            if set.insert(t.to_string()) {
-                                queue.push(t);
+                let mut set = std::collections::HashSet::from([start.to_string()]);
+                let mut queue = vec![start];
+                while let Some(n) = queue.pop() {
+                    for w in &wires {
+                        if w["from"].as_str() == Some(n) {
+                            if let Some(t) = w["to"].as_str() {
+                                if set.insert(t.to_string()) {
+                                    queue.push(t);
+                                }
                             }
                         }
                     }
                 }
-            }
-            set
+                set
             }
         }
     };
@@ -469,19 +468,25 @@ pub async fn run_workflow(
             match cached.get(node_id) {
                 Some(out) => {
                     if feeds_rerun || !only {
-                        results.insert(node_id.clone(), json!({
-                            "status": "frozen",
-                            "preview": preview(out),
-                            "note": "replayed from the last run — not re-executed",
-                        }));
+                        results.insert(
+                            node_id.clone(),
+                            json!({
+                                "status": "frozen",
+                                "preview": preview(out),
+                                "note": "replayed from the last run — not re-executed",
+                            }),
+                        );
                     }
                 }
                 None if feeds_rerun => {
                     failed = true;
-                    results.insert(node_id.clone(), json!({
-                        "status": "failed",
-                        "preview": "no frozen output for this node — run the full workflow once first",
-                    }));
+                    results.insert(
+                        node_id.clone(),
+                        json!({
+                            "status": "failed",
+                            "preview": "no frozen output for this node — run the full workflow once first",
+                        }),
+                    );
                     outputs.remove(node_id);
                 }
                 None => {}
@@ -493,14 +498,14 @@ pub async fn run_workflow(
         // actually arrived — one bot-walled fetch must not waste a 10-minute
         // run by cascading skips into the final compiler. A node is skipped
         // only when ALL of its upstream inputs are missing.
-        let upstream: Vec<&str> = wires
-            .iter()
-            .filter(|w| w["to"].as_str() == Some(node_id))
-            .filter_map(|w| w["from"].as_str())
-            .collect();
+        let upstream: Vec<&str> =
+            wires.iter().filter(|w| w["to"].as_str() == Some(node_id)).filter_map(|w| w["from"].as_str()).collect();
         let missing: Vec<&str> = upstream.iter().filter(|u| !outputs.contains_key(**u)).copied().collect();
         if !upstream.is_empty() && missing.len() == upstream.len() && failed {
-            results.insert(node_id.clone(), json!({ "status": "skipped", "preview": "every upstream node failed — nothing to work with" }));
+            results.insert(
+                node_id.clone(),
+                json!({ "status": "skipped", "preview": "every upstream node failed — nothing to work with" }),
+            );
             continue;
         }
         // Fan-in inputs are LABELED by source — an unlabeled join of three
@@ -530,17 +535,13 @@ pub async fn run_workflow(
                 })
                 .unwrap_or_else(|| id.to_string())
         };
-        let fed: Vec<(&str, &str)> = upstream
-            .iter()
-            .filter_map(|u| outputs.get(*u).map(|o| (*u, o.as_str())))
-            .collect();
+        let fed: Vec<(&str, &str)> =
+            upstream.iter().filter_map(|u| outputs.get(*u).map(|o| (*u, o.as_str()))).collect();
         let input: String = if fed.len() > 1 || (!fed.is_empty() && !missing.is_empty()) {
             // Labeled sections; failed sources appear AS failed — the model
             // gets truth to write "no data this run", never a silent gap.
-            let mut sections: Vec<String> = fed
-                .iter()
-                .map(|(u, o)| format!("===== SOURCE: {} =====\n{}", label_of(u), o))
-                .collect();
+            let mut sections: Vec<String> =
+                fed.iter().map(|(u, o)| format!("===== SOURCE: {} =====\n{}", label_of(u), o)).collect();
             for u in &missing {
                 sections.push(format!("===== SOURCE: {} (FAILED — produced no content this run) =====", label_of(u)));
             }
@@ -548,25 +549,31 @@ pub async fn run_workflow(
         } else {
             fed.iter().map(|(_, o)| *o).collect::<Vec<_>>().join("\n\n")
         };
-        let degraded = (!missing.is_empty() && !fed.is_empty())
-            .then(|| format!("⚠ ran without {} failed upstream source{}", missing.len(), if missing.len() == 1 { "" } else { "s" }));
+        let degraded = (!missing.is_empty() && !fed.is_empty()).then(|| {
+            format!(
+                "⚠ ran without {} failed upstream source{}",
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" }
+            )
+        });
 
         let step_run = workflows::begin_step(db, run_id, step_idx as i64, None).await?;
         publish(&results, Some(node_id)).await;
         let exec = async {
             match ty {
-            "trigger.manual" | "trigger.schedule" => Ok((
-                json!({ "trigger": if ty == "trigger.manual" { "manual" } else { "schedule" },
-                        "run_id": run_id }).to_string(),
-                None,
-            )),
-            "fetch.http" => fetch_http(params).await,
-            "file.read" => file_read(db, root, params).await,
-            "llm.transform" => llm_transform(db, ollama, params, &input, user_id).await,
-            "write.comment" => write_comment(db, params, &input, user_id).await,
-            "write.task" => write_task(db, params, &input, user_id).await,
-            "quiz.generate" => quiz_generate(db, ollama, params, &input, user_id).await,
-            other => Err(AppError::InvalidInput(format!("unknown node type '{other}'"))),
+                "trigger.manual" | "trigger.schedule" => Ok((
+                    json!({ "trigger": if ty == "trigger.manual" { "manual" } else { "schedule" },
+                        "run_id": run_id })
+                    .to_string(),
+                    None,
+                )),
+                "fetch.http" => fetch_http(params).await,
+                "file.read" => file_read(db, root, params).await,
+                "llm.transform" => llm_transform(db, ollama, params, &input, user_id).await,
+                "write.comment" => write_comment(db, params, &input, user_id).await,
+                "write.task" => write_task(db, params, &input, user_id).await,
+                "quiz.generate" => quiz_generate(db, ollama, params, &input, user_id).await,
+                other => Err(AppError::InvalidInput(format!("unknown node type '{other}'"))),
             }
         };
         // Abort can land MID-NODE: dropping the exec future drops its HTTP
@@ -689,7 +696,8 @@ fn html_to_text(html: &str, base_url: Option<&str>) -> String {
                 }
             }
             // Block-level tags become line breaks so structure survives.
-            for tag in ["</p", "</div", "</li", "</tr", "</h1", "</h2", "</h3", "</h4", "</article", "</section", "<br"] {
+            for tag in ["</p", "</div", "</li", "</tr", "</h1", "</h2", "</h3", "</h4", "</article", "</section", "<br"]
+            {
                 if lower[i..].starts_with(tag) {
                     out.push('\n');
                     break;
@@ -819,7 +827,10 @@ async fn fetch_http(params: &Value) -> Result<(String, Option<String>), AppError
         .map_err(|e| AppError::InvalidInput(format!("http client: {e}")))?;
     let res = client
         .get(parsed)
-        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8")
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8",
+        )
         .header(reqwest::header::ACCEPT_LANGUAGE, "en")
         .send()
         .await
@@ -842,15 +853,17 @@ async fn fetch_http(params: &Value) -> Result<(String, Option<String>), AppError
         None | Some("") | Some("text") => "text",
         Some("html") => "html",
         Some(other) => {
-            return Err(AppError::InvalidInput(format!(
-                "fetch.http: format '{other}' is not one of text | html"
-            )))
+            return Err(AppError::InvalidInput(format!("fetch.http: format '{other}' is not one of text | html")))
         }
     };
     let mut notes: Vec<String> = Vec::new();
     let text = if format == "text" {
         let t = html_to_text(&raw, Some(url));
-        notes.push(format!("markup stripped: {} KB → {} KB of text", (raw.len() / 1024).max(1), (t.len() / 1024).max(1)));
+        notes.push(format!(
+            "markup stripped: {} KB → {} KB of text",
+            (raw.len() / 1024).max(1),
+            (t.len() / 1024).max(1)
+        ));
         t
     } else {
         raw
@@ -865,15 +878,13 @@ async fn fetch_http(params: &Value) -> Result<(String, Option<String>), AppError
 /// teal — read a project file (e.g. a CSV dataset) into the workflow's
 /// memory. Owner-selected host-stored data — the input seam the coming
 /// python nodes will machinate on. Text-capped; binary is read lossily.
-async fn file_read(
-    db: &Db,
-    root: &std::path::Path,
-    params: &Value,
-) -> Result<(String, Option<String>), AppError> {
+async fn file_read(db: &Db, root: &std::path::Path, params: &Value) -> Result<(String, Option<String>), AppError> {
     let project_id = params["project_id"]
         .as_i64()
         .or_else(|| params["project_id"].as_str().and_then(|s| s.trim().parse().ok()))
-        .ok_or_else(|| AppError::InvalidInput("file.read needs a project — pick one in the node's parameters".into()))?;
+        .ok_or_else(|| {
+            AppError::InvalidInput("file.read needs a project — pick one in the node's parameters".into())
+        })?;
     let file_id = params["file_id"]
         .as_i64()
         .or_else(|| params["file_id"].as_str().and_then(|s| s.trim().parse().ok()))
@@ -892,10 +903,7 @@ async fn file_read(
     };
     // The file must belong to the declared project (no cross-project reads by id).
     let owner_project: Option<i64> = if file_kind == "project" {
-        sqlx::query_scalar("SELECT project_id FROM project_files WHERE id = ?")
-            .bind(file_id)
-            .fetch_optional(db)
-            .await?
+        sqlx::query_scalar("SELECT project_id FROM project_files WHERE id = ?").bind(file_id).fetch_optional(db).await?
     } else {
         ganban_core::storage::attachment_project(db, file_id).await.ok()
     };
@@ -911,10 +919,9 @@ async fn file_read(
             .as_i64()
             .ok_or_else(|| AppError::InvalidInput("file.read: size cap must be a whole number of KB".into()))?,
         Value::String(s) if s.trim().is_empty() => 1024,
-        Value::String(s) => s
-            .trim()
-            .parse()
-            .map_err(|_| AppError::InvalidInput("file.read: size cap must be a number of KB".into()))?,
+        Value::String(s) => {
+            s.trim().parse().map_err(|_| AppError::InvalidInput("file.read: size cap must be a number of KB".into()))?
+        }
         _ => return Err(AppError::InvalidInput("file.read: size cap must be a number of KB".into())),
     };
     if !(16..=8192).contains(&max_kb) {
@@ -963,7 +970,8 @@ async fn llm_transform(
         Value::Null => MODEL_INPUT_CAP_CHARS,
         Value::Number(n) => n
             .as_u64()
-            .ok_or_else(|| AppError::InvalidInput("llm.transform: input cap must be a whole number of chars".into()))? as usize,
+            .ok_or_else(|| AppError::InvalidInput("llm.transform: input cap must be a whole number of chars".into()))?
+            as usize,
         Value::String(s) if s.trim().is_empty() => MODEL_INPUT_CAP_CHARS,
         Value::String(s) => s
             .trim()
@@ -994,7 +1002,9 @@ async fn llm_transform(
         if !note.is_empty() {
             note.push_str(" · ");
         }
-        note.push_str(&format!("⚠ input truncated to {max_chars} of {total_chars} chars — raise the node's input cap if the tail matters"));
+        note.push_str(&format!(
+            "⚠ input truncated to {max_chars} of {total_chars} chars — raise the node's input cap if the tail matters"
+        ));
     }
     Ok((r.text, (!note.is_empty()).then_some(note)))
 }
@@ -1010,7 +1020,11 @@ async fn write_comment(
     let task_id = params["task_id"]
         .as_i64()
         .or_else(|| params["task_id"].as_str().and_then(|s| s.trim().parse().ok()))
-        .ok_or_else(|| AppError::InvalidInput("write.comment needs a task — pick the project and task in the node's parameters".into()))?;
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "write.comment needs a task — pick the project and task in the node's parameters".into(),
+            )
+        })?;
     let project_id: i64 = sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
         .bind(task_id)
         .fetch_optional(db)
@@ -1020,9 +1034,15 @@ async fn write_comment(
     if content.is_empty() {
         return Err(AppError::InvalidInput("nothing to write — the upstream nodes produced no text".into()));
     }
-    let pw = tools::prepare_write(db, user_id, project_id, "create_comment", &json!({ "task_id": task_id, "content": content }))
-        .await
-        .map_err(AppError::InvalidInput)?;
+    let pw = tools::prepare_write(
+        db,
+        user_id,
+        project_id,
+        "create_comment",
+        &json!({ "task_id": task_id, "content": content }),
+    )
+    .await
+    .map_err(AppError::InvalidInput)?;
     // The workflow's model steps run under the librarian protocol — that
     // personality is the comment's author-of-record (its face on the card).
     let profile_id = crate::resolve_protocol(db, "librarian").await.profile_id;
@@ -1048,20 +1068,15 @@ async fn write_comment(
 /// gate — propose a NEW task in a project. The node's title parameter names
 /// it; the upstream text becomes its description. Proposal-only, like every
 /// write.
-async fn write_task(
-    db: &Db,
-    params: &Value,
-    input: &str,
-    user_id: i64,
-) -> Result<(String, Option<String>), AppError> {
+async fn write_task(db: &Db, params: &Value, input: &str, user_id: i64) -> Result<(String, Option<String>), AppError> {
     let project_id = params["project_id"]
         .as_i64()
         .or_else(|| params["project_id"].as_str().and_then(|s| s.trim().parse().ok()))
-        .ok_or_else(|| AppError::InvalidInput("write.task needs a project — pick one in the node's parameters".into()))?;
-    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await?;
+        .ok_or_else(|| {
+            AppError::InvalidInput("write.task needs a project — pick one in the node's parameters".into())
+        })?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM projects WHERE id = ?").bind(project_id).fetch_optional(db).await?;
     if exists.is_none() {
         return Err(AppError::NotFound(format!("project #{project_id} not found")));
     }
@@ -1075,9 +1090,8 @@ async fn write_task(
     if !description.is_empty() {
         args["description"] = json!(description);
     }
-    let pw = tools::prepare_write(db, user_id, project_id, "create_task", &args)
-        .await
-        .map_err(AppError::InvalidInput)?;
+    let pw =
+        tools::prepare_write(db, user_id, project_id, "create_task", &args).await.map_err(AppError::InvalidInput)?;
     let profile_id = crate::resolve_protocol(db, "librarian").await.profile_id;
     let id = ganban_core::proposals::register(
         db,
@@ -1171,18 +1185,16 @@ async fn quiz_generate(
     let project_id = params["project_id"]
         .as_i64()
         .or_else(|| params["project_id"].as_str().and_then(|s| s.trim().parse().ok()))
-        .ok_or_else(|| AppError::InvalidInput("quiz.generate needs a project — pick one in the node's parameters".into()))?;
+        .ok_or_else(|| {
+            AppError::InvalidInput("quiz.generate needs a project — pick one in the node's parameters".into())
+        })?;
     // Anchor: a concrete topic id, OR 'auto-<subjectId>' (the ✨ Automatic
     // picker option) — the model then names each question's topic itself,
     // created on demand under that subject.
     let raw_topic = &params["topic_id"];
-    let topic_id: Option<i64> = raw_topic
-        .as_i64()
-        .or_else(|| raw_topic.as_str().and_then(|s| s.trim().parse().ok()));
-    let auto_subject: Option<i64> = raw_topic
-        .as_str()
-        .and_then(|s| s.trim().strip_prefix("auto-"))
-        .and_then(|s| s.parse().ok());
+    let topic_id: Option<i64> = raw_topic.as_i64().or_else(|| raw_topic.as_str().and_then(|s| s.trim().parse().ok()));
+    let auto_subject: Option<i64> =
+        raw_topic.as_str().and_then(|s| s.trim().strip_prefix("auto-")).and_then(|s| s.parse().ok());
     if topic_id.is_none() && auto_subject.is_none() {
         return Err(AppError::InvalidInput(
             "quiz.generate needs a topic — pick one (or ✨ Automatic) in the node's parameters".into(),
@@ -1203,7 +1215,9 @@ async fn quiz_generate(
         _ => {}
     }
     if input.trim().is_empty() {
-        return Err(AppError::InvalidInput("quiz.generate needs upstream content (wire a file.read or fetch node into it)".into()));
+        return Err(AppError::InvalidInput(
+            "quiz.generate needs upstream content (wire a file.read or fetch node into it)".into(),
+        ));
     }
     // 'draft' authors NEW questions from study material; 'extract' parses
     // PRE-AUTHORED questions (a pasted/exported bank) 1:1 — same schema, same
@@ -1223,7 +1237,8 @@ async fn quiz_generate(
         Value::Null => 120_000,
         Value::Number(n) => n
             .as_u64()
-            .ok_or_else(|| AppError::InvalidInput("quiz.generate: input cap must be a whole number of chars".into()))? as usize,
+            .ok_or_else(|| AppError::InvalidInput("quiz.generate: input cap must be a whole number of chars".into()))?
+            as usize,
         Value::String(v) if v.trim().is_empty() => 120_000,
         Value::String(v) => v
             .trim()
@@ -1271,10 +1286,9 @@ async fn quiz_generate(
     // fingerprints of everything already under the anchor's subject.
     let anchor_subject: i64 = match (auto_subject, topic_id) {
         (Some(sub), _) => sub,
-        (None, Some(t)) => sqlx::query_scalar("SELECT subject_id FROM quiz_topics WHERE id = ?")
-            .bind(t)
-            .fetch_one(db)
-            .await?,
+        (None, Some(t)) => {
+            sqlx::query_scalar("SELECT subject_id FROM quiz_topics WHERE id = ?").bind(t).fetch_one(db).await?
+        }
         (None, None) => unreachable!("anchor validated above"),
     };
     let mut seen = ganban_core::quiz::subject_fingerprints(db, anchor_subject).await?;
@@ -1400,7 +1414,10 @@ async fn quiz_generate(
         note.push_str(&format!(" · {total} questions split across {} proposals", proposal_ids.len()));
     }
     if duplicates > 0 {
-        note.push_str(&format!(" · {duplicates} duplicate{} skipped (already in the bank or repeated across slices)", if duplicates == 1 { "" } else { "s" }));
+        note.push_str(&format!(
+            " · {duplicates} duplicate{} skipped (already in the bank or repeated across slices)",
+            if duplicates == 1 { "" } else { "s" }
+        ));
         if !dup_examples.is_empty() {
             note.push_str(&format!(" · e.g. “{}”", dup_examples.join("” / “")));
         }
@@ -1412,16 +1429,28 @@ async fn quiz_generate(
         note.push_str(&format!(" · document processed in {slice_count} slices"));
     }
     if slice_failures > 0 {
-        note.push_str(&format!(" · ⚠ {slice_failures} slice{} produced unparseable output", if slice_failures == 1 { "" } else { "s" }));
+        note.push_str(&format!(
+            " · ⚠ {slice_failures} slice{} produced unparseable output",
+            if slice_failures == 1 { "" } else { "s" }
+        ));
     }
     if total_chars > max_chars {
-        note.push_str(&format!(" · ⚠ input truncated to {max_chars} of {total_chars} chars — raise the node's input cap"));
+        note.push_str(&format!(
+            " · ⚠ input truncated to {max_chars} of {total_chars} chars — raise the node's input cap"
+        ));
     }
     if let Some(m) = model_name {
         note.push_str(&format!(" · model: {m}"));
     }
     let ids = proposal_ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ");
-    Ok((format!("proposal{} {ids}: {first_summary}{}", if proposal_ids.len() == 1 { "" } else { "s" }, if proposal_ids.len() > 1 { " (+ more)" } else { "" }), Some(note)))
+    Ok((
+        format!(
+            "proposal{} {ids}: {first_summary}{}",
+            if proposal_ids.len() == 1 { "" } else { "s" },
+            if proposal_ids.len() > 1 { " (+ more)" } else { "" }
+        ),
+        Some(note),
+    ))
 }
 
 #[cfg(test)]
@@ -1477,13 +1506,18 @@ mod tests {
         use chrono::{Datelike, Duration, Local, TimeZone, Timelike, Utc};
         assert_eq!(parse_schedule("Mon 09:00"), Some(Schedule::Weekly { days: 0b1, hour: 9, minute: 0 }));
         assert_eq!(parse_schedule("Mon,Thu 09:00"), Some(Schedule::Weekly { days: 0b1001, hour: 9, minute: 0 }));
-        assert_eq!(parse_schedule(" monday, sun 7:30 "), Some(Schedule::Weekly { days: 0b100_0001, hour: 7, minute: 30 }));
+        assert_eq!(
+            parse_schedule(" monday, sun 7:30 "),
+            Some(Schedule::Weekly { days: 0b100_0001, hour: 7, minute: 30 })
+        );
         assert_eq!(parse_schedule("Mon 25:00"), None);
         assert_eq!(parse_schedule("Month 09:00"), None);
         assert_eq!(parse_schedule("Mon"), None);
 
         // Host-local Wednesday 2026-07-01 12:00.
-        let local = |d: u32, h: u32, m: u32| Local.with_ymd_and_hms(2026, 7, d, h, m, 0).earliest().unwrap().with_timezone(&Utc);
+        let local = |d: u32, h: u32, m: u32| {
+            Local.with_ymd_and_hms(2026, 7, d, h, m, 0).earliest().unwrap().with_timezone(&Utc)
+        };
         let wed_noon = local(1, 12, 0);
         let mon_thu = parse_schedule("Mon,Thu 09:00").unwrap();
         // Next: Thursday 09:00; then the Monday after.
@@ -1525,11 +1559,19 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         let db = ganban_core::init_db(&path).await.unwrap();
-        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Oracle" }, "createdBy": 1 })).await.unwrap();
+        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Oracle" }, "createdBy": 1 }))
+            .await
+            .unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let task = crate::dispatch(&db, "create_task", &json!({
-            "input": { "project_id": pid, "title": "Digest target", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task = crate::dispatch(
+            &db,
+            "create_task",
+            &json!({
+                "input": { "project_id": pid, "title": "Digest target", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
         // trigger → write (no model, no network: the invariant under test is the gate).
@@ -1572,7 +1614,9 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         let db = ganban_core::init_db(&path).await.unwrap();
-        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "OracleT" }, "createdBy": 1 })).await.unwrap();
+        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "OracleT" }, "createdBy": 1 }))
+            .await
+            .unwrap();
         let pid = proj["id"].as_i64().unwrap();
 
         let def = json!({
@@ -1581,7 +1625,8 @@ mod tests {
                 { "id": "w", "type": "write.task", "params": { "project_id": pid.to_string(), "title": "Daily brief" } }
             ],
             "wires": [{ "from": "t", "to": "w" }]
-        }).to_string();
+        })
+        .to_string();
         let wf_id = ganban_core::oracle::create(&db, "New-task gate", &def).await.unwrap();
         let wf = ganban_core::oracle::get(&db, wf_id).await.unwrap().unwrap();
 
@@ -1689,7 +1734,8 @@ mod tests {
         let db = ganban_core::init_db(&path).await.unwrap();
         let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Q" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let subj = crate::dispatch(&db, "create_quiz_subject", &json!({ "projectId": pid, "name": "S" })).await.unwrap();
+        let subj =
+            crate::dispatch(&db, "create_quiz_subject", &json!({ "projectId": pid, "name": "S" })).await.unwrap();
         let sid = subj["id"].as_i64().unwrap();
 
         let q = |text: &str, topic: Option<&str>| {
@@ -1697,7 +1743,9 @@ mod tests {
                 "questionType": "SINGLE_CHOICE", "questionText": text, "difficulty": "EASY", "points": 1,
                 "data": { "options": [ { "optionText": "a", "isCorrect": true }, { "optionText": "b", "isCorrect": false } ] }
             });
-            if let Some(t) = topic { v["topic"] = json!(t); }
+            if let Some(t) = topic {
+                v["topic"] = json!(t);
+            }
             v
         };
 
@@ -1713,12 +1761,22 @@ mod tests {
         assert_eq!(r["created"].as_i64(), Some(3), "{r}");
         let topics = crate::dispatch(&db, "get_quiz_topics", &json!({ "subjectId": sid })).await.unwrap();
         let names: Vec<&str> = topics.as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"Lecture 01") && names.contains(&"Lecture 03") && names.contains(&"General"), "{names:?}");
+        assert!(
+            names.contains(&"Lecture 01") && names.contains(&"Lecture 03") && names.contains(&"General"),
+            "{names:?}"
+        );
 
         // A topic-less batch with NO anchor at all must refuse.
-        let bad = tools::prepare_write(&db, 1, pid, "create_quiz_questions_batch", &json!({
-            "questions": [ q("Orphan.", None) ]
-        })).await;
+        let bad = tools::prepare_write(
+            &db,
+            1,
+            pid,
+            "create_quiz_questions_batch",
+            &json!({
+                "questions": [ q("Orphan.", None) ]
+            }),
+        )
+        .await;
         assert!(bad.is_err(), "anchorless batch must be rejected");
     }
 
@@ -1731,30 +1789,44 @@ mod tests {
         let db = ganban_core::init_db(&path).await.unwrap();
         let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Q" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let subj = crate::dispatch(&db, "create_quiz_subject", &json!({ "projectId": pid, "name": "S" })).await.unwrap();
+        let subj =
+            crate::dispatch(&db, "create_quiz_subject", &json!({ "projectId": pid, "name": "S" })).await.unwrap();
         let sid = subj["id"].as_i64().unwrap();
         let topic = crate::dispatch(&db, "create_quiz_topic", &json!({ "subjectId": sid, "name": "T" })).await.unwrap();
         let tid = topic["id"].as_i64().unwrap();
-        let quiz = crate::dispatch(&db, "create_quiz", &json!({ "kind": "quiz", "topicIds": [tid], "name": "First Quiz" })).await.unwrap();
+        let quiz =
+            crate::dispatch(&db, "create_quiz", &json!({ "kind": "quiz", "topicIds": [tid], "name": "First Quiz" }))
+                .await
+                .unwrap();
         let zid = quiz["id"].as_i64().unwrap();
 
         // EXACT client arg shape (api.ts recordQuizAttempt).
-        let r = crate::dispatch(&db, "record_quiz_attempt", &json!({
-            "quizId": zid,
-            "userId": 1,
-            "score": 2.0,
-            "maxScore": 13.0,
-            "timeTakenSeconds": 42,
-            "answersJson": "{\"5\":{\"response\":1,\"correct\":true,\"earned\":2}}"
-        })).await;
+        let r = crate::dispatch(
+            &db,
+            "record_quiz_attempt",
+            &json!({
+                "quizId": zid,
+                "userId": 1,
+                "score": 2.0,
+                "maxScore": 13.0,
+                "timeTakenSeconds": 42,
+                "answersJson": "{\"5\":{\"response\":1,\"correct\":true,\"earned\":2}}"
+            }),
+        )
+        .await;
         match &r {
             Ok(v) => assert_eq!(v["percentage"].as_f64().map(|p| p.round()), Some(15.0), "{v}"),
             Err(e) => panic!("record_quiz_attempt failed: {e}"),
         }
         // Integer score (JS sends 2, not 2.0) must also work.
-        let r2 = crate::dispatch(&db, "record_quiz_attempt", &json!({
-            "quizId": zid, "score": 2, "maxScore": 13, "answersJson": "{}"
-        })).await;
+        let r2 = crate::dispatch(
+            &db,
+            "record_quiz_attempt",
+            &json!({
+                "quizId": zid, "score": 2, "maxScore": 13, "answersJson": "{}"
+            }),
+        )
+        .await;
         assert!(r2.is_ok(), "integer scores: {r2:?}");
     }
 
@@ -1768,7 +1840,9 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         let db = ganban_core::init_db(&path).await.unwrap();
-        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Degrade" }, "createdBy": 1 })).await.unwrap();
+        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Degrade" }, "createdBy": 1 }))
+            .await
+            .unwrap();
         let pid = proj["id"].as_i64().unwrap();
 
         // trigger + a fetch that WILL fail fan into one write node.
@@ -1809,7 +1883,9 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         let db = ganban_core::init_db(&path).await.unwrap();
-        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Freeze" }, "createdBy": 1 })).await.unwrap();
+        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Freeze" }, "createdBy": 1 }))
+            .await
+            .unwrap();
         let pid = proj["id"].as_i64().unwrap();
 
         let def = json!({
@@ -1856,11 +1932,19 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         let db = ganban_core::init_db(&path).await.unwrap();
-        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Cells" }, "createdBy": 1 })).await.unwrap();
+        let proj = crate::dispatch(&db, "create_project", &json!({ "input": { "name": "Cells" }, "createdBy": 1 }))
+            .await
+            .unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let task = crate::dispatch(&db, "create_task", &json!({
-            "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task = crate::dispatch(
+            &db,
+            "create_task",
+            &json!({
+                "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
         // trigger → comment-write → (nothing downstream of the middle to test with,
@@ -1873,7 +1957,8 @@ mod tests {
                 { "id": "b", "type": "write.task", "params": { "project_id": pid.to_string(), "title": "B" } }
             ],
             "wires": [{ "from": "t", "to": "a" }, { "from": "t", "to": "b" }]
-        }).to_string();
+        })
+        .to_string();
         let wf_id = ganban_core::oracle::create(&db, "Cells", &def).await.unwrap();
         let wf = ganban_core::oracle::get(&db, wf_id).await.unwrap().unwrap();
 

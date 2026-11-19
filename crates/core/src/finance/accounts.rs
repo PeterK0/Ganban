@@ -66,6 +66,11 @@ pub struct FinAccount {
     pub profile_key: Option<String>,
     pub archived: bool,
     pub created_at: String,
+    /// Made by an import for the other side of a move (a pocket, a balance in another
+    /// currency), and no statement of its own imported yet: its balance is only what the
+    /// other side sent, not a fact.
+    #[serde(default)]
+    pub unconfirmed: bool,
     /// In the account's currency.
     pub balance_minor: i64,
     pub draft_balance_minor: i64,
@@ -153,7 +158,7 @@ pub async fn system_account_in(conn: &mut Conn, ent: &Entity, key: &str) -> Resu
 }
 
 pub async fn create_ledger_account(db: &Db, ent: &Entity, input: LedgerAccountInput) -> Result<LedgerAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let la = create_ledger_account_in(&mut tx, ent, input, None).await?;
     audit(&mut tx, ent, "create", "ledger_account", Some(la.id), None, Some(&serde_json::to_value(&la)?)).await?;
     tx.commit().await?;
@@ -194,7 +199,7 @@ async fn create_ledger_account_in(
 }
 
 pub async fn update_ledger_account(db: &Db, ent: &Entity, id: i64, patch: LedgerAccountPatch) -> Result<LedgerAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_ledger_account_in(&mut tx, ent, id).await?;
     let mut next = before.clone();
     if let Some(code) = patch.code {
@@ -230,8 +235,16 @@ pub async fn update_ledger_account(db: &Db, ent: &Entity, id: i64, patch: Ledger
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, ent, "update", "ledger_account", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&next)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "ledger_account",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&next)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(next)
 }
@@ -239,7 +252,7 @@ pub async fn update_ledger_account(db: &Db, ent: &Entity, id: i64, patch: Ledger
 /// Archive a ledger account. The app's system accounts can't be, and a financial account's
 /// ledger account goes with it (`archive_account`).
 pub async fn archive_ledger_account(db: &Db, ent: &Entity, id: i64) -> Result<LedgerAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_ledger_account_in(&mut tx, ent, id).await?;
     if before.system_key.is_some() {
         return Err(AppError::InvalidInput("the app posts to this account, so it can't be archived".into()));
@@ -253,8 +266,16 @@ pub async fn archive_ledger_account(db: &Db, ent: &Entity, id: i64) -> Result<Le
     }
     sqlx::query("UPDATE fin_ledger_accounts SET archived = 1 WHERE id = ?").bind(id).execute(&mut *tx).await?;
     let after = get_ledger_account_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "archive", "ledger_account", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "archive",
+        "ledger_account",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
@@ -274,11 +295,13 @@ const ACCOUNT_SELECT: &str = "SELECT a.*, \
     FROM fin_accounts a";
 
 pub async fn list_accounts(db: &Db, ent: &Entity, include_archived: bool) -> Result<Vec<FinAccount>> {
-    Ok(sqlx::query_as(&format!("{ACCOUNT_SELECT} WHERE a.entity_id = ? AND (? OR a.archived = 0) ORDER BY a.archived, a.name, a.id"))
-        .bind(ent.id)
-        .bind(include_archived)
-        .fetch_all(db)
-        .await?)
+    Ok(sqlx::query_as(&format!(
+        "{ACCOUNT_SELECT} WHERE a.entity_id = ? AND (? OR a.archived = 0) ORDER BY a.archived, a.name, a.id"
+    ))
+    .bind(ent.id)
+    .bind(include_archived)
+    .fetch_all(db)
+    .await?)
 }
 
 /// One of the entity's financial accounts; another entity's is not found.
@@ -313,7 +336,7 @@ pub async fn get_account(db: &Db, ent: &Entity, id: i64) -> Result<FinAccount> {
 /// Create a financial account: its ledger account (an asset, or a liability for a card or a
 /// loan, in its currency), and its opening balance against opening equity.
 pub async fn create_account(db: &Db, ent: &Entity, input: FinAccountInput) -> Result<FinAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let account = create_account_in(&mut tx, ent, input).await?;
     tx.commit().await?;
     Ok(account)
@@ -396,17 +419,18 @@ async fn next_code(conn: &mut Conn, ent: &Entity, parent: Option<&LedgerAccount>
         return Ok(format!("A{}", n + 1));
     };
     let base: i64 = parent.code.parse().unwrap_or(0);
-    let codes: Vec<String> = sqlx::query_scalar("SELECT code FROM fin_ledger_accounts WHERE entity_id = ? AND parent_id = ?")
-        .bind(ent.id)
-        .bind(parent.id)
-        .fetch_all(conn)
-        .await?;
+    let codes: Vec<String> =
+        sqlx::query_scalar("SELECT code FROM fin_ledger_accounts WHERE entity_id = ? AND parent_id = ?")
+            .bind(ent.id)
+            .bind(parent.id)
+            .fetch_all(conn)
+            .await?;
     let max = codes.iter().filter_map(|c| c.parse::<i64>().ok()).max().unwrap_or(base);
     Ok((max + 1).to_string())
 }
 
 pub async fn update_account(db: &Db, ent: &Entity, id: i64, patch: FinAccountPatch) -> Result<FinAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_account_in(&mut tx, ent, id).await?;
     let name = patch.name.as_deref().map(|n| non_empty(n, "name")).transpose()?.unwrap_or(before.name.clone());
     let institution = match patch.institution {
@@ -429,15 +453,23 @@ pub async fn update_account(db: &Db, ent: &Entity, id: i64, patch: FinAccountPat
         .execute(&mut *tx)
         .await?;
     let after = get_account_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "update", "account", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "account",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
 
 /// Archive a financial account and its ledger account. Its history stays.
 pub async fn archive_account(db: &Db, ent: &Entity, id: i64) -> Result<FinAccount> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_account_in(&mut tx, ent, id).await?;
     sqlx::query("UPDATE fin_accounts SET archived = 1 WHERE id = ?").bind(id).execute(&mut *tx).await?;
     sqlx::query("UPDATE fin_ledger_accounts SET archived = 1 WHERE id = ?")
@@ -445,8 +477,16 @@ pub async fn archive_account(db: &Db, ent: &Entity, id: i64) -> Result<FinAccoun
         .execute(&mut *tx)
         .await?;
     let after = get_account_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "archive", "account", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?))
-        .await?;
+    audit(
+        &mut tx,
+        ent,
+        "archive",
+        "account",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }

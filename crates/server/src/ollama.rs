@@ -29,7 +29,10 @@ impl OllamaConfig {
     }
 
     pub fn from_env_or_default() -> Self {
-        let base = std::env::var("GANBAN_OLLAMA_URL").ok().and_then(|s| Self::norm(&s)).unwrap_or_else(|| Self::DEFAULT.to_string());
+        let base = std::env::var("GANBAN_OLLAMA_URL")
+            .ok()
+            .and_then(|s| Self::norm(&s))
+            .unwrap_or_else(|| Self::DEFAULT.to_string());
         Self { base_url: base }
     }
 
@@ -43,7 +46,8 @@ impl OllamaConfig {
             .flatten()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok());
         let env_timeout = std::env::var("GANBAN_OLLAMA_TIMEOUT_SECS").ok();
-        GENERATION_TIMEOUT_SECS.store(generation_timeout_from(setting.as_ref(), env_timeout.as_deref()), Ordering::Relaxed);
+        GENERATION_TIMEOUT_SECS
+            .store(generation_timeout_from(setting.as_ref(), env_timeout.as_deref()), Ordering::Relaxed);
         let from_settings = setting.and_then(|v| v.get("base_url").and_then(|b| b.as_str()).and_then(Self::norm));
         let base = from_settings
             .or_else(|| std::env::var("GANBAN_OLLAMA_URL").ok().and_then(|s| Self::norm(&s)))
@@ -171,10 +175,7 @@ impl OllamaClient {
     /// request sets its own overall cap, because a model pull is a download
     /// that may rightly take far longer than any generation.
     pub fn with_timeout(cfg: OllamaConfig, generation_timeout: Duration) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
+        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).build().unwrap_or_default();
         Self { http, cfg, generation_timeout }
     }
 
@@ -194,7 +195,8 @@ impl OllamaClient {
     /// Names of locally-available models (`GET /api/tags`). Doubles as a reachability probe.
     pub async fn list_models(&self) -> Result<Vec<String>, String> {
         let url = format!("{}/api/tags", self.cfg.base_url);
-        let resp = self.http.get(&url).timeout(QUICK_TIMEOUT).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp =
+            self.http.get(&url).timeout(QUICK_TIMEOUT).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("Ollama {}", resp.status()));
         }
@@ -312,7 +314,12 @@ impl OllamaClient {
     /// `stream:false`). Returns the assistant's text and any `tool_calls`. The
     /// agentic tool loop uses this; the final user-visible answer still streams
     /// via `chat_stream`.
-    pub async fn chat_once(&self, params: &ChatParams, messages: &[Value], tools: &[Value]) -> Result<ChatTurn, String> {
+    pub async fn chat_once(
+        &self,
+        params: &ChatParams,
+        messages: &[Value],
+        tools: &[Value],
+    ) -> Result<ChatTurn, String> {
         let mut options = serde_json::Map::new();
         if let Some(t) = params.temperature {
             options.insert("temperature".into(), json!(t));
@@ -381,7 +388,14 @@ impl OllamaClient {
         });
         let url = format!("{}/api/chat", self.cfg.base_url);
         for attempt in 0..2 {
-            let resp = self.http.post(&url).json(&body).timeout(self.generation_timeout).send().await.map_err(|e| self.describe(e))?;
+            let resp = self
+                .http
+                .post(&url)
+                .json(&body)
+                .timeout(self.generation_timeout)
+                .send()
+                .await
+                .map_err(|e| self.describe(e))?;
             let status = resp.status();
             if !status.is_success() {
                 let text = resp.text().await.unwrap_or_default();
@@ -392,7 +406,12 @@ impl OllamaClient {
                 return Err(format!("Ollama {status}: {}", text.trim()));
             }
             let v: Value = resp.json().await.map_err(|e| e.to_string())?;
-            return Ok(v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or("").to_string());
+            return Ok(v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string());
         }
         Err("Ollama refused the request".into())
     }
@@ -436,7 +455,14 @@ impl OllamaClient {
     pub async fn embed_dimensions(&self, model: &str) -> Result<usize, String> {
         let body = json!({ "model": model, "input": "dimension probe" });
         let url = format!("{}/v1/embeddings", self.cfg.base_url);
-        let resp = self.http.post(&url).json(&body).timeout(QUICK_TIMEOUT).send().await.map_err(|e| format!("Ollama unreachable: {e}"))?;
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(QUICK_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("Ollama unreachable: {e}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             return Err(format!("Ollama {status}: {}", resp.text().await.unwrap_or_default().trim()));
@@ -526,9 +552,16 @@ mod tests {
         assert_eq!(generation_timeout_from(None, None), DEFAULT_GENERATION_TIMEOUT_SECS);
         assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 3600 })), None), 3600);
         assert_eq!(generation_timeout_from(None, Some("1800")), 1800);
-        assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 600 })), Some("1800")), 600, "the setting wins");
+        assert_eq!(
+            generation_timeout_from(Some(&json!({ "timeout_secs": 600 })), Some("1800")),
+            600,
+            "the setting wins"
+        );
         assert_eq!(generation_timeout_from(Some(&json!({ "timeout_secs": 5 })), None), 60, "at least a minute");
-        assert_eq!(generation_timeout_from(Some(&json!({ "base_url": "x" })), Some("nope")), DEFAULT_GENERATION_TIMEOUT_SECS);
+        assert_eq!(
+            generation_timeout_from(Some(&json!({ "base_url": "x" })), Some("nope")),
+            DEFAULT_GENERATION_TIMEOUT_SECS
+        );
     }
 
     /// A model that accepts the request and then never answers frees its
@@ -545,7 +578,8 @@ mod tests {
             }
         });
         let client = OllamaClient::with_timeout(OllamaConfig { base_url }, Duration::from_millis(300));
-        let params = ChatParams { model: "m".into(), temperature: None, max_tokens: None, num_ctx: None, endpoint: None };
+        let params =
+            ChatParams { model: "m".into(), temperature: None, max_tokens: None, num_ctx: None, endpoint: None };
         let started = std::time::Instant::now();
         let err = client.chat_once(&params, &[], &[]).await.err().expect("must give up");
         assert!(err.contains("generation timeout"), "{err}");
@@ -622,7 +656,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let db = ganban_core::init_db(&path).await.unwrap();
         assert_eq!(OllamaConfig::from_db(&db).await.base_url, "http://127.0.0.1:11434", "default when unset");
-        ganban_core::ops::set_app_setting(&db, "ollama_connection", r#"{"base_url":"http://10.0.0.5:11434/"}"#).await.unwrap();
+        ganban_core::ops::set_app_setting(&db, "ollama_connection", r#"{"base_url":"http://10.0.0.5:11434/"}"#)
+            .await
+            .unwrap();
         assert_eq!(OllamaConfig::from_db(&db).await.base_url, "http://10.0.0.5:11434", "reads + trims the setting");
     }
 }

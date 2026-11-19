@@ -75,7 +75,8 @@ pub(crate) struct BankEntry {
 
 /// A payee's grouping key: lower case letters only, the words joined by one space.
 pub(crate) fn normalise(label: &str) -> String {
-    let cleaned: String = label.chars().map(|c| if c.is_alphabetic() { c.to_lowercase().next().unwrap_or(c) } else { ' ' }).collect();
+    let cleaned: String =
+        label.chars().map(|c| if c.is_alphabetic() { c.to_lowercase().next().unwrap_or(c) } else { ' ' }).collect();
     let mut key = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     if let Some((i, _)) = key.char_indices().nth(40) {
         key.truncate(i);
@@ -86,7 +87,13 @@ pub(crate) fn normalise(label: &str) -> String {
 /// Bank entries dated from `from` to `to`, oldest first: posted ones, and drafts too when
 /// asked (a draft is a real bank line). Reversed entries, reversals, transfer legs and the
 /// close's retranslations are left out.
-pub(crate) async fn bank_entries(conn: &mut Conn, ent: &Entity, from: &str, to: &str, drafts: bool) -> Result<Vec<BankEntry>> {
+pub(crate) async fn bank_entries(
+    conn: &mut Conn,
+    ent: &Entity,
+    from: &str,
+    to: &str,
+    drafts: bool,
+) -> Result<Vec<BankEntry>> {
     let statuses = if drafts { "('posted', 'draft')" } else { "('posted')" };
     let rows: Vec<(i64, String, String, i64, i64)> = sqlx::query_as(&format!(
         "SELECT e.id, e.date, COALESCE(NULLIF(e.payee, ''), e.description), MIN(fa.id), SUM(l.functional_minor) \
@@ -225,7 +232,7 @@ const COLUMNS: &str = "id, key, label, cadence, amount_minor, amount_low_minor, 
 pub async fn detect_recurring(db: &Db, ent: &Entity, today: &str) -> Result<Vec<Recurring>> {
     let today_d = parse(&check_date(today)?).ok_or_else(|| AppError::InvalidInput("bad date".into()))?;
     let from = (today_d - Months::new(13)).format("%Y-%m-%d").to_string();
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let history = bank_entries(&mut tx, ent, &from, today, false).await?;
     let mut groups: BTreeMap<&str, Vec<&BankEntry>> = BTreeMap::new();
     for e in &history {
@@ -289,14 +296,28 @@ pub(crate) async fn list_recurring_in(conn: &mut Conn, ent: &Entity, status: Opt
 }
 
 pub async fn resolve_recurring(db: &Db, ent: &Entity, id: i64, confirm: bool) -> Result<Recurring> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let get = |id| format!("SELECT {COLUMNS} FROM fin_recurring WHERE id = {id} AND entity_id = {}", ent.id);
-    let before: Recurring = sqlx::query_as(&get(id)).fetch_optional(&mut *tx).await?.ok_or_else(|| not_found("recurring item"))?;
+    let before: Recurring =
+        sqlx::query_as(&get(id)).fetch_optional(&mut *tx).await?.ok_or_else(|| not_found("recurring item"))?;
     let status = if confirm { "confirmed" } else { "dismissed" };
-    sqlx::query("UPDATE fin_recurring SET status = ?, updated_at = ? WHERE id = ?").bind(status).bind(now()).bind(id).execute(&mut *tx).await?;
-    let after: Recurring = sqlx::query_as(&get(id)).fetch_one(&mut *tx).await?;
-    audit(&mut tx, ent, status, "recurring", Some(id), Some(&serde_json::json!({"status": before.status})), Some(&serde_json::json!({"status": status})))
+    sqlx::query("UPDATE fin_recurring SET status = ?, updated_at = ? WHERE id = ?")
+        .bind(status)
+        .bind(now())
+        .bind(id)
+        .execute(&mut *tx)
         .await?;
+    let after: Recurring = sqlx::query_as(&get(id)).fetch_one(&mut *tx).await?;
+    audit(
+        &mut tx,
+        ent,
+        status,
+        "recurring",
+        Some(id),
+        Some(&serde_json::json!({"status": before.status})),
+        Some(&serde_json::json!({"status": status})),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
@@ -312,7 +333,12 @@ pub async fn list_planned(db: &Db, ent: &Entity, from: Option<&str>, to: Option<
     list_planned_in(&mut conn, ent, from.as_deref(), to.as_deref()).await
 }
 
-pub(crate) async fn list_planned_in(conn: &mut Conn, ent: &Entity, from: Option<&str>, to: Option<&str>) -> Result<Vec<Planned>> {
+pub(crate) async fn list_planned_in(
+    conn: &mut Conn,
+    ent: &Entity,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<Planned>> {
     Ok(sqlx::query_as(&format!(
         "SELECT {PLANNED} FROM fin_planned WHERE entity_id = ? AND (?2 IS NULL OR date >= ?2) AND (?3 IS NULL OR date <= ?3) \
          ORDER BY date, id"
@@ -352,7 +378,7 @@ async fn check_planned(conn: &mut Conn, ent: &Entity, input: &PlannedInput) -> R
 }
 
 pub async fn create_planned(db: &Db, ent: &Entity, input: PlannedInput) -> Result<Planned> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let (date, description) = check_planned(&mut tx, ent, &input).await?;
     let id = sqlx::query(
         "INSERT INTO fin_planned (entity_id, date, description, amount_minor, ledger_account_id, account_id, created_at, updated_at) \
@@ -376,7 +402,7 @@ pub async fn create_planned(db: &Db, ent: &Entity, input: PlannedInput) -> Resul
 }
 
 pub async fn update_planned(db: &Db, ent: &Entity, id: i64, input: PlannedInput) -> Result<Planned> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_planned_in(&mut tx, ent, id).await?;
     let (date, description) = check_planned(&mut tx, ent, &input).await?;
     sqlx::query(
@@ -393,13 +419,22 @@ pub async fn update_planned(db: &Db, ent: &Entity, id: i64, input: PlannedInput)
     .execute(&mut *tx)
     .await?;
     let after = get_planned_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "update", "planned", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?)).await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "planned",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
 
 pub async fn delete_planned(db: &Db, ent: &Entity, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_planned_in(&mut tx, ent, id).await?;
     sqlx::query("DELETE FROM fin_planned WHERE id = ?").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, ent, "delete", "planned", Some(id), Some(&serde_json::to_value(&before)?), None).await?;

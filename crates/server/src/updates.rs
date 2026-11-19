@@ -48,6 +48,9 @@ pub struct UpdatePaths {
     pub logs: PathBuf,
     /// `launchctl`, overridable (`LAUNCHCTL`) like `ops/` does, for tests.
     pub launchctl: PathBuf,
+    /// The host's checkout, which `ops/update.sh` pulls: `GANBAN_REPO`, else the server's working
+    /// directory (launchd starts it there).
+    pub repo: PathBuf,
 }
 
 impl UpdatePaths {
@@ -61,7 +64,8 @@ impl UpdatePaths {
             .or_else(|| dirs::home_dir().map(|h| h.join("Library/Logs/ganban")))
             .unwrap_or_else(|| app_dir.join("logs"));
         let launchctl = var("LAUNCHCTL").unwrap_or_else(|| PathBuf::from("/bin/launchctl"));
-        UpdatePaths { app_dir, logs, launchctl }
+        let repo = var("GANBAN_REPO").or_else(|| std::env::current_dir().ok()).unwrap_or_else(|| PathBuf::from("."));
+        UpdatePaths { app_dir, logs, launchctl, repo }
     }
 
     fn builds(&self) -> PathBuf {
@@ -131,8 +135,12 @@ struct DesktopManifest {
     file: String,
     /// The minisign signature (the `.sig` file's text).
     signature: String,
+    /// The build's patch notes (CHANGELOG.md's Unreleased and last release, as markdown).
     #[serde(default)]
     notes: Option<String>,
+    /// The release the build follows ("1.0.11").
+    #[serde(default)]
+    released_version: Option<String>,
     /// The updater public key the bundle was signed for (manifests from before run-time
     /// update sources have none; the host's `keys/updater.key.pub` stands in).
     #[serde(default)]
@@ -150,6 +158,16 @@ struct AndroidManifest {
     /// The SHA-256 of the APK's signing certificate (hex, colons allowed), when the build knew it.
     #[serde(default)]
     cert_sha256: Option<String>,
+    /// The build's patch notes, as the desktop manifest's.
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    released_version: Option<String>,
+}
+
+/// Patch notes a manifest carries, when it carries some (bounded: they go to every device).
+fn manifest_notes(n: Option<&str>) -> Option<String> {
+    n.map(str::trim).filter(|n| !n.is_empty() && n.len() <= 64 * 1024).map(str::to_string)
 }
 
 /// A certificate fingerprint as 64 lowercase hex digits, or none.
@@ -207,7 +225,8 @@ fn desktop_build(paths: &UpdatePaths, target: &str, arch: &str) -> Option<Publis
 
 /// The first desktop build published (the host builds for its own target only).
 fn any_desktop_build(paths: &UpdatePaths) -> Option<Published<DesktopManifest>> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(paths.builds().join("desktop")).ok()?.flatten().map(|e| e.path()).collect();
+    let mut dirs: Vec<PathBuf> =
+        std::fs::read_dir(paths.builds().join("desktop")).ok()?.flatten().map(|e| e.path()).collect();
     dirs.sort();
     dirs.iter().find_map(|d| {
         let name = d.file_name()?.to_str()?;
@@ -224,7 +243,8 @@ fn android_build(paths: &UpdatePaths) -> Option<Published<AndroidManifest>> {
 /// `target`/`arch` pick a desktop build; without them, the one the host built. Each build says
 /// what signed it, so a device can choose this host as its update source: the desktop's updater
 /// public key (`pubkey`, which the app pins) and the APK's certificate (`certSha256`, which the
-/// phone compares with its own signature).
+/// phone compares with its own signature). Each also carries its patch notes (`notes`, markdown)
+/// and the release it follows (`releasedVersion`), which the update offers show.
 pub(crate) fn client_builds(paths: &UpdatePaths, target: Option<&str>, arch: Option<&str>) -> Value {
     let desktop = match (target, arch) {
         (Some(t), Some(a)) => desktop_build(paths, t, a),
@@ -233,12 +253,14 @@ pub(crate) fn client_builds(paths: &UpdatePaths, target: Option<&str>, arch: Opt
     let desktop = desktop.map(|b| {
         let m = b.manifest;
         let pubkey = updater_pubkey(paths, m.pubkey.as_deref());
-        json!({ "version": m.version, "target": m.target, "arch": m.arch, "pubDate": m.pub_date, "size": b.size, "pubkey": pubkey })
+        let notes = manifest_notes(m.notes.as_deref());
+        json!({ "version": m.version, "target": m.target, "arch": m.arch, "pubDate": m.pub_date, "size": b.size, "pubkey": pubkey, "notes": notes, "releasedVersion": m.released_version })
     });
     let android = android_build(paths).map(|b| {
         let m = b.manifest;
         let cert = m.cert_sha256.as_deref().and_then(cert_hex);
-        json!({ "version": m.version, "versionCode": m.version_code, "pubDate": m.pub_date, "size": b.size, "sha256": m.sha256, "certSha256": cert })
+        let notes = manifest_notes(m.notes.as_deref());
+        json!({ "version": m.version, "versionCode": m.version_code, "pubDate": m.pub_date, "size": b.size, "sha256": m.sha256, "certSha256": cert, "notes": notes, "releasedVersion": m.released_version })
     });
     json!({ "desktop": desktop, "android": android })
 }
@@ -304,7 +326,8 @@ pub(crate) async fn desktop_route(
         return (StatusCode::BAD_REQUEST, "no usable Host header").into_response();
     };
     let m = build.manifest;
-    let notes = m.notes.unwrap_or_else(|| format!("Ganban {}, built on the host.", m.version));
+    let notes =
+        manifest_notes(m.notes.as_deref()).unwrap_or_else(|| format!("Ganban {}, built on the host.", m.version));
     axum::Json(json!({
         "version": m.version,
         "notes": notes,
@@ -513,11 +536,8 @@ fn write_status(paths: &UpdatePaths, status: &Value) -> std::io::Result<()> {
 }
 
 async fn run(program: &Path, args: &[&str]) -> Result<std::process::Output, AppError> {
-    let child = tokio::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
+    let child =
+        tokio::process::Command::new(program).args(args).stdin(std::process::Stdio::null()).kill_on_drop(true).output();
     match tokio::time::timeout(Duration::from_secs(20), child).await {
         Ok(out) => out.map_err(|e| AppError::InvalidInput(format!("{}: {e}", program.display()))),
         Err(_) => Err(AppError::InvalidInput(format!("{} timed out", program.display()))),
@@ -562,11 +582,85 @@ pub(crate) async fn start_host_update(paths: &UpdatePaths) -> Result<Value, AppE
     let out = run(&paths.launchctl, &["kickstart", &job]).await?;
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        write_status(paths, &json!({ "state": "failed", "step": format!("starting: launchctl kickstart failed: {why}"), "startedAt": starting["startedAt"], "finishedAt": starting["startedAt"], "fromBuild": starting["fromBuild"], "toBuild": null, "clients": starting["clients"], "logOffset": log_offset }))?;
+        write_status(
+            paths,
+            &json!({ "state": "failed", "step": format!("starting: launchctl kickstart failed: {why}"), "startedAt": starting["startedAt"], "finishedAt": starting["startedAt"], "fromBuild": starting["fromBuild"], "toBuild": null, "clients": starting["clients"], "logOffset": log_offset }),
+        )?;
         return Err(AppError::InvalidInput(format!("launchctl kickstart {job} failed: {why}")));
     }
     tracing::info!("host update started ({job})");
     Ok(host_update_status(paths).await)
+}
+
+// ============== What an update would bring ==============
+
+/// A git command in the host's checkout, with a short timeout and no prompt. Its arguments are
+/// fixed here: nothing from the request reaches git.
+async fn git(repo: &Path, args: &[&str], secs: u64) -> Result<String, String> {
+    git_with(repo, args, secs, false).await
+}
+
+/// `git`, and with `batch_ssh` ssh never prompts for a passphrase either (`BatchMode`), unless
+/// the owner set his own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand`).
+async fn git_with(repo: &Path, args: &[&str], secs: u64, batch_ssh: bool) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("-C").arg(repo).args(args);
+    // Never ask anyone: no terminal prompt, no askpass helper (a password asked for fails at once).
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true")
+        .env("SSH_ASKPASS_REQUIRE", "never");
+    if batch_ssh && std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    let child = cmd.stdin(std::process::Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(Duration::from_secs(secs), child).await {
+        Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(Ok(out)) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").trim().chars().take(200).collect())
+        }
+        Ok(Err(e)) => Err(format!("git: {e}")),
+        Err(_) => Err("git timed out".into()),
+    }
+}
+
+/// A changelog `git show` gives, bounded (it goes to the owner's browser).
+const CHANGELOG_MAX: usize = 512 * 1024;
+
+/// `preview_host_update` (owner only): what "Update the server" would bring, without pulling.
+/// It fetches (a short timeout), then says how many commits the checkout is behind its upstream
+/// and hands over both changelogs, the checkout's and the upstream's: the client diffs their
+/// patch-note entries with the app's one parser. `known: false` with `why` when it can't tell
+/// (no network, not a git checkout, no upstream, an update running); the update can go ahead.
+pub(crate) async fn preview_host_update(paths: &UpdatePaths) -> Value {
+    let unknown = |why: &str| json!({ "known": false, "why": why, "behind": null, "changelog": null });
+    if is_running(&read_status(paths)) {
+        return unknown("An update is running.");
+    }
+    let repo = &paths.repo;
+    if git(repo, &["rev-parse", "--is-inside-work-tree"], 5).await.map(|o| o.trim() == "true") != Ok(true) {
+        return unknown("This host isn't a git checkout, so it can't tell what's coming.");
+    }
+    if git(repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 5).await.is_err() {
+        return unknown("This checkout follows no remote branch, so it can't tell what's coming.");
+    }
+    let own_ssh = git(repo, &["config", "--get", "core.sshCommand"], 5).await.is_ok();
+    if let Err(e) = git_with(repo, &["fetch", "--quiet", "--no-tags"], 15, !own_ssh).await {
+        return unknown(&format!("Couldn't reach the code's remote ({e}), so it can't tell what's coming."));
+    }
+    let behind = match git(repo, &["rev-list", "--count", "HEAD..@{u}"], 5).await {
+        Ok(n) => n.trim().parse::<u64>().ok(),
+        Err(_) => None,
+    };
+    let Some(behind) = behind else {
+        return unknown("Couldn't compare this checkout with its remote.");
+    };
+    let show = |rev: &'static str| async move {
+        git(repo, &["show", &format!("{rev}:CHANGELOG.md")], 5).await.ok().filter(|t| t.len() <= CHANGELOG_MAX)
+    };
+    let (current, incoming) = (show("HEAD").await, show("@{u}").await);
+    json!({ "known": true, "why": null, "behind": behind, "changelog": { "current": current, "incoming": incoming } })
 }
 
 #[cfg(test)]
@@ -639,7 +733,9 @@ mod tests {
             .unwrap();
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&launchctl, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let paths = UpdatePaths { app_dir: dir.join("app"), logs: dir.join("logs"), launchctl };
+            // No checkout: the preview never touches the repository the tests run in.
+            let paths =
+                UpdatePaths { app_dir: dir.join("app"), logs: dir.join("logs"), launchctl, repo: dir.join("repo") };
             Fixture { dir, paths }
         }
 
@@ -693,6 +789,91 @@ mod tests {
         assert_eq!(client_builds(&f.paths, None, None)["android"]["certSha256"], Value::Null);
     }
 
+    fn sh_git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", "-C"])
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+    }
+
+    #[tokio::test]
+    async fn the_host_update_preview_fetches_and_never_pulls() {
+        let f = Fixture::new("preview", true);
+        // Not a checkout: it says so, in one line.
+        let v = preview_host_update(&f.paths).await;
+        assert_eq!(v["known"], false);
+        assert!(v["why"].as_str().unwrap().contains("isn't a git checkout"), "{v}");
+
+        // A remote, and the host's checkout of it.
+        let remote = f.dir.join("remote.git");
+        let work = f.dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        sh_git(&f.dir, &["init", "--bare", remote.to_str().unwrap()]);
+        sh_git(&work, &["init"]);
+        std::fs::write(work.join("CHANGELOG.md"), "## [Unreleased]\n\n### Fixed\n\n- **Old fix.**\n").unwrap();
+        sh_git(&work, &["add", "."]);
+        sh_git(&work, &["commit", "-m", "one"]);
+        sh_git(&work, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        sh_git(&work, &["push", "-u", "origin", "HEAD:main"]);
+        let host = f.dir.join("repo");
+        sh_git(&f.dir, &["clone", "-q", remote.to_str().unwrap(), host.to_str().unwrap()]);
+
+        let v = preview_host_update(&f.paths).await;
+        assert_eq!((v["known"].clone(), v["behind"].clone()), (json!(true), json!(0)), "{v}");
+
+        // Two commits land upstream; the host learns of them, and its checkout stays put.
+        std::fs::write(work.join("CHANGELOG.md"), "## [Unreleased]\n\n### Fixed\n\n- **New fix.**\n- **Old fix.**\n")
+            .unwrap();
+        sh_git(&work, &["commit", "-am", "two"]);
+        std::fs::write(work.join("x"), "x").unwrap();
+        sh_git(&work, &["add", "."]);
+        sh_git(&work, &["commit", "-m", "three"]);
+        sh_git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        let v = preview_host_update(&f.paths).await;
+        assert_eq!(v["behind"], 2, "{v}");
+        assert!(v["changelog"]["incoming"].as_str().unwrap().contains("New fix."));
+        assert!(!v["changelog"]["current"].as_str().unwrap().contains("New fix."));
+        assert!(!std::fs::read_to_string(host.join("CHANGELOG.md")).unwrap().contains("New fix."), "never pulls");
+
+        // The remote gone (offline, say): it can't tell, and says why.
+        std::fs::remove_dir_all(&remote).unwrap();
+        let v = preview_host_update(&f.paths).await;
+        assert_eq!(v["known"], false);
+        assert!(v["why"].as_str().unwrap().starts_with("Couldn't reach the code's remote"), "{v}");
+
+        // While an update runs, it doesn't fetch over it.
+        write_status(&f.paths, &json!({ "state": "running", "startedAt": now().to_rfc3339() })).unwrap();
+        assert_eq!(preview_host_update(&f.paths).await["why"], "An update is running.");
+    }
+
+    #[test]
+    fn client_builds_carry_their_patch_notes() {
+        let f = Fixture::new("notes", true);
+        // An old manifest has none.
+        let v = client_builds(&f.paths, None, None);
+        assert_eq!(v["desktop"]["notes"], Value::Null);
+        assert_eq!(v["android"]["notes"], Value::Null);
+        let notes = "## [Unreleased]\n\n### Fixed\n\n- **A fix.**";
+        for rel in ["desktop/darwin-aarch64/manifest.json", "android/manifest.json"] {
+            let p = f.paths.builds().join(rel);
+            let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            m["notes"] = json!(notes);
+            m["releasedVersion"] = json!("1.0.11");
+            std::fs::write(&p, m.to_string()).unwrap();
+        }
+        let v = client_builds(&f.paths, None, None);
+        for k in ["desktop", "android"] {
+            assert_eq!(v[k]["notes"], notes, "{k}");
+            assert_eq!(v[k]["releasedVersion"], "1.0.11", "{k}");
+        }
+        // Blank notes are none; the updater's answer then names the build instead.
+        assert_eq!(manifest_notes(Some("  \n")), None);
+        assert_eq!(manifest_notes(Some(&"x".repeat(70 * 1024))), None);
+    }
+
     #[tokio::test]
     async fn host_update_is_the_owners_and_runs_once() {
         use crate::commands::testkit::*;
@@ -707,7 +888,7 @@ mod tests {
         let builds = crate::commands::run(&as_(mia), "get_client_builds", json!({})).await.unwrap();
         assert_eq!(builds["android"]["versionCode"], 500975);
         assert!(builds["desktop"].get("pubkey").is_some() && builds["android"].get("certSha256").is_some(), "{builds}");
-        for cmd in ["start_host_update", "get_host_update_status"] {
+        for cmd in ["start_host_update", "get_host_update_status", "preview_host_update"] {
             assert!(crate::commands::run(&as_(mia), cmd, json!({})).await.unwrap_err().is_forbidden(), "{cmd}");
         }
         assert!(f.launchctl_log().is_empty(), "a member's refused call runs nothing");
@@ -724,12 +905,17 @@ mod tests {
         // While it runs (the server's own mark, then the script's live pid), a second start is refused.
         let again = crate::commands::run(&as_(owner), "start_host_update", json!({})).await.unwrap_err();
         assert!(again.is_invalid_input() && again.to_string().contains("already running"), "{again}");
-        let mut other = std::process::Command::new("/bin/bash").args(["-c", "sleep 30; true", "update.sh"]).spawn().unwrap();
+        let mut other =
+            std::process::Command::new("/bin/bash").args(["-c", "sleep 30; true", "update.sh"]).spawn().unwrap();
         let mut s = read_status(&f.paths);
         s["pid"] = json!(other.id());
         s["step"] = json!("checks: tsc");
         write_status(&f.paths, &s).unwrap();
-        assert!(crate::commands::run(&as_(owner), "start_host_update", json!({})).await.unwrap_err().to_string().contains("checks: tsc"));
+        assert!(crate::commands::run(&as_(owner), "start_host_update", json!({}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("checks: tsc"));
 
         // A pid that is alive but isn't update.sh (reused after a crash) doesn't hold it.
         other.kill().unwrap();
@@ -775,7 +961,11 @@ mod tests {
         std::fs::write(&env, "GANBAN_INSTALL_ADDR='0.0.0.0:8765'\nGANBAN_CLIENT_BUILDS='none'\n").unwrap();
         assert_eq!(host_update_status(&f.paths).await["clientBuilds"], "none");
         std::fs::write(&env, "GANBAN_CLIENT_BUILDS='desktop'\nGANBAN_CLIENT_BUILDS=\"android\"\n").unwrap();
-        assert_eq!(host_update_status(&f.paths).await["clientBuilds"], "android", "the last line wins, as when sourced");
+        assert_eq!(
+            host_update_status(&f.paths).await["clientBuilds"],
+            "android",
+            "the last line wins, as when sourced"
+        );
         std::fs::write(&env, "GANBAN_CLIENT_BUILDS='ios'\n").unwrap();
         assert_eq!(host_update_status(&f.paths).await["clientBuilds"], Value::Null, "a value install.sh refuses");
     }
@@ -805,9 +995,14 @@ mod tests {
         assert_eq!(host_update_status(&f.paths).await["launchd"]["log"], "", "an older run's output isn't this run's");
 
         let early: String = (1..=60).map(|i| format!("noise {i}\n")).collect();
-        std::fs::write(f.paths.launchd_log_file(), format!("{early}\u{1b}[1mops/update.sh: line 3: node: command not found\u{1b}[0m\n")).unwrap();
+        std::fs::write(
+            f.paths.launchd_log_file(),
+            format!("{early}\u{1b}[1mops/update.sh: line 3: node: command not found\u{1b}[0m\n"),
+        )
+        .unwrap();
         // The server's "starting" mark, long past its grace, and update.sh never wrote its pid.
-        write_status(&f.paths, &json!({ "state": "running", "step": "starting", "startedAt": long_ago, "pid": null })).unwrap();
+        write_status(&f.paths, &json!({ "state": "running", "step": "starting", "startedAt": long_ago, "pid": null }))
+            .unwrap();
         let s = host_update_status(&f.paths).await;
         assert_eq!(s["state"], "failed");
         assert!(s["step"].as_str().unwrap().contains("didn't start"), "{s}");
@@ -821,7 +1016,11 @@ mod tests {
         assert!(s["step"].as_str().unwrap().contains("npm ci (the update stopped without finishing)"), "{s}");
         assert_eq!(s["launchd"]["lastExitCode"], "127");
         // Still within the grace: running, and launchd isn't asked about it.
-        write_status(&f.paths, &json!({ "state": "running", "step": "starting", "startedAt": now().to_rfc3339(), "pid": null })).unwrap();
+        write_status(
+            &f.paths,
+            &json!({ "state": "running", "step": "starting", "startedAt": now().to_rfc3339(), "pid": null }),
+        )
+        .unwrap();
         let s = host_update_status(&f.paths).await;
         assert_eq!((s["state"].as_str(), &s["launchd"]), (Some("running"), &Value::Null));
     }
@@ -851,8 +1050,8 @@ mod tests {
     mod routes {
         use super::*;
         use crate::{events, ollama, rag, router, Shares};
-        use axum::http::Request as HttpRequest;
         use axum::extract::ConnectInfo;
+        use axum::http::Request as HttpRequest;
         use ganban_core::auth;
         use std::net::SocketAddr;
 
@@ -870,12 +1069,30 @@ mod tests {
             }
 
             async fn device(&self) -> String {
-                let p = crate::commands::testkit::seed(&self.db, "create_project", json!({ "input": { "name": "P" } })).await["id"].as_i64().unwrap();
-                let invite = auth::create_enrollment_token(&self.db, "invite", None, Some(p), Some("member"), Some("Bo"), auth::INVITE_TTL_SECS).await.unwrap();
+                let p = crate::commands::testkit::seed(&self.db, "create_project", json!({ "input": { "name": "P" } }))
+                    .await["id"]
+                    .as_i64()
+                    .unwrap();
+                let invite = auth::create_enrollment_token(
+                    &self.db,
+                    "invite",
+                    None,
+                    Some(p),
+                    Some("member"),
+                    Some("Bo"),
+                    auth::INVITE_TTL_SECS,
+                )
+                .await
+                .unwrap();
                 auth::enroll(&self.db, &invite, Some("phone"), Some("Bo")).await.unwrap().device_token
             }
 
-            async fn get(&self, uri: &str, token: Option<&str>, range: Option<&str>) -> (StatusCode, HeaderMap, Vec<u8>) {
+            async fn get(
+                &self,
+                uri: &str,
+                token: Option<&str>,
+                range: Option<&str>,
+            ) -> (StatusCode, HeaderMap, Vec<u8>) {
                 let mut req = HttpRequest::get(uri).header(header::HOST, "100.64.0.1:8765");
                 if let Some(t) = token {
                     req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
@@ -889,7 +1106,14 @@ mod tests {
                 req.extensions_mut().insert(self.paths.clone());
                 let rag: rag::SharedRag = Arc::new(tokio::sync::RwLock::new(None));
                 let ollama: ollama::SharedOllama = Arc::new(tokio::sync::RwLock::new(None));
-                let app = router(self.db.clone(), Shares::default(), std::env::temp_dir(), rag, ollama, events::EventHub::new());
+                let app = router(
+                    self.db.clone(),
+                    Shares::default(),
+                    std::env::temp_dir(),
+                    rag,
+                    ollama,
+                    events::EventHub::new(),
+                );
                 let res = app.oneshot(req).await.unwrap();
                 let (status, headers) = (res.status(), res.headers().clone());
                 let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec();
@@ -921,7 +1145,11 @@ mod tests {
         #[tokio::test]
         async fn the_update_routes_need_a_device_token() {
             let host = Host::new("auth").await;
-            for uri in ["/updates/desktop/darwin/aarch64/0.5.1", "/updates/desktop/darwin/aarch64/bundle", "/updates/android/apk"] {
+            for uri in [
+                "/updates/desktop/darwin/aarch64/0.5.1",
+                "/updates/desktop/darwin/aarch64/bundle",
+                "/updates/android/apk",
+            ] {
                 let (st, _, _) = host.get(uri, None, None).await;
                 assert_eq!(st, StatusCode::UNAUTHORIZED, "{uri}");
                 let (st, _, _) = host.get(uri, Some("not-a-token"), None).await;
@@ -929,7 +1157,11 @@ mod tests {
             }
             let t = host.device().await;
             let (st, _, body) = host.get(&format!("/updates/android/apk?token={t}"), None, None).await;
-            assert_eq!((st, body.as_slice()), (StatusCode::OK, &b"APKBYTES"[..]), "?token= works like the download routes");
+            assert_eq!(
+                (st, body.as_slice()),
+                (StatusCode::OK, &b"APKBYTES"[..]),
+                "?token= works like the download routes"
+            );
         }
 
         #[tokio::test]

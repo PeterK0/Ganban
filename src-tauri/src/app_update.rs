@@ -176,7 +176,10 @@ fn valid_repo(r: &str) -> bool {
     let mut parts = r.split('/');
     let ok = |p: Option<&str>| {
         p.is_some_and(|p| {
-            !p.is_empty() && p != "." && p != ".." && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            !p.is_empty()
+                && p != "."
+                && p != ".."
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         })
     };
     ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
@@ -206,7 +209,8 @@ pub fn github_endpoint(repo: &str) -> Result<tauri::Url, String> {
     if !valid_repo(repo) {
         return Err(format!("Bad GitHub repository {repo}"));
     }
-    tauri::Url::parse(&format!("https://github.com/{repo}/releases/latest/download/latest.json")).map_err(|e| e.to_string())
+    tauri::Url::parse(&format!("https://github.com/{repo}/releases/latest/download/latest.json"))
+        .map_err(|e| e.to_string())
 }
 
 /// The endpoint the updater asks: the host's
@@ -271,14 +275,21 @@ pub fn plan(
                 UpdateChannel::Broken(why) => why.clone(),
                 _ => "This build doesn't know its GitHub repository.".to_string(),
             })?;
-            Ok(Plan { endpoint: github_endpoint(repo)?, pubkey: GITHUB_PUBKEY.trim().to_string(), send_token: false, cross })
+            Ok(Plan {
+                endpoint: github_endpoint(repo)?,
+                pubkey: GITHUB_PUBKEY.trim().to_string(),
+                send_token: false,
+                cross,
+            })
         }
         Source::Host => {
             let pinned = host_key.map(str::trim).filter(|k| !k.is_empty());
             // A host build trusts the key it was built with; a GitHub build's config key is
             // the project's, which says nothing about the host.
             let own = if matches!(channel, UpdateChannel::Host) { build_key } else { None };
-            let pubkey = pinned.or(own).ok_or("No update key for this server yet. Choose This server in Settings → Updates to trust its key.")?;
+            let pubkey = pinned.or(own).ok_or(
+                "No update key for this server yet. Choose This server in Settings → Updates to trust its key.",
+            )?;
             Ok(Plan { endpoint: endpoint_url(base_url)?, pubkey: pubkey.to_string(), send_token: true, cross })
         }
     }
@@ -351,12 +362,19 @@ pub async fn update_check(
 ) -> Result<UpdateCheck, String> {
     let current = app.package_info().version.to_string();
     if !state.enabled {
-        return Ok(UpdateCheck { can_update: false, current, version: None, notes: None, reason: Some(state.why_not()) });
+        return Ok(UpdateCheck {
+            can_update: false,
+            current,
+            version: None,
+            notes: None,
+            reason: Some(state.why_not()),
+        });
     }
     let channel = state.channel.clone().unwrap_or(UpdateChannel::Host);
     let source = Source::parse(source.as_deref(), &channel);
     // A source that can't be asked is a failed check (retried later), not a build that can't update.
-    let plan = plan(source, &channel, state.repo.as_deref(), state.build_key.as_deref(), host_key.as_deref(), &base_url)?;
+    let plan =
+        plan(source, &channel, state.repo.as_deref(), state.build_key.as_deref(), host_key.as_deref(), &base_url)?;
     let mut builder = app
         .updater_builder()
         .pubkey(plan.pubkey.clone())
@@ -402,6 +420,7 @@ pub enum DownloadEvent {
 
 /// Download the update the last check found, verifying its signature. Progress
 /// goes out on `on_event`. The bundle waits in memory for `update_install_and_restart`.
+/// Only the user's "Download and install" calls it: a check never downloads (ADR 0012).
 #[tauri::command]
 pub async fn update_download(state: State<'_, AppUpdate>, on_event: Channel<DownloadEvent>) -> Result<String, String> {
     if !state.enabled {
@@ -541,7 +560,8 @@ mod tests {
     #[test]
     fn the_project_key_is_embedded() {
         use base64::Engine;
-        let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(GITHUB_PUBKEY.trim()).unwrap()).unwrap();
+        let text =
+            String::from_utf8(base64::engine::general_purpose::STANDARD.decode(GITHUB_PUBKEY.trim()).unwrap()).unwrap();
         assert!(text.contains("minisign public key"), "{text}");
     }
 
@@ -573,7 +593,9 @@ mod tests {
         assert_eq!(plan(Source::Host, &host, None, Some("HOSTKEY"), Some("  "), url).unwrap().pubkey, "HOSTKEY");
         let p = plan(Source::Host, &gh, Some("PeterK0/Ganban"), Some(GITHUB_PUBKEY), Some("PINNED"), url).unwrap();
         assert_eq!((p.pubkey.as_str(), p.cross), ("PINNED", true));
-        assert!(plan(Source::Host, &gh, Some("PeterK0/Ganban"), Some(GITHUB_PUBKEY), None, url).unwrap_err().contains("trust its key"));
+        assert!(plan(Source::Host, &gh, Some("PeterK0/Ganban"), Some(GITHUB_PUBKEY), None, url)
+            .unwrap_err()
+            .contains("trust its key"));
         assert!(plan(Source::Host, &host, None, Some("HOSTKEY"), None, "").is_err(), "no host connected");
     }
 

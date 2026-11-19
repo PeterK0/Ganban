@@ -10,10 +10,12 @@ file. Read `GLOSSARY.md` before naming a new concept; `docs/README.md` maps the 
 Run what covers your change before you call it done:
 
 - `npx tsc --noEmit -p .` and `npx vite build`: always.
-- `cargo test -p ganban-core -p ganban-server`: when you touched Rust. `cargo check -p gansty` when you touched
-  `src-tauri`. Prefix cargo with `nice -n 10`.
+- `cargo fmt --all` and `cargo test -p ganban-core -p ganban-server`: when you touched Rust. `cargo check -p gansty`
+  when you touched `src-tauri`. Prefix cargo with `nice -n 10`.
 - The `npm run test:*` suite for the code you touched, and `npm run test:doclinks` when you touched docs.
-  `docs/dev/TESTING.md` lists every suite.
+  `npm run test:all` runs them all, as CI does. `docs/dev/TESTING.md` lists every suite.
+- `npm run qa:smoke` when your change shows on screen: it opens the app in a headless browser and walks the daily
+  paths (`docs/dev/TESTING.md` § Smoke run).
 
 Add tests next to the code you change: a pure module gets a `scripts/test-<name>.mjs`, a host rule gets a Rust test
 beside its command.
@@ -22,7 +24,8 @@ beside its command.
 
 - **Host commands** live in one command table (`crates/server/src/commands/`), and every command declares its access
   rule; one without is refused (`docs/design/adr/0001-one-command-table.md`). Add a client operation there, not as a
-  new route or Tauri command; the ADR names the few exceptions.
+  new route or Tauri command. About 140 routes in `crates/server/src/lib.rs` (files, chat, Atlas, the assistant's
+  panels) predate the table and check access by hand: add nothing to them, and move what you touch into the table.
 - **Task visibility** is enforced on the host: a task outside the reader's audience is absent from every result
   (`docs/design/adr/0002-task-visibility.md`). Any new path that returns task data filters through it.
 - **Assistant tools:** reads stay in the chat's project, and writes are proposals the user approves. Read

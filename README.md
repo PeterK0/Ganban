@@ -15,8 +15,9 @@ telemetry.
 
 Get the installer for your system from **[GitHub Releases](https://github.com/PeterK0/Ganban/releases)**:
 a `.dmg` for Macs with Apple Silicon (M1 and newer), an `.exe` or `.msi` for Windows, and an `.AppImage` or `.deb` for
-Linux. The Android app is there too. From 1.0.2 on, these apps check the Releases page for new versions and
-update themselves; **Settings → Updates** turns that off ([more](docs/user/UPDATES_AND_BACKUPS.md#updates)).
+Linux. The Android app is there too. From 1.0.2 on, these apps check the Releases page for new versions and offer
+them with their patch notes; nothing installs until you say so. **Settings → Updates** turns the checks off
+([more](docs/user/UPDATES_AND_BACKUPS.md#updates)).
 
 On a Mac, the first launch may say Ganban "is damaged" or "can't be opened": the apps aren't notarised by Apple yet.
 Run `xattr -cr /Applications/Ganban.app` in Terminal once and open it again ([details](docs/user/GETTING_STARTED.md#macos)).
@@ -56,7 +57,7 @@ answers the usual questions.
 - **Self-hosting.** The same server runs headless as `ganban-server`, on an always-on Mac or Linux box. See
   [self-hosting](docs/host/SELF_HOSTING.md).
 - **In-app updates.** The host updates itself, then serves the new desktop and Android builds to its clients.
-  Desktops download in the background and offer "Restart to update".
+  Each device shows what's new and installs only when you say so.
 - **Themes.** Eight themes (four Catppuccin flavours, Dracula, Nord, Tokyo Night and Gruvbox), all in the Gilt
   style.
 

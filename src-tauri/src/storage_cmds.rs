@@ -34,7 +34,5 @@ pub async fn read_attachment_bytes(
     root: State<'_, StorageRoot>,
     attachment_id: i64,
 ) -> Result<(String, Vec<u8>), String> {
-    storage::read_attachment(pool.inner(), &root.0, attachment_id)
-        .await
-        .map_err(|e| e.to_string())
+    storage::read_attachment(pool.inner(), &root.0, attachment_id).await.map_err(|e| e.to_string())
 }

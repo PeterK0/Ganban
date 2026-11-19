@@ -40,7 +40,10 @@ pub struct ScanSummary {
 
 impl ScanSummary {
     fn brief(&self) -> String {
-        let mut s = format!("{} added, {} updated, {} unchanged, {} filtered", self.added, self.updated, self.unchanged, self.filtered);
+        let mut s = format!(
+            "{} added, {} updated, {} unchanged, {} filtered",
+            self.added, self.updated, self.unchanged, self.filtered
+        );
         if !self.errors.is_empty() {
             s.push_str(&format!(", {} failed", self.errors.len()));
         }
@@ -127,7 +130,12 @@ pub async fn scan(db: &Db, root: &Path, folder: &SyncFolder) -> Result<ScanSumma
             summary.filtered += 1;
             continue;
         }
-        let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
 
         // Change detection against what this mapping already imported.
         let known: Option<(i64, i64, i64)> = sqlx::query_as(
@@ -160,17 +168,26 @@ pub async fn scan(db: &Db, root: &Path, folder: &SyncFolder) -> Result<ScanSumma
                 // survives; if the user deleted it meanwhile, re-import fresh.
                 match storage::restore_project_file(db, root, pfid, mime, &bytes).await {
                     Ok(_) => Ok((pfid, false)),
-                    Err(AppError::NotFound(_)) => {
-                        storage::store_project_file(db, root, folder.project_id, &file_name, mime, Some(&rel), None, &bytes)
-                            .await
-                            .map(|f| (f.id, true))
-                    }
+                    Err(AppError::NotFound(_)) => storage::store_project_file(
+                        db,
+                        root,
+                        folder.project_id,
+                        &file_name,
+                        mime,
+                        Some(&rel),
+                        None,
+                        &bytes,
+                    )
+                    .await
+                    .map(|f| (f.id, true)),
                     Err(e) => Err(e),
                 }
             }
-            None => storage::store_project_file(db, root, folder.project_id, &file_name, mime, Some(&rel), None, &bytes)
-                .await
-                .map(|f| (f.id, true)),
+            None => {
+                storage::store_project_file(db, root, folder.project_id, &file_name, mime, Some(&rel), None, &bytes)
+                    .await
+                    .map(|f| (f.id, true))
+            }
         };
         match outcome {
             Ok((pfid, is_new)) => {
@@ -250,7 +267,9 @@ mod tests {
         let src = temp_tree("scan");
         let root = std::env::temp_dir().join(format!("ganban_fsync_root_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&root);
-        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Uni" } })).await.unwrap()["id"].as_i64().unwrap();
+        let pid = crate::dispatch(&db, "create_project", &j!({ "input": { "name": "Uni" } })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
 
         std::fs::write(src.join("week1.pdf"), b"pdf bytes").unwrap();
         std::fs::write(src.join("nested/notes.md"), b"# notes").unwrap();
@@ -258,8 +277,7 @@ mod tests {
         std::fs::write(src.join("huge.pdf"), vec![0u8; 5000]).unwrap();
         std::fs::write(src.join(".hidden.pdf"), b"never").unwrap();
 
-        let folder =
-            ops::create_sync_folder(&db, pid, &src.to_string_lossy(), "pdf, md", 4096).await.unwrap();
+        let folder = ops::create_sync_folder(&db, pid, &src.to_string_lossy(), "pdf, md", 4096).await.unwrap();
 
         // First pass: matching files import (with rel paths); filters hold.
         let s = scan(&db, &root, &folder).await.unwrap();

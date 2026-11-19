@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use async_stream::stream;
 use axum::{
     async_trait,
     extract::{ConnectInfo, FromRequestParts, Path, Query, State},
@@ -27,7 +28,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use async_stream::stream;
 use futures_util::{Stream, StreamExt};
 use ganban_core::auth;
 use ganban_core::error::AppError;
@@ -89,8 +89,13 @@ impl Shares {
 }
 
 /// All platform keys with their human labels, in display order.
-pub const BUILD_KINDS: [(&str, &str); 5] =
-    [("android", "Android"), ("windows", "Windows"), ("macos", "macOS"), ("linux", "Linux"), ("server", "Server (self-host)")];
+pub const BUILD_KINDS: [(&str, &str); 5] = [
+    ("android", "Android"),
+    ("windows", "Windows"),
+    ("macos", "macOS"),
+    ("linux", "Linux"),
+    ("server", "Server (self-host)"),
+];
 
 /// Bind a TCP listener at `addr` (so callers can surface "port in use" before
 /// spawning the server task).
@@ -105,20 +110,22 @@ mod agent_work;
 /// serve forever (`std::future::pending()`).
 #[cfg(feature = "tab-email")]
 mod email;
-mod events;
 #[cfg(feature = "tab-email")]
 mod email_oauth;
+mod events;
 mod finance_rates;
-mod finance_tools;
-mod finance_suggest_job;
 mod finance_reminder;
+mod finance_suggest_job;
+mod finance_tools;
 mod foldersync;
 mod hostmon;
 mod maptiles;
 mod net_guard;
 // Tabs whose host side lives in one optional file, compiled in when the file is
 // there (build.rs sets the cfg): a build can carry tabs the public tree doesn't.
+// rustfmt::skip: rustfmt resolves every `mod` whatever its cfg, and stops when the file isn't in the tree.
 #[cfg(extra_tabs)]
+#[rustfmt::skip]
 mod extra_tabs;
 // Public so the desktop shell's `daemon_*` Tauri commands and the daemon's
 // /invoke surface share one build-discovery implementation (remote admins too).
@@ -128,10 +135,10 @@ pub mod builds;
 // in-process through `run_in_process`.
 mod commands;
 pub use commands::run_in_process;
-mod diagnostics;
-mod librarian;
 mod delegate;
 mod demo;
+mod diagnostics;
+mod librarian;
 // Public so the desktop shell + standalone daemon both initialize logging.
 pub mod logging;
 pub use logging::init_logging;
@@ -143,15 +150,15 @@ mod rag;
 mod rules;
 // Public so the desktop shell's Tauri commands can drive auto-share locally
 // (the same logic the daemon's /invoke surface exposes for remote admins).
-pub mod tailscale;
 mod routines;
 mod secretary;
+pub mod tailscale;
 // Share links and the share door (ADR 0006).
 mod share;
 // Client updates from the host (ADR 0007): the /updates routes and the host-update commands.
-pub mod updates;
 mod tabs;
 mod tools;
+pub mod updates;
 
 pub async fn serve(
     listener: tokio::net::TcpListener,
@@ -209,6 +216,15 @@ pub async fn serve(
         let db = db.clone();
         tokio::spawn(async move {
             let _ = ganban_core::workflows::reconcile_interrupted(&db).await;
+            // Likewise a Finance import: its job lived in memory, so its batch is marked failed (the Import
+            // screen says so, and the next import finishes its lines).
+            let _ = ganban_core::finance::import::jobs::mark_interrupted(&db).await;
+            // Payees for books from before them: a background job in short transactions, so a big
+            // book never holds up startup. Resumable; imports wait until it's done.
+            let opts = ganban_core::finance::payees::BackfillOptions::default();
+            if let Err(e) = ganban_core::finance::payees::backfill(&db, &opts).await {
+                tracing::warn!("finance payees backfill stopped: {e}");
+            }
         });
     }
     oracle_run::spawn_scheduler(db.clone(), ollama.clone(), storage_root.clone(), stop_rx.clone());
@@ -282,7 +298,17 @@ pub(crate) async fn migrate_routing_to_protocols(db: &Db) {
             "engine": { "runner": runner, "profile_id": profile_id, "model": model },
         })
         .to_string();
-        match ganban_core::protocols::upsert_protocol_version(db, &class, &format!("{class} routing"), &fm, "", None, true).await {
+        match ganban_core::protocols::upsert_protocol_version(
+            db,
+            &class,
+            &format!("{class} routing"),
+            &fm,
+            "",
+            None,
+            true,
+        )
+        .await
+        {
             Ok((_, v, _)) => tracing::info!("migrated ai_routing['{class}'] → protocol '{class}' v{v}"),
             Err(e) => tracing::warn!("could not migrate ai_routing['{class}'] to a protocol: {e}"),
         }
@@ -389,13 +415,19 @@ pub fn router(
         .route("/atlas/collections/:id/visibility", post(atlas_visibility_handler))
         // The Library (Atlas › Library): managed collection folders the owner
         // uploads into; indexing is EXPLICIT (or opt-in auto with a debounce).
-        .route("/atlas/collections/:id/files", get(atlas_files_list_handler).post(atlas_file_upload_handler).delete(atlas_file_delete_handler))
+        .route(
+            "/atlas/collections/:id/files",
+            get(atlas_files_list_handler).post(atlas_file_upload_handler).delete(atlas_file_delete_handler),
+        )
         .route("/atlas/collections/:id/auto-index", post(atlas_auto_index_handler))
         // File flows across surfaces: project blobs ⇄ Library folders, and the
         // owner-granted member export (files → a member's OWN Atlas).
         .route("/atlas/collections/:id/import-project-file", post(atlas_import_project_file_handler))
         .route("/projects/:id/import-atlas-file", post(project_import_atlas_file_handler))
-        .route("/projects/:id/member-atlas-export", get(member_atlas_export_get_handler).put(member_atlas_export_set_handler))
+        .route(
+            "/projects/:id/member-atlas-export",
+            get(member_atlas_export_get_handler).put(member_atlas_export_set_handler),
+        )
         .route("/atlas/facets", get(atlas_facets_handler))
         .route("/atlas/manifest", get(atlas_manifest_handler))
         .route("/atlas/report", get(atlas_report_handler))
@@ -527,10 +559,7 @@ pub fn router(
     let router = router
         .route("/email/accounts", get(email_accounts_list).post(email_accounts_create))
         .route("/email/accounts/test", post(email_account_test))
-        .route(
-            "/email/accounts/:id",
-            axum::routing::patch(email_account_patch).delete(email_account_delete),
-        )
+        .route("/email/accounts/:id", axum::routing::patch(email_account_patch).delete(email_account_delete))
         .route("/email/accounts/:id/sync", post(email_account_sync))
         .route("/email/oauth/begin", post(email_oauth_begin))
         .route("/email/oauth/poll/:flow_id", get(email_oauth_poll))
@@ -575,20 +604,43 @@ pub fn router(
         .with_state(db)
 }
 
+/// The named UI files' policy: hashed assets forever, the files that point at them (or say
+/// which build is served) revalidated. None for anything else.
+fn ui_file_cache_policy(path: &str) -> Option<&'static str> {
+    if path.starts_with("/assets/") {
+        Some("public, max-age=31536000, immutable")
+    } else if path == "/build.json"
+        || path == "/patch-notes.json"
+        || path == "/manifest.webmanifest"
+        || path.ends_with(".html")
+    {
+        Some("no-cache")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_new_builds_patch_notes_are_never_cached() {
+    assert_eq!(ui_file_cache_policy("/patch-notes.json"), Some("no-cache"));
+    assert_eq!(ui_file_cache_policy("/build.json"), Some("no-cache"));
+    assert_eq!(ui_file_cache_policy("/assets/index-Ab12.js"), Some("public, max-age=31536000, immutable"));
+    assert_eq!(ui_file_cache_policy("/tasks"), None);
+}
+
 /// Cache-Control for what the host serves to browsers. Vite names assets by
 /// content hash (`/assets/index-Ab12Cd.js`), so those may be cached forever;
 /// everything that POINTS at them — index.html (and every SPA route that falls
-/// back to it), the manifest, build.json — must be revalidated on each load so
+/// back to it), the manifest, build.json and patch-notes.json — must be revalidated on each load so
 /// a rebuild is picked up on the next launch. Conditional requests keep that
 /// cheap (ServeDir answers 304 on If-Modified-Since). API responses are left
 /// alone: only text/html and the named UI files are touched.
 async fn web_cache_mw(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let path = req.uri().path().to_string();
     let mut res = next.run(req).await;
-    let policy: Option<&'static str> = if path.starts_with("/assets/") {
-        Some("public, max-age=31536000, immutable")
-    } else if path == "/build.json" || path == "/manifest.webmanifest" || path.ends_with(".html") {
-        Some("no-cache")
+    let policy: Option<&'static str> = if let Some(p) = ui_file_cache_policy(&path) {
+        Some(p)
     } else {
         let is_html = res
             .headers()
@@ -596,7 +648,11 @@ async fn web_cache_mw(req: axum::extract::Request, next: axum::middleware::Next)
             .and_then(|v| v.to_str().ok())
             .map(|ct| ct.starts_with("text/html"))
             .unwrap_or(false);
-        if is_html { Some("no-cache") } else { None }
+        if is_html {
+            Some("no-cache")
+        } else {
+            None
+        }
     };
     if let Some(p) = policy {
         res.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(p));
@@ -634,10 +690,7 @@ async fn embedded_web(uri: axum::http::Uri) -> Response {
     #[cfg(not(feature = "embed-web"))]
     {
         let _ = uri;
-        (
-            StatusCode::NOT_FOUND,
-            "web UI not found — build it (npm run build) or point GANBAN_WEB_DIR at a built dist/",
-        )
+        (StatusCode::NOT_FOUND, "web UI not found — build it (npm run build) or point GANBAN_WEB_DIR at a built dist/")
             .into_response()
     }
 }
@@ -682,11 +735,7 @@ fn shared_builds_json(shares: &Shares) -> Value {
 
 /// Guess the visitor's platform key from the User-Agent.
 fn detect_os(headers: &axum::http::HeaderMap) -> &'static str {
-    let ua = headers
-        .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_lowercase();
+    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
     if ua.contains("android") {
         "android"
     } else if ua.contains("windows") {
@@ -727,7 +776,9 @@ async fn download_page(Extension(s): Extension<Shares>, headers: axum::http::Hea
         }
     }
     if html.is_empty() {
-        html.push_str("<p style=\"opacity:.6\">No native build shared yet — you can still use Ganban in this browser.</p>");
+        html.push_str(
+            "<p style=\"opacity:.6\">No native build shared yet — you can still use Ganban in this browser.</p>",
+        );
     }
     Html(format!(
         "<!doctype html><meta name=viewport content=\"width=device-width,initial-scale=1\">\
@@ -774,11 +825,8 @@ async fn serve_shared(slot: &SharedApk, fallback_name: &str) -> Response {
         Err(e) => return (StatusCode::NOT_FOUND, format!("File not found: {e}")).into_response(),
     };
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(fallback_name).to_string();
-    let ctype = if name.ends_with(".apk") {
-        "application/vnd.android.package-archive"
-    } else {
-        "application/octet-stream"
-    };
+    let ctype =
+        if name.ends_with(".apk") { "application/vnd.android.package-archive" } else { "application/octet-stream" };
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     (
         [
@@ -862,7 +910,9 @@ impl FromRequestParts<Db> for AuthUser {
             return Err(ApiError(AppError::Unauthorized("missing bearer token".into())));
         };
         match auth::validate_device_token(db, &token).await? {
-            Some((user, device_id)) => Ok(AuthUser { id: user.id, is_owner: user.is_owner, device_id: Some(device_id) }),
+            Some((user, device_id)) => {
+                Ok(AuthUser { id: user.id, is_owner: user.is_owner, device_id: Some(device_id) })
+            }
             None => Err(ApiError(AppError::Unauthorized("invalid or expired token".into()))),
         }
     }
@@ -976,16 +1026,15 @@ impl FromRequestParts<Db> for AuthDownload {
             .map(|s| s[7..].trim().to_string());
         // Device tokens are hex → URL-safe, so no percent-decoding is needed.
         let token = header_token.or_else(|| {
-            parts
-                .uri
-                .query()
-                .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=").map(str::to_string)))
+            parts.uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=").map(str::to_string)))
         });
         let Some(token) = token else {
             return Err(ApiError(AppError::Unauthorized("missing token".into())));
         };
         match auth::validate_device_token(db, &token).await? {
-            Some((user, device_id)) => Ok(AuthDownload(AuthUser { id: user.id, is_owner: user.is_owner, device_id: Some(device_id) })),
+            Some((user, device_id)) => {
+                Ok(AuthDownload(AuthUser { id: user.id, is_owner: user.is_owner, device_id: Some(device_id) }))
+            }
             None => Err(ApiError(AppError::Unauthorized("invalid or expired token".into()))),
         }
     }
@@ -1020,9 +1069,7 @@ async fn enroll_handler(
     State(db): State<Db>,
     Json(body): Json<EnrollBody>,
 ) -> Result<Json<auth::EnrollResult>, ApiError> {
-    Ok(Json(
-        auth::enroll(&db, &body.token, body.device_label.as_deref(), body.display_name.as_deref()).await?,
-    ))
+    Ok(Json(auth::enroll(&db, &body.token, body.device_label.as_deref(), body.display_name.as_deref()).await?))
 }
 
 async fn me_handler(State(db): State<Db>, user: AuthUser) -> Result<Json<auth::Me>, ApiError> {
@@ -1098,10 +1145,8 @@ async fn spool_upload(
     too_big: &str,
 ) -> Result<Spooled, ApiError> {
     use tokio::io::AsyncWriteExt;
-    let declared = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
+    let declared =
+        headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > limit) {
         return Err(ApiError(AppError::InvalidInput(too_big.into())));
     }
@@ -1109,10 +1154,7 @@ async fn spool_upload(
     tokio::fs::create_dir_all(&dir).await.map_err(AppError::from)?;
     sweep_stale_spool(&dir).await;
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut spooled = Spooled { path: dir.join(format!("upload-{nanos}-{n}")), size: 0, armed: true };
     let mut file = tokio::fs::File::create(&spooled.path).await.map_err(AppError::from)?;
@@ -1220,7 +1262,11 @@ fn fmt_bytes(n: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
 }
 
 /// Room left in a project's storage allocation.
@@ -1243,7 +1289,8 @@ async fn upload_file(
         sees(visibility::can_see_task(&db, commands::viewer_of(&user), q.task_id).await?)?;
         let rel_path = q.rel_path.as_deref().map(|p| storage::clean_rel_path(p, true)).transpose()?;
         let remaining = project_remaining(&db, project_id).await?;
-        let spooled = spool_upload(&root.0, &headers, body, remaining, "file exceeds the project's remaining storage").await?;
+        let spooled =
+            spool_upload(&root.0, &headers, body, remaining, "file exceeds the project's remaining storage").await?;
         let size = spooled.size as i64;
         // On error `spooled` drops and removes the temp file; on success it moved.
         let att = storage::store_shared_from_path(
@@ -1278,9 +1325,7 @@ async fn download_file(
     require(&db, &user, project_id, auth::ROLE_MEMBER).await?;
     sees(visibility::can_see_attachment(&db, commands::viewer_of(&user), id).await?)?;
     let (file_name, file_type, path) = storage::shared_for_download(&db, &root.0, id).await?;
-    let file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|_| ApiError(AppError::NotFound("file".into())))?;
+    let file = tokio::fs::File::open(&path).await.map_err(|_| ApiError(AppError::NotFound("file".into())))?;
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     // Content-Type is required for inline image rendering: a blob created from a
     // fetch() response inherits the response's type, and an <img> won't render a
@@ -1365,7 +1410,9 @@ async fn event_file_download(
     let (file_name, file_type, path) = storage::event_file_for_download(&db, &root.0, id).await?;
     let file = tokio::fs::File::open(&path).await.map_err(|_| ApiError(AppError::NotFound("file".into())))?;
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
-    let mime = file_type.filter(|t| t.contains('/') && !t.trim().is_empty()).unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = file_type
+        .filter(|t| t.contains('/') && !t.trim().is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     Ok((
         [
             (header::CONTENT_TYPE, mime),
@@ -1401,7 +1448,8 @@ async fn project_file_upload(
     let stored = async {
         require(&db, &user, pid, auth::ROLE_MEMBER).await?;
         let remaining = project_remaining(&db, pid).await?;
-        let spooled = spool_upload(&root.0, &headers, body, remaining, "file exceeds the project's remaining storage").await?;
+        let spooled =
+            spool_upload(&root.0, &headers, body, remaining, "file exceeds the project's remaining storage").await?;
         let size = spooled.size as i64;
         let f = storage::store_project_file_from_path(
             &db,
@@ -1423,7 +1471,11 @@ async fn project_file_upload(
 }
 
 /// List a project's files (any member).
-async fn project_files_list(State(db): State<Db>, user: AuthUser, Path(pid): Path<i64>) -> Result<Json<Vec<ProjectFile>>, ApiError> {
+async fn project_files_list(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(pid): Path<i64>,
+) -> Result<Json<Vec<ProjectFile>>, ApiError> {
     require(&db, &user, pid, auth::ROLE_MEMBER).await?;
     Ok(Json(storage::list_project_files(&db, pid).await?))
 }
@@ -1472,7 +1524,12 @@ async fn project_file_restore(
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Result<Json<ProjectFile>, ApiError> {
-    let log = UploadLog::start(uploader(&db, &user).await, format!("project file {fid} (replacement)"), "replacement bytes", &headers);
+    let log = UploadLog::start(
+        uploader(&db, &user).await,
+        format!("project file {fid} (replacement)"),
+        "replacement bytes",
+        &headers,
+    );
     let stored = async {
         let pid = storage::project_file_project(&db, fid).await?;
         require(&db, &user, pid, auth::ROLE_MEMBER).await?;
@@ -1574,7 +1631,12 @@ async fn attachment_restore(
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Result<Json<FileAttachment>, ApiError> {
-    let log = UploadLog::start(uploader(&db, &user).await, format!("attachment {id} (replacement)"), "replacement bytes", &headers);
+    let log = UploadLog::start(
+        uploader(&db, &user).await,
+        format!("attachment {id} (replacement)"),
+        "replacement bytes",
+        &headers,
+    );
     let stored = async {
         let pid = storage::attachment_project(&db, id).await?;
         require(&db, &user, pid, auth::ROLE_MEMBER).await?;
@@ -1593,7 +1655,11 @@ async fn attachment_restore(
 }
 
 /// Shared task attachments across the project (for the central Files view).
-async fn project_attachments_list(State(db): State<Db>, user: AuthUser, Path(pid): Path<i64>) -> Result<Json<Vec<ProjectAttachment>>, ApiError> {
+async fn project_attachments_list(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(pid): Path<i64>,
+) -> Result<Json<Vec<ProjectAttachment>>, ApiError> {
     require(&db, &user, pid, auth::ROLE_MEMBER).await?;
     let mut rows = storage::list_project_attachments(&db, pid).await?;
     if let Some(seen) = visibility::visible_tasks(&db, commands::viewer_of(&user), Some(pid)).await? {
@@ -1614,9 +1680,7 @@ async fn comment_react_handler(
     Path(id): Path<i64>,
     Json(body): Json<ReactBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let pid = auth::comment_project_id(&db, id)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("comment".into())))?;
+    let pid = auth::comment_project_id(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("comment".into())))?;
     require(&db, &user, pid, auth::ROLE_MEMBER).await?;
     sees(visibility::can_see_comment(&db, commands::viewer_of(&user), id).await?)?;
     let emoji = body.emoji.trim();
@@ -1633,9 +1697,7 @@ async fn task_reactions_handler(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<ReactionSummary>>, ApiError> {
-    let pid = auth::task_project_id(&db, id)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("task".into())))?;
+    let pid = auth::task_project_id(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("task".into())))?;
     require(&db, &user, pid, auth::ROLE_MEMBER).await?;
     sees(visibility::can_see_task(&db, commands::viewer_of(&user), id).await?)?;
     Ok(Json(ops::task_reaction_summary(&db, id, user.id).await?))
@@ -1857,9 +1919,10 @@ async fn invoke_handler(
     Json(body): Json<InvokeBody>,
 ) -> Response {
     let label: String = body.command.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(60).collect();
-    let mut res = invoke_inner(State(db), Extension(root), Extension(hub), Extension(shares), update_paths, user, Json(body))
-        .await
-        .into_response();
+    let mut res =
+        invoke_inner(State(db), Extension(root), Extension(hub), Extension(shares), update_paths, user, Json(body))
+            .await
+            .into_response();
     res.extensions_mut().insert(hostmon::InvokeLabel(label));
     res
 }
@@ -1929,7 +1992,11 @@ async fn search_handler(
     user: AuthUser,
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let client = rag.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
+    let client = rag
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
     require(&db, &user, body.project_id, auth::ROLE_MEMBER).await?;
     if !rag::ai_files_enabled(&db, body.project_id).await {
         return Ok(Json(json!({ "hits": [] }))); // owner disabled AI file access
@@ -1960,7 +2027,11 @@ async fn facets_handler(
     user: AuthUser,
     Query(q): Query<FacetsQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let client = rag.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
+    let client = rag
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
     require(&db, &user, q.project_id, auth::ROLE_MEMBER).await?;
     Ok(Json(json!({ "facets": client.read_facets(&rag::collection_name(q.project_id)) })))
 }
@@ -1979,7 +2050,11 @@ async fn reindex_handler(
     _owner: AuthOwner,
     Json(body): Json<ReindexBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let client = rag.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
+    let client = rag
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("search is not enabled on this host".into())))?;
     let job = rag::reindex_project(&db, &client, &root.0, body.project_id)
         .await
         .map_err(|e| ApiError(AppError::Io(std::io::Error::other(format!("ragrat reindex: {e}")))))?;
@@ -2020,7 +2095,11 @@ async fn calendar_create(
     Ok(Json(json!({ "subscription": subscription, "sync": sync })))
 }
 
-async fn calendar_delete(State(db): State<Db>, _owner: AuthOwner, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
+async fn calendar_delete(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
     ops::delete_calendar_subscription(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -2078,11 +2157,14 @@ mod ics_fetch_tests {
                 let mut buf = [0u8; 2048];
                 let _ = sock.read(&mut buf).await;
                 let body = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
-                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let resp =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 let _ = sock.write_all(resp.as_bytes()).await;
             }
         });
-        let cal = super::fetch_ics(&format!("http://localhost:{port}/remote.php/dav/calendars/me/home?export")).await.unwrap();
+        let cal = super::fetch_ics(&format!("http://localhost:{port}/remote.php/dav/calendars/me/home?export"))
+            .await
+            .unwrap();
         assert!(cal.starts_with("BEGIN:VCALENDAR"), "a calendar on the owner's own network is fetched");
         for url in ["http://169.254.169.254/latest/meta-data/", "http://[fd00:ec2::254]/", "http://100.100.100.200/"] {
             let err = super::fetch_ics(url).await.unwrap_err();
@@ -2116,7 +2198,8 @@ async fn sync_subscription(db: &Db, sub: &CalendarSubscription) -> Value {
                 }
             }
             let total = added + updated;
-            let _ = ops::set_calendar_sync_result(db, sub.id, &format!("ok: {total} events ({added} new)"), total).await;
+            let _ =
+                ops::set_calendar_sync_result(db, sub.id, &format!("ok: {total} events ({added} new)"), total).await;
             json!({ "ok": true, "added": added, "updated": updated, "total": total })
         }
     }
@@ -2137,7 +2220,13 @@ async fn resolve_profile(db: &Db, profile_id: Option<i64>) -> (ollama::ChatParam
     if let Some(p) = profile {
         let system = p.system_prompt.filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.into());
         return (
-            ollama::ChatParams { model: p.model, temperature: p.temperature, max_tokens: p.max_tokens, num_ctx: None, endpoint: p.endpoint },
+            ollama::ChatParams {
+                model: p.model,
+                temperature: p.temperature,
+                max_tokens: p.max_tokens,
+                num_ctx: None,
+                endpoint: p.endpoint,
+            },
             system,
         );
     }
@@ -2159,7 +2248,9 @@ pub enum Runner {
     Pi,
 }
 impl Default for Runner {
-    fn default() -> Self { Runner::Ollama }
+    fn default() -> Self {
+        Runner::Ollama
+    }
 }
 
 /// A resolved protocol: the full dispatch decision for one task class. Frozen
@@ -2246,10 +2337,20 @@ pub(crate) async fn routed_profile_id(db: &Db, task_class: &str) -> Option<i64> 
 
 /// The generation params for a task class: the routed profile's if one is
 /// configured (and still exists), else the conversation's own params.
-pub(crate) async fn resolve_task_params(db: &Db, task_class: &str, fallback: &ollama::ChatParams) -> ollama::ChatParams {
+pub(crate) async fn resolve_task_params(
+    db: &Db,
+    task_class: &str,
+    fallback: &ollama::ChatParams,
+) -> ollama::ChatParams {
     match routed_profile_id(db, task_class).await {
         Some(pid) => match ops::get_model_profile(db, pid).await.ok().flatten() {
-            Some(p) => ollama::ChatParams { model: p.model, temperature: p.temperature, max_tokens: p.max_tokens, num_ctx: None, endpoint: p.endpoint },
+            Some(p) => ollama::ChatParams {
+                model: p.model,
+                temperature: p.temperature,
+                max_tokens: p.max_tokens,
+                num_ctx: None,
+                endpoint: p.endpoint,
+            },
             None => fallback.clone(), // stale pointer → behave as unrouted
         },
         None => fallback.clone(),
@@ -2282,8 +2383,13 @@ pub(crate) type AgentTaskStore = std::sync::Arc<tokio::sync::Mutex<std::collecti
 pub enum AgentTaskStatus {
     /// `progress` lets a long job narrate itself (the Oracle runner reports
     /// per-node state here) — pollers that only read `status` are unaffected.
-    Running { progress: Option<serde_json::Value> },
-    Done { result: serde_json::Value, error: Option<String> },
+    Running {
+        progress: Option<serde_json::Value>,
+    },
+    Done {
+        result: serde_json::Value,
+        error: Option<String>,
+    },
 }
 
 fn agent_task_store() -> &'static AgentTaskStore {
@@ -2310,7 +2416,19 @@ pub(crate) async fn dispatch_agent_task(
     profile_id: Option<i64>,
 ) -> Result<AgentTaskResult, AppError> {
     let protocol = resolve_protocol(db, task_class).await;
-    run_agent_protocol(db, ollama, &protocol, task_class, prompt, system_prompt, project_id, user_id, profile_id, "applied").await
+    run_agent_protocol(
+        db,
+        ollama,
+        &protocol,
+        task_class,
+        prompt,
+        system_prompt,
+        project_id,
+        user_id,
+        profile_id,
+        "applied",
+    )
+    .await
 }
 
 /// Execute ONE runner invocation under an explicit protocol and write the
@@ -2335,9 +2453,9 @@ pub(crate) async fn run_agent_protocol(
 
     let (result_text, model, prompt_tokens, completion_tokens) = match protocol.runner {
         Runner::Ollama => {
-            let client = ollama.ok_or_else(|| AppError::NotFound(
-                "chat is not enabled on this host — start Ollama or route this task to pi".into()
-            ))?;
+            let client = ollama.ok_or_else(|| {
+                AppError::NotFound("chat is not enabled on this host — start Ollama or route this task to pi".into())
+            })?;
             // Resolve params: the protocol's profile, else the active profile,
             // else the legacy fallback.
             let (mut params, default_system) = resolve_profile(db, protocol.profile_id).await;
@@ -2361,31 +2479,34 @@ pub(crate) async fn run_agent_protocol(
                 serde_json::json!({ "role": "system", "content": system }),
                 serde_json::json!({ "role": "user", "content": prompt }),
             ];
-            let turn = client.chat_once(&params, &messages, &[]).await
-                .map_err(|e| {
-                    let msg = e.to_string();
-                    // A model-not-found error is the most common failure: the
-                    // protocol resolved to an Ollama profile whose model isn't
-                    // pulled on this host. Give the user an actionable message
-                    // instead of the raw Ollama 404.
-                    if msg.contains("not found") && msg.contains("model") {
-                        AppError::InvalidInput(format!(
-                            "Ollama model '{}' is not available on this host. \
+            let turn = client.chat_once(&params, &messages, &[]).await.map_err(|e| {
+                let msg = e.to_string();
+                // A model-not-found error is the most common failure: the
+                // protocol resolved to an Ollama profile whose model isn't
+                // pulled on this host. Give the user an actionable message
+                // instead of the raw Ollama 404.
+                if msg.contains("not found") && msg.contains("model") {
+                    AppError::InvalidInput(format!(
+                        "Ollama model '{}' is not available on this host. \
                              Pull it (ollama pull <model>) or route the '{}' task to pi \
                              in Settings → AI → Personalities → Task routing.",
-                            params.model, task_class
-                        ))
-                    } else {
-                        AppError::InvalidInput(format!("Ollama failed: {e}"))
-                    }
-                })?;
-            (turn.content, Some(params.model.clone()),
-             Some(turn.usage.prompt_tokens), Some(turn.usage.completion_tokens))
+                        params.model, task_class
+                    ))
+                } else {
+                    AppError::InvalidInput(format!("Ollama failed: {e}"))
+                }
+            })?;
+            (
+                turn.content,
+                Some(params.model.clone()),
+                Some(turn.usage.prompt_tokens),
+                Some(turn.usage.completion_tokens),
+            )
         }
         Runner::Pi => {
-            let pi_binary = pi_rpc::resolve_pi_binary(db).await.ok_or_else(|| AppError::InvalidInput(
-                "pi is not installed or not configured — set the binary path in Settings".into()
-            ))?;
+            let pi_binary = pi_rpc::resolve_pi_binary(db).await.ok_or_else(|| {
+                AppError::InvalidInput("pi is not installed or not configured — set the binary path in Settings".into())
+            })?;
             // Sandboxed tempdir cwd; pi runs with tools:[read] only.
             let cwd = std::env::temp_dir().join(format!("ganban-pi-task-{}-{}", task_class, std::process::id()));
             std::fs::create_dir_all(&cwd).map_err(AppError::from)?;
@@ -2399,27 +2520,32 @@ pub(crate) async fn run_agent_protocol(
     // Write the cost row on EVERY invocation (build brief #7). Even failures
     // above return early with Err — but a failure past this point still logs.
     let result_for_ledger = serde_json::json!({ "task_class": task_class, "chars": result_text.len() }).to_string();
-    if let Err(e) = ops::record_agent_action(db, ops::NewAgentAction {
-        status: ledger_status,
-        user_id,
-        profile_id,
-        project_id,
-        chat_id: None,
-        routine_id: None,
-        tool: task_class,
-        summary: &format!("Agent task '{}'", task_class),
-        args_json: &serde_json::json!({ "runner": format!("{:?}", protocol.runner).to_lowercase() }).to_string(),
-        result_json: Some(&result_for_ledger),
-        model: model.as_deref(),
-        prompt_tokens,
-        completion_tokens,
-        duration_ms: Some(duration_ms),
-        protocol_slug: protocol.slug.as_deref(),
-        protocol_version: protocol.version,
-        content_hash: protocol.content_hash.as_deref(),
-        parent_action_id: None,
-        approver_id: None,
-    }).await {
+    if let Err(e) = ops::record_agent_action(
+        db,
+        ops::NewAgentAction {
+            status: ledger_status,
+            user_id,
+            profile_id,
+            project_id,
+            chat_id: None,
+            routine_id: None,
+            tool: task_class,
+            summary: &format!("Agent task '{}'", task_class),
+            args_json: &serde_json::json!({ "runner": format!("{:?}", protocol.runner).to_lowercase() }).to_string(),
+            result_json: Some(&result_for_ledger),
+            model: model.as_deref(),
+            prompt_tokens,
+            completion_tokens,
+            duration_ms: Some(duration_ms),
+            protocol_slug: protocol.slug.as_deref(),
+            protocol_version: protocol.version,
+            content_hash: protocol.content_hash.as_deref(),
+            parent_action_id: None,
+            approver_id: None,
+        },
+    )
+    .await
+    {
         tracing::warn!("agent task '{}' completed but could not ledger it: {e}", task_class);
     }
 
@@ -2492,7 +2618,11 @@ async fn chat_handler(
     user: AuthUser,
     Json(body): Json<ChatBody>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
-    let ollama = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
+    let ollama = ollama
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
     let rag = rag.read().await.clone();
     require_chat_project(&db, &user, body.project_id).await?;
     if body.message.trim().is_empty() {
@@ -2564,28 +2694,26 @@ async fn chat_handler(
         if !rag::ai_files_enabled(&db, body.project_id).await {
             // Owner disabled AI file access: chat proceeds ungrounded.
         } else {
-        let top_k = body.top_k.unwrap_or(8).clamp(1, 20);
-        if let Ok(mut hits) = rc.search(&rag::collection_name(body.project_id), &body.message, top_k, None).await {
-            // Ground only on what the asker can see (task visibility).
-            if rag::retain_visible_hits(&db, commands::viewer_of(&user), body.project_id, &mut hits).await.is_err() {
-                hits.clear();
+            let top_k = body.top_k.unwrap_or(8).clamp(1, 20);
+            if let Ok(mut hits) = rc.search(&rag::collection_name(body.project_id), &body.message, top_k, None).await {
+                // Ground only on what the asker can see (task visibility).
+                if rag::retain_visible_hits(&db, commands::viewer_of(&user), body.project_id, &mut hits).await.is_err()
+                {
+                    hits.clear();
+                }
+                for h in &hits {
+                    let src = h.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                    let text = h.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    context.push_str(&format!("[{src}] {text}\n\n"));
+                    sources.push(json!({ "source": src, "score": h.get("score").cloned().unwrap_or(Value::Null), "label": hit_label(src) }));
+                }
             }
-            for h in &hits {
-                let src = h.get("source").and_then(|s| s.as_str()).unwrap_or("");
-                let text = h.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                context.push_str(&format!("[{src}] {text}\n\n"));
-                sources.push(json!({ "source": src, "score": h.get("score").cloned().unwrap_or(Value::Null), "label": hit_label(src) }));
-            }
-        }
         }
     }
 
     // system (+context) + recent history + the new user turn.
-    let mut sys = if context.is_empty() {
-        system_prompt
-    } else {
-        format!("{system_prompt}\n\n## Project context\n\n{context}")
-    };
+    let mut sys =
+        if context.is_empty() { system_prompt } else { format!("{system_prompt}\n\n## Project context\n\n{context}") };
     // A personality's loadouts speak through their prompt fragments (the "skill"
     // instructions/voice), appended after its base persona + the grounding.
     for f in &loadout_fragments {
@@ -2632,8 +2760,7 @@ async fn chat_handler(
     if body.use_tools {
         // ask_atlas exists when the knowledge engine is up AND the workspace
         // has Atlas collections to ask about.
-        let atlas_on = rag.is_some()
-            && !ops::list_atlas_collections(&db).await.unwrap_or_default().is_empty();
+        let atlas_on = rag.is_some() && !ops::list_atlas_collections(&db).await.unwrap_or_default().is_empty();
         let mut tool_defs = tools::ollama_tools(rag.is_some(), atlas_on);
         tool_defs.extend(tools::ollama_write_tools());
         // Tabs enabled on this project contribute their tool bundles — through
@@ -2667,7 +2794,13 @@ async fn chat_handler(
         // the personality's own model still writes the final streamed answer.
         let tool_params = match loadout_routing {
             Some(rpid) => match ops::get_model_profile(&db, rpid).await.ok().flatten() {
-                Some(p) => ollama::ChatParams { model: p.model, temperature: p.temperature, max_tokens: p.max_tokens, num_ctx: None, endpoint: p.endpoint },
+                Some(p) => ollama::ChatParams {
+                    model: p.model,
+                    temperature: p.temperature,
+                    max_tokens: p.max_tokens,
+                    num_ctx: None,
+                    endpoint: p.endpoint,
+                },
                 None => resolve_task_params(&db, "tools", &params).await,
             },
             None => resolve_task_params(&db, "tools", &params).await,
@@ -2706,7 +2839,17 @@ async fn chat_handler(
         // so the loop is told the turn isn't on a local Ollama runner.
         let runner = if finance_engines_local { tool_runner } else { Runner::Pi };
         let (used, prepared, loop_usage) = tools::run_tool_loop(
-            &db, rag.as_ref(), &tool_client, &tool_params, &mut messages, &tool_defs, body.project_id, user.id, user.is_owner, &agent_run, &runner,
+            &db,
+            rag.as_ref(),
+            &tool_client,
+            &tool_params,
+            &mut messages,
+            &tool_defs,
+            body.project_id,
+            user.id,
+            user.is_owner,
+            &agent_run,
+            &runner,
         )
         .await;
         tools_used = used;
@@ -2728,7 +2871,9 @@ async fn chat_handler(
                     None => ops::active_model_profile(&db).await.ok().flatten().and_then(|p| p.fallback_note),
                 };
                 let note = note.unwrap_or_else(|| "its remote engine looks offline — try again when it's awake, or switch the profile to a local model".into());
-                return Err(ApiError(AppError::InvalidInput(format!("This personality couldn't answer: {note} ({e})"))));
+                return Err(ApiError(AppError::InvalidInput(format!(
+                    "This personality couldn't answer: {note} ({e})"
+                ))));
             }
             return Err(ApiError(AppError::Io(std::io::Error::other(format!("ollama: {e}")))));
         }
@@ -2749,11 +2894,21 @@ async fn chat_handler(
     let mut proposal_payload: Vec<Value> = Vec::with_capacity(prepared_writes.len());
     for pw in prepared_writes {
         match ganban_core::proposals::register(
-            &db, body.project_id, user.id, profile_id, chat_id, pw.command, &pw.args, &pw.summary, &pw.details, None,
+            &db,
+            body.project_id,
+            user.id,
+            profile_id,
+            chat_id,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            None,
         )
         .await
         {
-            Ok(id) => proposal_payload.push(json!({ "id": id, "tool": pw.command, "summary": pw.summary, "details": pw.details })),
+            Ok(id) => proposal_payload
+                .push(json!({ "id": id, "tool": pw.command, "summary": pw.summary, "details": pw.details })),
             Err(e) => tracing::warn!("could not store a proposal ({}): {e}", pw.command),
         }
     }
@@ -2869,13 +3024,9 @@ async fn chat_set_public(
     Path(cid): Path<i64>,
     Json(body): Json<SetPublicBody>,
 ) -> Result<Json<Chat>, ApiError> {
-    let pid = ops::chat_project(&db, cid)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
+    let pid = ops::chat_project(&db, cid).await?.ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
     require_chat_project(&db, &user, pid).await?;
-    let chat = ops::get_chat(&db, cid)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
+    let chat = ops::get_chat(&db, cid).await?.ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
     if chat.user_id != Some(user.id) {
         require(&db, &user, pid, auth::ROLE_ADMIN).await?;
     }
@@ -3142,9 +3293,15 @@ mod atlas_library_tests {
     fn managed_means_under_the_storage_roots_atlas_tree() {
         let root = std::path::Path::new("/srv/ganban");
         let mk = |dir: &str| AtlasCollection {
-            id: 1, slug: "x".into(), name: "X".into(), source_dir: dir.into(),
-            owner_only: false, auto_index: false, dirty_at: None,
-            created_at: chrono::Utc::now(), last_ingest_at: None,
+            id: 1,
+            slug: "x".into(),
+            name: "X".into(),
+            source_dir: dir.into(),
+            owner_only: false,
+            auto_index: false,
+            dirty_at: None,
+            created_at: chrono::Utc::now(),
+            last_ingest_at: None,
         };
         assert!(atlas_is_managed(root, &mk("/srv/ganban/atlas/x")));
         assert!(!atlas_is_managed(root, &mk("/home/user/docs")), "user folders are never written to");
@@ -3258,7 +3415,9 @@ async fn atlas_file_delete_handler(
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("atlas collection".into())))?;
     if !atlas_is_managed(&root.0, &col) {
-        return Err(ApiError(AppError::InvalidInput("this collection points at your own folder — manage its files there".into())));
+        return Err(ApiError(AppError::InvalidInput(
+            "this collection points at your own folder — manage its files there".into(),
+        )));
     }
     let rel = atlas_rel_path(&q.rel_path)?;
     let p = std::path::PathBuf::from(&col.source_dir).join(&rel);
@@ -3305,15 +3464,15 @@ async fn atlas_import_project_file_handler(
     if !atlas_is_managed(&root.0, &col) {
         return Err(ApiError(AppError::InvalidInput("imports go into MANAGED library collections only".into())));
     }
-    let f: Option<ganban_core::models::ProjectFile> =
-        sqlx::query_as("SELECT * FROM project_files WHERE id = ?")
-            .bind(body.project_file_id)
-            .fetch_optional(&db)
-            .await
-            .map_err(AppError::from)?;
+    let f: Option<ganban_core::models::ProjectFile> = sqlx::query_as("SELECT * FROM project_files WHERE id = ?")
+        .bind(body.project_file_id)
+        .fetch_optional(&db)
+        .await
+        .map_err(AppError::from)?;
     let f = f.ok_or_else(|| ApiError(AppError::NotFound("project file".into())))?;
     let blob = storage::project_blob_path(&root.0, f.id);
-    let bytes = std::fs::read(&blob).map_err(|_| ApiError(AppError::NotFound("the file's bytes are missing on the host".into())))?;
+    let bytes = std::fs::read(&blob)
+        .map_err(|_| ApiError(AppError::NotFound("the file's bytes are missing on the host".into())))?;
     let rel = atlas_rel_path(body.rel_path.as_deref().unwrap_or(f.rel_path.as_deref().unwrap_or(&f.file_name)))?;
     let dest = std::path::PathBuf::from(&col.source_dir).join(&rel);
     if let Some(parent) = dest.parent() {
@@ -3348,7 +3507,8 @@ async fn project_import_atlas_file_handler(
     let bytes = std::fs::read(&src).map_err(|_| ApiError(AppError::NotFound("file".into())))?;
     let name = rel.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
     let rel_dir = rel.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| format!("{}/{name}", p.to_string_lossy()));
-    let f = storage::store_project_file(&db, &root.0, pid, &name, None, rel_dir.as_deref(), Some(owner), &bytes).await?;
+    let f =
+        storage::store_project_file(&db, &root.0, pid, &name, None, rel_dir.as_deref(), Some(owner), &bytes).await?;
     Ok(Json(f))
 }
 
@@ -3748,14 +3908,10 @@ async fn giphy_search_handler(
         .user_agent("Ganban/0.5 (gif-search)")
         .build()
         .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
-    let endpoint = if term.is_empty() {
-        "https://api.giphy.com/v1/gifs/trending"
-    } else {
-        "https://api.giphy.com/v1/gifs/search"
-    };
-    let mut req = client
-        .get(endpoint)
-        .query(&[("api_key", key.as_str()), ("limit", &limit.to_string()), ("rating", "pg-13")]);
+    let endpoint =
+        if term.is_empty() { "https://api.giphy.com/v1/gifs/trending" } else { "https://api.giphy.com/v1/gifs/search" };
+    let mut req =
+        client.get(endpoint).query(&[("api_key", key.as_str()), ("limit", &limit.to_string()), ("rating", "pg-13")]);
     if !term.is_empty() {
         req = req.query(&[("q", term.as_str())]);
     }
@@ -3799,9 +3955,7 @@ async fn require_chat_project(db: &Db, user: &AuthUser, project_id: i64) -> Resu
 
 /// Author-or-admin guard shared by the bin lifecycle handlers; returns the chat.
 async fn chat_for_manage(db: &Db, user: &AuthUser, cid: i64) -> Result<Chat, ApiError> {
-    let chat = ops::get_chat(db, cid)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
+    let chat = ops::get_chat(db, cid).await?.ok_or_else(|| ApiError(AppError::NotFound("chat".into())))?;
     require_chat_project(db, user, chat.project_id).await?;
     if chat.user_id != Some(user.id) {
         require(db, user, chat.project_id, auth::ROLE_ADMIN).await?;
@@ -3831,7 +3985,11 @@ async fn chat_bin_handler(State(db): State<Db>, user: AuthUser, Path(cid): Path<
 }
 
 /// Undo: bring a binned thread back.
-async fn chat_restore_handler(State(db): State<Db>, user: AuthUser, Path(cid): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn chat_restore_handler(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(cid): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     chat_for_manage(&db, &user, cid).await?;
     ops::restore_chat(&db, cid).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -3839,10 +3997,16 @@ async fn chat_restore_handler(State(db): State<Db>, user: AuthUser, Path(cid): P
 
 /// Stage 2: permanently delete — only allowed for threads already in the bin,
 /// so a single misclick can never destroy a conversation.
-async fn chat_purge_handler(State(db): State<Db>, user: AuthUser, Path(cid): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn chat_purge_handler(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(cid): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     let chat = chat_for_manage(&db, &user, cid).await?;
     if chat.deleted_at.is_none() {
-        return Err(ApiError(AppError::InvalidInput("bin the chat first — permanent deletion only happens from the bin".into())));
+        return Err(ApiError(AppError::InvalidInput(
+            "bin the chat first — permanent deletion only happens from the bin".into(),
+        )));
     }
     ops::delete_chat(&db, cid).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -3854,9 +4018,7 @@ async fn chat_messages_handler(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<ChatMessage>>, ApiError> {
-    let chat = ops::get_chat(&db, id)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("chat not found".into())))?;
+    let chat = ops::get_chat(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("chat not found".into())))?;
     require_chat_project(&db, &user, chat.project_id).await?;
     // A private thread is readable only by its author (published ones by the
     // whole team); a project admin may read any for moderation.
@@ -3885,9 +4047,16 @@ async fn resolve_secretary_profile(db: &Db) -> (ollama::ChatParams, String) {
     if let Some(raw) = ops::get_app_setting(db, "secretary_profile_id").await.ok().flatten() {
         if let Ok(id) = raw.trim().parse::<i64>() {
             if let Ok(Some(p)) = ops::get_model_profile(db, id).await {
-                let system = p.system_prompt.filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SECRETARY_PROMPT.into());
+                let system =
+                    p.system_prompt.filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SECRETARY_PROMPT.into());
                 return (
-                    ollama::ChatParams { model: p.model, temperature: p.temperature, max_tokens: p.max_tokens, num_ctx: None, endpoint: p.endpoint },
+                    ollama::ChatParams {
+                        model: p.model,
+                        temperature: p.temperature,
+                        max_tokens: p.max_tokens,
+                        num_ctx: None,
+                        endpoint: p.endpoint,
+                    },
                     system,
                 );
             }
@@ -3899,7 +4068,10 @@ async fn resolve_secretary_profile(db: &Db) -> (ollama::ChatParams, String) {
     (params, DEFAULT_SECRETARY_PROMPT.into())
 }
 
-async fn secretary_brief_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<Json<secretary::DailyBrief>, ApiError> {
+async fn secretary_brief_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+) -> Result<Json<secretary::DailyBrief>, ApiError> {
     Ok(Json(secretary::build_brief(&db).await?))
 }
 
@@ -3927,7 +4099,11 @@ async fn secretary_chat_handler(
     _owner: AuthOwner,
     Json(body): Json<SecretaryChatBody>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
-    let ollama = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
+    let ollama = ollama
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
     if body.message.trim().is_empty() {
         return Err(ApiError(AppError::InvalidInput("empty message".into())));
     }
@@ -3981,19 +4157,20 @@ async fn secretary_chat_handler(
     let mut filed: Vec<String> = Vec::new(); // proposals filed by tool rounds
     let mut broke: Option<&str> = None;
     for _ in 0..4 {
-        let turn = match tokio::time::timeout(round_timeout, secretary_client.chat_once(&params, &messages, &defs)).await {
-            // A timeout or model error must DEGRADE, not 500 the turn — work
-            // already done (filed proposals) would vanish with the error.
-            Err(_) => {
-                broke = Some("the model timed out mid-thought");
-                break;
-            }
-            Ok(Err(_)) => {
-                broke = Some("the model connection dropped");
-                break;
-            }
-            Ok(Ok(t)) => t,
-        };
+        let turn =
+            match tokio::time::timeout(round_timeout, secretary_client.chat_once(&params, &messages, &defs)).await {
+                // A timeout or model error must DEGRADE, not 500 the turn — work
+                // already done (filed proposals) would vanish with the error.
+                Err(_) => {
+                    broke = Some("the model timed out mid-thought");
+                    break;
+                }
+                Ok(Err(_)) => {
+                    broke = Some("the model connection dropped");
+                    break;
+                }
+                Ok(Ok(t)) => t,
+            };
         if turn.tool_calls.is_empty() {
             final_content = turn.content;
             break;
@@ -4034,7 +4211,10 @@ async fn secretary_chat_handler(
     Ok(Sse::new(sse).keep_alive(KeepAlive::default()))
 }
 
-async fn rundown_latest_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<Json<Option<secretary::Rundown>>, ApiError> {
+async fn rundown_latest_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+) -> Result<Json<Option<secretary::Rundown>>, ApiError> {
     Ok(Json(secretary::latest_rundown(&db).await?))
 }
 
@@ -4046,7 +4226,11 @@ async fn rundown_generate_handler(
     Extension(rag): Extension<rag::SharedRag>,
     _owner: AuthOwner,
 ) -> Result<Json<secretary::Rundown>, ApiError> {
-    let client = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
+    let client = ollama
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("chat is not enabled on this host".into())))?;
     let rag_client = rag.read().await.clone();
     // A manual "run now" is the rundown routine's other trigger: go through the
     // routine record so the run is stamped + ledgered exactly like a catch-up run.
@@ -4107,31 +4291,34 @@ async fn consume_and_apply(
             // a retry could double-apply).
             let args_json = pending.args.to_string();
             let result_json = result.to_string();
-            if let Err(e) = ops::record_agent_action(db, ops::NewAgentAction {
-                status: "applied",
-                user_id: pending.user_id,
-                profile_id: pending.profile_id,
-                project_id: Some(pending.project_id),
-                // 0 = an externally-submitted proposal (member-agent return):
-                // there is no host conversation behind it, so no chat link.
-                chat_id: (pending.chat_id != 0).then_some(pending.chat_id),
-                routine_id: None,
-                tool: &pending.command,
-                summary: &pending.summary,
-                args_json: &args_json,
-                result_json: Some(&result_json),
-                model: None,
-                prompt_tokens: None,
-                completion_tokens: None,
-                duration_ms: None,
-                protocol_slug: None,
-                protocol_version: None,
-                content_hash: None,
-                parent_action_id: None,
-                // Both identities, always: user_id = proposer (above),
-                // approver_id = who resolved (may differ under 'owner' policy).
-                approver_id: Some(approver_id),
-            })
+            if let Err(e) = ops::record_agent_action(
+                db,
+                ops::NewAgentAction {
+                    status: "applied",
+                    user_id: pending.user_id,
+                    profile_id: pending.profile_id,
+                    project_id: Some(pending.project_id),
+                    // 0 = an externally-submitted proposal (member-agent return):
+                    // there is no host conversation behind it, so no chat link.
+                    chat_id: (pending.chat_id != 0).then_some(pending.chat_id),
+                    routine_id: None,
+                    tool: &pending.command,
+                    summary: &pending.summary,
+                    args_json: &args_json,
+                    result_json: Some(&result_json),
+                    model: None,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    duration_ms: None,
+                    protocol_slug: None,
+                    protocol_version: None,
+                    content_hash: None,
+                    parent_action_id: None,
+                    // Both identities, always: user_id = proposer (above),
+                    // approver_id = who resolved (may differ under 'owner' policy).
+                    approver_id: Some(approver_id),
+                },
+            )
             .await
             {
                 tracing::warn!("applied {} but could not ledger it: {e}", pending.command);
@@ -4140,7 +4327,12 @@ async fn consume_and_apply(
         }
         Err(e) => {
             // Restore it so a transient failure can be retried rather than lost.
-            tracing::warn!("user {} failed to apply {} in project {}: {e}", pending.user_id, pending.command, pending.project_id);
+            tracing::warn!(
+                "user {} failed to apply {} in project {}: {e}",
+                pending.user_id,
+                pending.command,
+                pending.project_id
+            );
             if let Err(e2) = ganban_core::proposals::reinsert(db, &pending).await {
                 tracing::warn!("could not reinsert proposal {proposal_id} for retry: {e2}");
             }
@@ -4156,27 +4348,30 @@ async fn consume_and_reject(db: &Db, proposal_id: i64, approver_id: i64) -> Resu
         .await?
         .ok_or_else(|| AppError::NotFound("this action has expired or was already resolved".into()))?;
     let args_json = pending.args.to_string();
-    if let Err(e) = ops::record_agent_action(db, ops::NewAgentAction {
-        status: "rejected",
-        user_id: pending.user_id,
-        profile_id: pending.profile_id,
-        project_id: Some(pending.project_id),
-        chat_id: (pending.chat_id != 0).then_some(pending.chat_id),
-        routine_id: None,
-        tool: &pending.command,
-        summary: &pending.summary,
-        args_json: &args_json,
-        result_json: None,
-        model: None,
-        prompt_tokens: None,
-        completion_tokens: None,
-        duration_ms: None,
-        protocol_slug: None,
-        protocol_version: None,
-        content_hash: None,
-        parent_action_id: None,
-        approver_id: Some(approver_id),
-    })
+    if let Err(e) = ops::record_agent_action(
+        db,
+        ops::NewAgentAction {
+            status: "rejected",
+            user_id: pending.user_id,
+            profile_id: pending.profile_id,
+            project_id: Some(pending.project_id),
+            chat_id: (pending.chat_id != 0).then_some(pending.chat_id),
+            routine_id: None,
+            tool: &pending.command,
+            summary: &pending.summary,
+            args_json: &args_json,
+            result_json: None,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            protocol_slug: None,
+            protocol_version: None,
+            content_hash: None,
+            parent_action_id: None,
+            approver_id: Some(approver_id),
+        },
+    )
     .await
     {
         tracing::warn!("rejected {} but could not ledger it: {e}", pending.command);
@@ -4215,11 +4410,7 @@ async fn approval_policy_set_handler(
 /// resolve it, and their write access to the project is re-checked live. A
 /// failed/unauthorized call must never destroy a legitimate pending proposal
 /// (the consume is the guard, but it must come after these checks pass).
-async fn authorize_proposal(
-    db: &Db,
-    user: &AuthUser,
-    proposal_id: i64,
-) -> Result<(), ApiError> {
+async fn authorize_proposal(db: &Db, user: &AuthUser, proposal_id: i64) -> Result<(), ApiError> {
     let (_, project_id) = ganban_core::proposals::peek_meta(db, proposal_id)
         .await?
         .ok_or_else(|| ApiError(AppError::NotFound("this action has expired or was already resolved".into())))?;
@@ -4246,7 +4437,11 @@ async fn tabs_available_handler(_user: AuthUser) -> Json<Value> {
 /// may see the catalog (transparency about what the assistant can do); the
 /// knowledge engine's internals (ragrat mounts, MCP surface, base URL) are
 /// owner-only. Lists definitions; never executes.
-async fn tools_catalog_handler(State(db): State<Db>, Extension(rag): Extension<rag::SharedRag>, user: AuthUser) -> Json<Value> {
+async fn tools_catalog_handler(
+    State(db): State<Db>,
+    Extension(rag): Extension<rag::SharedRag>,
+    user: AuthUser,
+) -> Json<Value> {
     let tab_ids: Vec<String> = tabs::available_tabs().iter().map(|t| t.id.to_string()).collect();
     let mut catalog = tools::tool_catalog(&tab_ids);
     // Declarative registry tools (owner-defined, data-bound) sit alongside the
@@ -4273,7 +4468,10 @@ async fn tools_catalog_handler(State(db): State<Db>, Extension(rag): Extension<r
 
 /// Owner-only: the declarative tool registry (all rows, incl. disabled, with
 /// their bindings) — the management view behind the Tools panel.
-async fn registry_list_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<Json<Vec<ganban_core::models::RegistryTool>>, ApiError> {
+async fn registry_list_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+) -> Result<Json<Vec<ganban_core::models::RegistryTool>>, ApiError> {
     Ok(Json(ops::list_registry_tools(&db).await?))
 }
 
@@ -4308,12 +4506,19 @@ async fn registry_bindings_handler(Extension(rag): Extension<rag::SharedRag>, _o
 }
 
 /// Owner-only: the NAMES of stored connector secrets (never the values).
-async fn connector_secrets_list_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<Json<Vec<String>>, ApiError> {
+async fn connector_secrets_list_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+) -> Result<Json<Vec<String>>, ApiError> {
     Ok(Json(ops::list_connector_secret_names(&db).await?))
 }
 
 /// Owner-only: set a connector secret (body: `{ "name": ..., "value": ... }`).
-async fn connector_secret_set_handler(State(db): State<Db>, _owner: AuthOwner, Json(body): Json<Value>) -> Result<StatusCode, ApiError> {
+async fn connector_secret_set_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
     let name = body.get("name").and_then(Value::as_str).map(str::trim).unwrap_or("");
     let value = body.get("value").and_then(Value::as_str).unwrap_or("");
     if name.is_empty() || value.is_empty() {
@@ -4324,7 +4529,11 @@ async fn connector_secret_set_handler(State(db): State<Db>, _owner: AuthOwner, J
 }
 
 /// Owner-only: delete a connector secret.
-async fn connector_secret_delete_handler(State(db): State<Db>, _owner: AuthOwner, Path(name): Path<String>) -> Result<StatusCode, ApiError> {
+async fn connector_secret_delete_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
     ops::delete_connector_secret(&db, &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -4355,7 +4564,11 @@ async fn registry_enabled_handler(
 }
 
 /// Owner-only: delete a registry tool.
-async fn registry_delete_handler(State(db): State<Db>, _owner: AuthOwner, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn registry_delete_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     ops::delete_registry_tool(&db, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -4464,9 +4677,8 @@ async fn sync_folders_run(
     _owner: AuthOwner,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<foldersync::ScanSummary>, ApiError> {
-    let folder = ops::get_sync_folder(&db, id)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("sync folder".into())))?;
+    let folder =
+        ops::get_sync_folder(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("sync folder".into())))?;
     Ok(Json(foldersync::scan(&db, &root.0, &folder).await?))
 }
 
@@ -4484,9 +4696,8 @@ async fn routine_run_handler(
     _owner: AuthOwner,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let routine = ops::get_routine(&db, id)
-        .await?
-        .ok_or_else(|| ApiError(AppError::NotFound("routine not found".into())))?;
+    let routine =
+        ops::get_routine(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("routine not found".into())))?;
     // Only the kinds that need the model ask for one (run_routine says so).
     let client = ollama.read().await.clone();
     let rag_client = rag.read().await.clone();
@@ -4560,7 +4771,10 @@ mod email_handlers {
     /// Per-USER mailboxes: members connect their own inboxes; nobody browses
     /// anyone else's. The host owner additionally sees every account (they
     /// administer the box the credentials live on).
-    pub async fn email_accounts_list(State(db): State<Db>, user: AuthUser) -> Result<Json<Vec<EmailAccount>>, ApiError> {
+    pub async fn email_accounts_list(
+        State(db): State<Db>,
+        user: AuthUser,
+    ) -> Result<Json<Vec<EmailAccount>>, ApiError> {
         if user.is_owner {
             return Ok(Json(ops::list_email_accounts(&db).await?));
         }
@@ -4594,30 +4808,46 @@ mod email_handlers {
         // OAuth path: claim the refresh token from the just-completed sign-in;
         // the resolved Google address wins over any typed username.
         if let Some(flow_id) = b.oauth_flow_id.as_deref().filter(|f| !f.is_empty()) {
-            let (email, refresh_token) = flows
-                .take_done(flow_id, user.id)
-                .ok_or_else(|| ApiError(AppError::InvalidInput("sign-in not completed — finish it in the browser, then add".into())))?;
+            let (email, refresh_token) = flows.take_done(flow_id, user.id).ok_or_else(|| {
+                ApiError(AppError::InvalidInput("sign-in not completed — finish it in the browser, then add".into()))
+            })?;
             let username = if email.is_empty() { b.username.trim().to_string() } else { email };
             let label = if b.label.trim().is_empty() { username.clone() } else { b.label.trim().to_string() };
-            let client_id = b
-                .oauth_client_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ApiError(AppError::InvalidInput("OAuth account needs its client id to refresh tokens".into())))?;
+            let client_id = b.oauth_client_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| {
+                ApiError(AppError::InvalidInput("OAuth account needs its client id to refresh tokens".into()))
+            })?;
             let secret = b.oauth_client_secret.as_deref().map(str::trim).filter(|s| !s.is_empty());
             return Ok(Json(
                 ops::create_oauth_email_account(
-                    &db, user.id, &label, b.host.trim(), b.port, &username, &folders, horizon,
-                    client_id, secret, &refresh_token,
+                    &db,
+                    user.id,
+                    &label,
+                    b.host.trim(),
+                    b.port,
+                    &username,
+                    &folders,
+                    horizon,
+                    client_id,
+                    secret,
+                    &refresh_token,
                 )
                 .await?,
             ));
         }
         let label = if b.label.trim().is_empty() { b.username.clone() } else { b.label.trim().to_string() };
         Ok(Json(
-            ops::create_email_account(&db, user.id, &label, b.host.trim(), b.port, b.username.trim(), &b.password, &folders, horizon)
-                .await?,
+            ops::create_email_account(
+                &db,
+                user.id,
+                &label,
+                b.host.trim(),
+                b.port,
+                b.username.trim(),
+                &b.password,
+                &folders,
+                horizon,
+            )
+            .await?,
         ))
     }
 
@@ -4646,7 +4876,9 @@ mod email_handlers {
             last_result: None,
             created_at: chrono::Utc::now(),
         };
-        let folders = email::test_account(&probe, email::Reach::for_caller(user.is_owner)).await.map_err(AppError::InvalidInput)?;
+        let folders = email::test_account(&probe, email::Reach::for_caller(user.is_owner))
+            .await
+            .map_err(AppError::InvalidInput)?;
         Ok(Json(json!({ "ok": true, "folders": folders })))
     }
 
@@ -4691,7 +4923,10 @@ mod email_handlers {
 
     /// The link-it browser: recent unlinked threads from the CALLER's own
     /// mailboxes only (each member sees their inbox, never anyone else's).
-    pub async fn email_threads_unlinked(State(db): State<Db>, user: AuthUser) -> Result<Json<Vec<EmailThread>>, ApiError> {
+    pub async fn email_threads_unlinked(
+        State(db): State<Db>,
+        user: AuthUser,
+    ) -> Result<Json<Vec<EmailThread>>, ApiError> {
         let mut threads = ops::list_unlinked_email_threads_for(&db, user.id, 200).await?;
         for t in &mut threads {
             t.is_mine = true;
@@ -4715,9 +4950,8 @@ mod email_handlers {
         Path(id): Path<i64>,
         Json(b): Json<LinkBody>,
     ) -> Result<Json<EmailThread>, ApiError> {
-        let thread = ops::get_email_thread(&db, id)
-            .await?
-            .ok_or_else(|| ApiError(AppError::NotFound("email thread".into())))?;
+        let thread =
+            ops::get_email_thread(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("email thread".into())))?;
         require_own_account(&db, &user, thread.account_id).await?;
         if let Some(pid) = b.project_id {
             require(&db, &user, pid, auth::ROLE_MEMBER).await?;
@@ -4743,9 +4977,8 @@ mod email_handlers {
         user: AuthUser,
         Path(id): Path<i64>,
     ) -> Result<Json<Vec<EmailMessage>>, ApiError> {
-        let thread = ops::get_email_thread(&db, id)
-            .await?
-            .ok_or_else(|| ApiError(AppError::NotFound("email thread".into())))?;
+        let thread =
+            ops::get_email_thread(&db, id).await?.ok_or_else(|| ApiError(AppError::NotFound("email thread".into())))?;
         match thread.project_id {
             Some(pid) => require(&db, &user, pid, auth::ROLE_MEMBER).await?,
             None => {
@@ -4967,7 +5200,8 @@ async fn ai_test_handler(_owner: AuthOwner, Json(body): Json<AiTestBody>) -> Res
             if url.is_empty() {
                 return Ok(Json(json!({ "ok": false, "error": "no URL" })));
             }
-            let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().unwrap_or_default();
+            let http =
+                reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().unwrap_or_default();
             let mut rb = http.get(format!("{url}/status"));
             if let Some(t) = body.token.as_deref().filter(|s| !s.is_empty()) {
                 rb = rb.bearer_auth(t);
@@ -5000,11 +5234,10 @@ async fn ai_pull_handler(
     _owner: AuthOwner,
     Json(body): Json<PullBody>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
-    let ollama = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured".into())))?;
-    let progress = ollama
-        .pull_stream(&body.model)
-        .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+    let ollama =
+        ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured".into())))?;
+    let progress =
+        ollama.pull_stream(&body.model).await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     let sse = stream! {
         futures_util::pin_mut!(progress);
         while let Some(item) = progress.next().await {
@@ -5030,7 +5263,8 @@ async fn ai_embed_test_handler(
     _owner: AuthOwner,
     Json(body): Json<EmbedTestBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let ollama = ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured".into())))?;
+    let ollama =
+        ollama.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured".into())))?;
     Ok(Json(match ollama.embed_dimensions(&body.model).await {
         Ok(dim) => json!({
             "ok": true,
@@ -5050,10 +5284,13 @@ async fn ai_reembed_handler(
     Extension(root): Extension<StorageRoot>,
     _owner: AuthOwner,
 ) -> Result<Json<Value>, ApiError> {
-    let client = rag.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("RAG (ragrat) is not configured".into())))?;
-    let n = rag::reembed_all(&db, &client, &root.0)
+    let client = rag
+        .read()
         .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("RAG (ragrat) is not configured".into())))?;
+    let n =
+        rag::reembed_all(&db, &client, &root.0).await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     Ok(Json(json!({ "reindexed": n })))
 }
 
@@ -5152,10 +5389,8 @@ async fn ai_routing_handler(
 
     // Mirror into the legacy ai_routing setting: the profiles GET returns it
     // to the Settings UI, and it stays a correct fallback for old builds.
-    let mut table: serde_json::Map<String, Value> = ops::get_app_setting(&db, "ai_routing")
-        .await?
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let mut table: serde_json::Map<String, Value> =
+        ops::get_app_setting(&db, "ai_routing").await?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
 
     // If a runner is specified, store the full protocol object. Otherwise use
     // the legacy integer shape (backward-compatible with existing tools/librarian).
@@ -5168,8 +5403,12 @@ async fn ai_routing_handler(
         table.insert(body.task_class, entry);
     } else {
         match body.id {
-            Some(id) => { table.insert(body.task_class, json!(id)); }
-            None => { table.remove(&body.task_class); }
+            Some(id) => {
+                table.insert(body.task_class, json!(id));
+            }
+            None => {
+                table.remove(&body.task_class);
+            }
         }
     }
     ops::set_app_setting(&db, "ai_routing", &Value::Object(table).to_string()).await?;
@@ -5178,10 +5417,7 @@ async fn ai_routing_handler(
 
 /// `GET /ai/protocols` — every protocol with its full version history and the
 /// parsed engine of each version (owner-only; this is the Settings surface).
-async fn protocols_list_handler(
-    State(db): State<Db>,
-    _owner: AuthOwner,
-) -> Result<Json<Value>, ApiError> {
+async fn protocols_list_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<Json<Value>, ApiError> {
     let mut out = Vec::new();
     for (rec, _active) in ganban_core::protocols::list_protocols(&db).await? {
         let versions = ganban_core::protocols::list_versions(&db, rec.id).await?;
@@ -5278,7 +5514,13 @@ async fn protocol_create_handler(
     }
     let user_id = auth::ensure_owner(&db).await.ok();
     let (_, version, hash) = ganban_core::protocols::upsert_protocol_version(
-        &db, body.slug.trim(), body.name.trim(), &fm_str, &body.briefing, user_id, body.activate,
+        &db,
+        body.slug.trim(),
+        body.name.trim(),
+        &fm_str,
+        &body.briefing,
+        user_id,
+        body.activate,
     )
     .await?;
     Ok(Json(json!({ "slug": body.slug.trim(), "version": version, "content_hash": hash })))
@@ -5412,7 +5654,9 @@ async fn protocol_dry_run_handler(
                         _ => t,
                     };
                     match serde_json::from_str::<Vec<Value>>(sliced) {
-                        Ok(arr) if !arr.is_empty() => (true, format!("returned a parseable JSON array ({} entries)", arr.len())),
+                        Ok(arr) if !arr.is_empty() => {
+                            (true, format!("returned a parseable JSON array ({} entries)", arr.len()))
+                        }
                         Ok(_) => (false, "returned an EMPTY JSON array for a fixture with 5 entries".into()),
                         Err(e) => (false, format!("output did not parse as JSON: {e}")),
                     }
@@ -5515,11 +5759,8 @@ async fn oracle_list_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<
         .into_iter()
         .map(|w| {
             let def: Value = serde_json::from_str(&w.definition_json).unwrap_or(json!({ "nodes": [], "wires": [] }));
-            let last_results: Value = w
-                .last_results_json
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(Value::Null);
+            let last_results: Value =
+                w.last_results_json.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null);
             json!({
                 "id": w.id, "name": w.name, "status": w.status,
                 "definition": def, "updated_at": w.updated_at, "last_run_at": w.last_run_at,
@@ -5597,11 +5838,8 @@ async fn oracle_runs_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<
                 .and_then(|id| names.get(&id).cloned())
                 .unwrap_or_else(|| r.workflow_slug.clone());
             let workflow_id = r.workflow_slug.strip_prefix("oracle:").and_then(|id| id.parse::<i64>().ok());
-            let results: Value = r
-                .results_json
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(Value::Null);
+            let results: Value =
+                r.results_json.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null);
             json!({
                 "id": r.id, "name": name, "status": r.status,
                 "created_at": r.created_at, "updated_at": r.updated_at,
@@ -5616,10 +5854,7 @@ async fn oracle_runs_handler(State(db): State<Db>, _owner: AuthOwner) -> Result<
 /// agent tasks — model steps can take minutes and held connections die).
 /// Abort the active run of a workflow (manual or scheduled). Nodes not yet
 /// executed are marked aborted; the in-flight node's request is dropped.
-async fn oracle_cancel_handler(
-    _owner: AuthOwner,
-    Path(id): Path<i64>,
-) -> Result<Json<Value>, ApiError> {
+async fn oracle_cancel_handler(_owner: AuthOwner, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
     let cancelled = oracle_run::cancel_workflow_run(id);
     Ok(Json(json!({ "cancelled": cancelled })))
 }
@@ -5650,9 +5885,11 @@ async fn oracle_run_handler(
     let user_id = auth::ensure_owner(&db).await?;
     let ollama_client = ollama.read().await.clone();
 
-    let job_id = format!("oracle-{}-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
-        std::process::id());
+    let job_id = format!(
+        "oracle-{}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+        std::process::id()
+    );
     agent_task_store().lock().await.insert(job_id.clone(), AgentTaskStatus::Running { progress: None });
 
     let store = agent_task_store().clone();
@@ -5660,7 +5897,17 @@ async fn oracle_run_handler(
     let root_path = root.0.clone();
     tokio::spawn(async move {
         let progress = Some((store.clone(), job_id_for_task.clone()));
-        let result = oracle_run::run_workflow(&db, ollama_client.as_ref(), &root_path, &wf, user_id, from.as_deref(), only, progress).await;
+        let result = oracle_run::run_workflow(
+            &db,
+            ollama_client.as_ref(),
+            &root_path,
+            &wf,
+            user_id,
+            from.as_deref(),
+            only,
+            progress,
+        )
+        .await;
         let entry = match result {
             Ok(v) => AgentTaskStatus::Done { result: v, error: None },
             Err(e) => AgentTaskStatus::Done { result: Value::Null, error: Some(e.to_string()) },
@@ -5706,16 +5953,19 @@ async fn agent_task_handler(
     if !ROUTING_CLASSES.contains(&body.task_class.as_str()) {
         return Err(ApiError(AppError::InvalidInput(format!(
             "unknown task class '{}' (known: {})",
-            body.task_class, ROUTING_CLASSES.join(", ")
+            body.task_class,
+            ROUTING_CLASSES.join(", ")
         ))));
     }
     let user_id = auth::ensure_owner(&db).await?;
     let ollama_client = ollama.read().await.clone();
 
     // Generate a job ID and insert a 'running' entry.
-    let job_id = format!("agent-{}-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
-        std::process::id());
+    let job_id = format!(
+        "agent-{}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+        std::process::id()
+    );
     agent_task_store().lock().await.insert(job_id.clone(), AgentTaskStatus::Running { progress: None });
 
     // Spawn the task — it runs to completion in the background and writes its
@@ -5736,7 +5986,8 @@ async fn agent_task_handler(
             None,
             user_id,
             profile_id,
-        ).await;
+        )
+        .await;
         let entry = match result {
             Ok(r) => AgentTaskStatus::Done {
                 result: json!({
@@ -5748,10 +5999,7 @@ async fn agent_task_handler(
                 }),
                 error: None,
             },
-            Err(e) => AgentTaskStatus::Done {
-                result: json!(null),
-                error: Some(e.to_string()),
-            },
+            Err(e) => AgentTaskStatus::Done { result: json!(null), error: Some(e.to_string()) },
         };
         store.lock().await.insert(job_id_for_task, entry);
     });
@@ -5762,10 +6010,7 @@ async fn agent_task_handler(
 /// `GET /ai/agent-task/:id` — poll for an async agent task's result. The owner's
 /// alone: only the owner starts these jobs, and their results can carry project
 /// content (job ids are a timestamp and a pid, so they're guessable).
-async fn agent_task_status_handler(
-    _owner: AuthOwner,
-    Path(job_id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
+async fn agent_task_status_handler(_owner: AuthOwner, Path(job_id): Path<String>) -> Result<Json<Value>, ApiError> {
     let store = agent_task_store().lock().await;
     match store.get(&job_id) {
         Some(status) => Ok(Json(serde_json::to_value(status).unwrap_or(json!({"status": "running"})))),
@@ -5787,7 +6032,11 @@ async fn ocr_handler(
     Query(q): Query<OcrQuery>,
     body: axum::body::Body,
 ) -> Result<Json<Value>, ApiError> {
-    let client = rag.read().await.clone().ok_or_else(|| ApiError(AppError::NotFound("ragrat is not enabled on this host — cannot OCR".into())))?;
+    let client = rag
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError(AppError::NotFound("ragrat is not enabled on this host — cannot OCR".into())))?;
     let bytes = axum::body::to_bytes(body, 100 * 1024 * 1024) // 100 MB cap
         .await
         .map_err(|_| AppError::InvalidInput("could not read PDF body".into()))?;
@@ -5796,23 +6045,19 @@ async fn ocr_handler(
     }
     let file_name = q.file_name.unwrap_or_else(|| "scan.pdf".into());
 
-    let job_id = format!("ocr-{}-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
-        std::process::id());
+    let job_id = format!(
+        "ocr-{}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+        std::process::id()
+    );
     agent_task_store().lock().await.insert(job_id.clone(), AgentTaskStatus::Running { progress: None });
 
     let store = agent_task_store().clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(async move {
         let entry = match client.ocr(&file_name, &bytes).await {
-            Ok(text) => AgentTaskStatus::Done {
-                result: json!({ "text": text, "chars": text.len() }),
-                error: None,
-            },
-            Err(e) => AgentTaskStatus::Done {
-                result: json!(null),
-                error: Some(format!("ragrat OCR failed: {e}")),
-            },
+            Ok(text) => AgentTaskStatus::Done { result: json!({ "text": text, "chars": text.len() }), error: None },
+            Err(e) => AgentTaskStatus::Done { result: json!(null), error: Some(format!("ragrat OCR failed: {e}")) },
         };
         store.lock().await.insert(job_id_for_task, entry);
     });
@@ -5934,10 +6179,7 @@ async fn ai_model_info_handler(
         .await
         .clone()
         .ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured on this host".into())))?;
-    let info = client
-        .model_info(q.model.trim())
-        .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+    let info = client.model_info(q.model.trim()).await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     Ok(Json(info))
 }
 
@@ -5957,10 +6199,8 @@ async fn ai_models_handler(
 ) -> Result<Json<Vec<String>>, ApiError> {
     if let Some(base_url) = q.endpoint.as_deref().and_then(ollama::OllamaConfig::norm) {
         let remote = ollama::OllamaClient::new(ollama::OllamaConfig { base_url });
-        let models = remote
-            .list_models()
-            .await
-            .map_err(|e| ApiError(AppError::InvalidInput(format!("remote engine: {e}"))))?;
+        let models =
+            remote.list_models().await.map_err(|e| ApiError(AppError::InvalidInput(format!("remote engine: {e}"))))?;
         return Ok(Json(models));
     }
     let client = ollama
@@ -5968,10 +6208,7 @@ async fn ai_models_handler(
         .await
         .clone()
         .ok_or_else(|| ApiError(AppError::NotFound("Ollama is not configured on this host".into())))?;
-    let models = client
-        .list_models()
-        .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+    let models = client.list_models().await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     Ok(Json(models))
 }
 
@@ -5987,10 +6224,7 @@ async fn ai_jobs_handler(
         .await
         .clone()
         .ok_or_else(|| ApiError(AppError::NotFound("RAG is not configured on this host".into())))?;
-    let jobs = client
-        .list_jobs()
-        .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+    let jobs = client.list_jobs().await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     let mut allowed: std::collections::HashMap<i64, bool> = std::collections::HashMap::new();
     let mut out = Vec::new();
     for job in jobs {
@@ -6033,10 +6267,7 @@ async fn ai_job_get_handler(
         .await
         .clone()
         .ok_or_else(|| ApiError(AppError::NotFound("RAG is not configured on this host".into())))?;
-    let mut job = client
-        .get_job(&job_id)
-        .await
-        .map_err(|_| ApiError(AppError::NotFound("job not found".into())))?;
+    let mut job = client.get_job(&job_id).await.map_err(|_| ApiError(AppError::NotFound("job not found".into())))?;
     let pid = rag::job_project_id(&job);
     let visible = match pid {
         Some(p) => user.is_owner || auth::member_role(&db, p, user.id).await?.is_some(),
@@ -6065,10 +6296,7 @@ async fn ai_job_cancel_handler(
         .await
         .clone()
         .ok_or_else(|| ApiError(AppError::NotFound("RAG is not configured on this host".into())))?;
-    let jobs = client
-        .list_jobs()
-        .await
-        .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
+    let jobs = client.list_jobs().await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?;
     let job = jobs
         .iter()
         .find(|j| j.get("id").and_then(|i| i.as_str()) == Some(job_id.as_str()))
@@ -6082,16 +6310,15 @@ async fn ai_job_cancel_handler(
     if !visible {
         return Err(ApiError(AppError::NotFound("job not found".into())));
     }
-    Ok(Json(
-        client
-            .cancel_job(&job_id)
-            .await
-            .map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?,
-    ))
+    Ok(Json(client.cancel_job(&job_id).await.map_err(|e| ApiError(AppError::Io(std::io::Error::other(e))))?))
 }
 
 /// Owner-only: delete a model profile.
-async fn ai_profile_delete_handler(State(db): State<Db>, _owner: AuthOwner, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn ai_profile_delete_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     ops::delete_model_profile(&db, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -6146,13 +6373,21 @@ async fn loadout_update_handler(
     Ok(Json(ops::update_loadout(&db, id, input).await?))
 }
 
-async fn loadout_delete_handler(State(db): State<Db>, _owner: AuthOwner, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn loadout_delete_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     ops::delete_loadout(&db, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// The loadout ids a personality carries.
-async fn profile_loadouts_handler(State(db): State<Db>, _owner: AuthOwner, Path(id): Path<i64>) -> Result<Json<Vec<i64>>, ApiError> {
+async fn profile_loadouts_handler(
+    State(db): State<Db>,
+    _owner: AuthOwner,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<i64>>, ApiError> {
     Ok(Json(ops::profile_loadout_ids(&db, id).await?))
 }
 
@@ -6202,6 +6437,19 @@ async fn ai_reload_handler(
     Ok(Json(json!({ "rag_enabled": rag_enabled })))
 }
 
+/// An error as a client reads it: `{ error }`, with `code` for a refusal the client
+/// acts on and `current` for a conflict. The desktop's in-process path sends the same.
+pub fn error_body(e: &AppError) -> Value {
+    let mut body = json!({ "error": e.to_string() });
+    if let Some(code) = e.code() {
+        body["code"] = json!(code);
+    }
+    if let Some(current) = e.current() {
+        body["current"] = current.clone();
+    }
+    body
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = if self.0.is_not_found() {
@@ -6212,14 +6460,12 @@ impl IntoResponse for ApiError {
             StatusCode::UNAUTHORIZED
         } else if self.0.is_forbidden() {
             StatusCode::FORBIDDEN
+        } else if self.0.is_conflict() {
+            StatusCode::CONFLICT
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
         };
-        let body = match self.0.code() {
-            Some(code) => Json(json!({ "error": self.0.to_string(), "code": code })),
-            None => Json(json!({ "error": self.0.to_string() })),
-        };
-        (status, body).into_response()
+        (status, Json(error_body(&self.0))).into_response()
     }
 }
 
@@ -6237,13 +6483,25 @@ mod api_error_tests {
     #[tokio::test]
     async fn a_refusal_sends_its_code_next_to_the_message() {
         let code = ganban_core::error::codes::AI_FILE_TOO_LARGE;
-        assert!(AppError::Refused { code, message: String::new() }.is_invalid_input(), "other transports map it to 400 too");
+        assert!(
+            AppError::Refused { code, message: String::new() }.is_invalid_input(),
+            "other transports map it to 400 too"
+        );
         let (status, body) = body_of(AppError::Refused { code, message: "too big".into() }).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["code"], code);
         assert_eq!(body["error"], "Invalid input: too big");
         let (_, plain) = body_of(AppError::InvalidInput("nope".into())).await;
         assert!(plain.get("code").is_none(), "{plain}");
+    }
+
+    #[tokio::test]
+    async fn a_conflict_is_409_with_its_code_and_the_current_row() {
+        let code = ganban_core::error::codes::TASK_CHANGED;
+        let e = AppError::Conflict { code, message: "changed".into(), current: Box::new(json!({ "id": 7 })) };
+        let (status, body) = body_of(e).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!((body["code"].as_str(), body["current"]["id"].as_i64()), (Some(code), Some(7)));
     }
 }
 
@@ -6265,7 +6523,6 @@ mod proposal_tests {
         p
     }
 
-
     async fn ledger_rows(db: &Db) -> Vec<(String, String, i64, Option<i64>)> {
         sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
             "SELECT status, tool, project_id, chat_id FROM agent_actions ORDER BY id",
@@ -6279,9 +6536,18 @@ mod proposal_tests {
     /// and re-check membership at proposal time).
     async fn seed_member(db: &Db, id: i64, name: &str, pid: i64) {
         sqlx::query("INSERT OR IGNORE INTO users (id, username, full_name) VALUES (?, ?, ?)")
-            .bind(id).bind(name).bind(name).execute(db).await.unwrap();
+            .bind(id)
+            .bind(name)
+            .bind(name)
+            .execute(db)
+            .await
+            .unwrap();
         sqlx::query("INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (?, ?, 'member')")
-            .bind(pid).bind(id).execute(db).await.unwrap();
+            .bind(pid)
+            .bind(id)
+            .execute(db)
+            .await
+            .unwrap();
     }
 
     /// The member-agent return path end to end (MEMBER_AGENTS §2§7): an
@@ -6294,15 +6560,42 @@ mod proposal_tests {
         let proj = dispatch(&db, "create_project", &j!({ "input": { "name": "Shared" } })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
         seed_member(&db, 2, "alice", pid).await;
-        let task = dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "Charter summaries", "status": "To Do", "priority": "Medium" }
-        })).await.unwrap();
+        let task = dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "Charter summaries", "status": "To Do", "priority": "Medium" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
         // Alice's client submits her local agent's draft — validated by the
         // same prepare_write as a host chat turn, chat_id 0 = "no conversation".
-        let pw = tools::prepare_write(&db, 2, pid, "create_comment", &j!({ "task_id": tid, "content": "Draft: 3 charters compared …" })).await.unwrap();
-        let id = ganban_core::proposals::register(&db, pid, 2, None, 0, pw.command, &pw.args, &pw.summary, &pw.details, Some("agent")).await.unwrap();
+        let pw = tools::prepare_write(
+            &db,
+            2,
+            pid,
+            "create_comment",
+            &j!({ "task_id": tid, "content": "Draft: 3 charters compared …" }),
+        )
+        .await
+        .unwrap();
+        let id = ganban_core::proposals::register(
+            &db,
+            pid,
+            2,
+            None,
+            0,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            Some("agent"),
+        )
+        .await
+        .unwrap();
 
         // Attribution survives storage: the feed row says who and how.
         let mine = ganban_core::proposals::list_for_user(&db, 2, false).await.unwrap();
@@ -6315,7 +6608,10 @@ mod proposal_tests {
         // …and the ledger row carries: no chat link, both identities, no host model.
         let rows = sqlx::query_as::<_, (String, i64, Option<i64>, Option<i64>, Option<String>)>(
             "SELECT status, user_id, approver_id, chat_id, model FROM agent_actions ORDER BY id DESC LIMIT 1",
-        ).fetch_one(&db).await.unwrap();
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
         assert_eq!(rows.0, "applied");
         assert_eq!(rows.1, 2, "proposer = Alice");
         assert_eq!(rows.2, Some(2), "approver = Alice");
@@ -6333,19 +6629,40 @@ mod proposal_tests {
         let pid = proj["id"].as_i64().unwrap();
         seed_member(&db, 1, "owner", pid).await;
         seed_member(&db, 2, "alice", pid).await;
-        let task = dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task = dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
         // A non-member target is refused at proposal time, not at apply time.
-        assert!(tools::prepare_write(&db, 1, pid, "assign_task", &j!({ "task_id": tid, "user_id": 99 })).await.is_err());
+        assert!(tools::prepare_write(&db, 1, pid, "assign_task", &j!({ "task_id": tid, "user_id": 99 }))
+            .await
+            .is_err());
 
         let pw = tools::prepare_write(&db, 1, pid, "assign_task", &j!({ "task_id": tid, "user_id": 2 })).await.unwrap();
         assert_eq!(pw.args["assignedBy"], 1, "assigner identity baked from the proposer");
         assert!(pw.summary.contains("alice"), "the card reads like a sentence: {}", pw.summary);
 
-        let id = ganban_core::proposals::register(&db, pid, 1, None, 7, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        let id = ganban_core::proposals::register(
+            &db,
+            pid,
+            1,
+            None,
+            7,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            None,
+        )
+        .await
+        .unwrap();
         consume_and_apply(&db, &test_root(), id, 1).await.unwrap();
 
         let assignees = ganban_core::assignments::assignees_for_task(&db, tid).await.unwrap();
@@ -6361,7 +6678,20 @@ mod proposal_tests {
         let pid = proj["id"].as_i64().unwrap();
 
         let pw = tools::prepare_write(&db, 1, pid, "create_task", &j!({ "title": "Ledgered task" })).await.unwrap();
-        let id = ganban_core::proposals::register(&db, pid, 1, Some(7), 42, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        let id = ganban_core::proposals::register(
+            &db,
+            pid,
+            1,
+            Some(7),
+            42,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            None,
+        )
+        .await
+        .unwrap();
 
         let out = consume_and_apply(&db, &test_root(), id, 1).await.unwrap();
         assert_eq!(out["ok"], true);
@@ -6387,7 +6717,20 @@ mod proposal_tests {
         let pid = proj["id"].as_i64().unwrap();
 
         let pw = tools::prepare_write(&db, 1, pid, "create_task", &j!({ "title": "Never created" })).await.unwrap();
-        let id = ganban_core::proposals::register(&db, pid, 1, None, 5, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        let id = ganban_core::proposals::register(
+            &db,
+            pid,
+            1,
+            None,
+            5,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            None,
+        )
+        .await
+        .unwrap();
 
         consume_and_reject(&db, id, 1).await.unwrap();
 
@@ -6409,16 +6752,32 @@ mod proposal_tests {
     #[tokio::test]
     async fn approval_rechecks_the_proposals_scope() {
         let db = test_db("rescope").await;
-        let a = dispatch(&db, "create_project", &j!({ "input": { "name": "A" }, "createdBy": 1 })).await.unwrap()["id"].as_i64().unwrap();
-        let b = dispatch(&db, "create_project", &j!({ "input": { "name": "B" }, "createdBy": 1 })).await.unwrap()["id"].as_i64().unwrap();
+        let a = dispatch(&db, "create_project", &j!({ "input": { "name": "A" }, "createdBy": 1 })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let b = dispatch(&db, "create_project", &j!({ "input": { "name": "B" }, "createdBy": 1 })).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
         seed_member(&db, 2, "alice", a).await;
-        let tid = dispatch(&db, "create_task", &j!({
-            "input": { "project_id": a, "title": "T", "status": "To Do", "priority": "Low" }
-        })).await.unwrap()["id"].as_i64().unwrap();
+        let tid = dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": a, "title": "T", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
 
         // The task moves to project B after Alice's agent proposed a comment on it.
-        let pw = tools::prepare_write(&db, 2, a, "create_comment", &j!({ "task_id": tid, "content": "hi" })).await.unwrap();
-        let id = ganban_core::proposals::register(&db, a, 2, None, 0, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        let pw =
+            tools::prepare_write(&db, 2, a, "create_comment", &j!({ "task_id": tid, "content": "hi" })).await.unwrap();
+        let id =
+            ganban_core::proposals::register(&db, a, 2, None, 0, pw.command, &pw.args, &pw.summary, &pw.details, None)
+                .await
+                .unwrap();
         sqlx::query("UPDATE tasks SET project_id = ? WHERE id = ?").bind(b).bind(tid).execute(&db).await.unwrap();
         let err = consume_and_apply(&db, &test_root(), id, 2).await.unwrap_err().to_string();
         assert!(err.contains("no longer applies"), "{err}");
@@ -6439,21 +6798,46 @@ mod proposal_tests {
     #[tokio::test]
     async fn failed_apply_reinserts_the_proposal_and_ledgers_nothing() {
         let db = test_db("retry").await;
-        let proj = dispatch(&db, "create_project", &j!({ "input": { "name": "Retry" }, "createdBy": 1 })).await.unwrap();
+        let proj =
+            dispatch(&db, "create_project", &j!({ "input": { "name": "Retry" }, "createdBy": 1 })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        let task = dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task = dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "T", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
-        let pw = tools::prepare_write(&db, 1, pid, "update_task", &j!({ "task_id": tid, "title": "Renamed" })).await.unwrap();
-        let id = ganban_core::proposals::register(&db, pid, 1, None, 9, pw.command, &pw.args, &pw.summary, &pw.details, None).await.unwrap();
+        let pw = tools::prepare_write(&db, 1, pid, "update_task", &j!({ "task_id": tid, "title": "Renamed" }))
+            .await
+            .unwrap();
+        let id = ganban_core::proposals::register(
+            &db,
+            pid,
+            1,
+            None,
+            9,
+            pw.command,
+            &pw.args,
+            &pw.summary,
+            &pw.details,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Sabotage the target so apply fails (NotFound), then verify retryability.
         dispatch(&db, "permanently_delete_task", &j!({ "taskId": tid })).await.unwrap();
         assert!(consume_and_apply(&db, &test_root(), id, 1).await.is_err());
         assert!(ledger_rows(&db).await.is_empty(), "a failed apply must not be ledgered as applied");
-        assert!(ganban_core::proposals::peek_meta(&db, id).await.unwrap().is_some(), "a failed apply must reinsert the proposal for retry");
+        assert!(
+            ganban_core::proposals::peek_meta(&db, id).await.unwrap().is_some(),
+            "a failed apply must reinsert the proposal for retry"
+        );
     }
 }
 
@@ -6473,15 +6857,34 @@ mod routing_tests {
     #[tokio::test]
     async fn tool_loop_routes_to_the_configured_tier_and_falls_back_cleanly() {
         let db = test_db("route").await;
-        let chat = ollama::ChatParams { model: "light:8b".into(), temperature: Some(0.7), max_tokens: None, num_ctx: None, endpoint: None };
+        let chat = ollama::ChatParams {
+            model: "light:8b".into(),
+            temperature: Some(0.7),
+            max_tokens: None,
+            num_ctx: None,
+            endpoint: None,
+        };
 
         // No routing table → the conversation's own params.
         assert_eq!(resolve_task_params(&db, "tools", &chat).await.model, "light:8b");
 
         // Route "tools" at a strong tool-capable profile → the loop gets it.
-        let strong = ops::upsert_model_profile(&db, None, "Tool runner", "qwen2.5:14b", None, Some(0.2), None, Some("tools"), None, None, None, None)
-            .await
-            .unwrap();
+        let strong = ops::upsert_model_profile(
+            &db,
+            None,
+            "Tool runner",
+            "qwen2.5:14b",
+            None,
+            Some(0.2),
+            None,
+            Some("tools"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         ops::set_app_setting(&db, "ai_routing", &j!({ "tools": strong.id }).to_string()).await.unwrap();
         let routed = resolve_task_params(&db, "tools", &chat).await;
         assert_eq!(routed.model, "qwen2.5:14b");
@@ -6498,7 +6901,10 @@ mod routing_tests {
     #[tokio::test]
     async fn routing_table_is_config_set_and_cleared_per_class() {
         let db = test_db("table").await;
-        let p = ops::upsert_model_profile(&db, None, "T", "qwen2.5:14b", None, None, None, None, None, None, None, None).await.unwrap();
+        let p =
+            ops::upsert_model_profile(&db, None, "T", "qwen2.5:14b", None, None, None, None, None, None, None, None)
+                .await
+                .unwrap();
 
         assert_eq!(routed_profile_id(&db, "tools").await, None, "empty table");
         ops::set_app_setting(&db, "ai_routing", &j!({ "tools": p.id }).to_string()).await.unwrap();
@@ -6526,22 +6932,60 @@ mod inbox_tests {
     #[tokio::test]
     async fn inbox_lists_only_the_callers_proposals_with_diff_details() {
         let db = test_db("list").await;
-        let proj = dispatch(&db, "create_project", &j!({ "input": { "name": "Inbox" }, "createdBy": 1 })).await.unwrap();
+        let proj =
+            dispatch(&db, "create_project", &j!({ "input": { "name": "Inbox" }, "createdBy": 1 })).await.unwrap();
         let pid = proj["id"].as_i64().unwrap();
-        sqlx::query("INSERT INTO users (id, username, full_name) VALUES (2, 'other', 'Other')").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO users (id, username, full_name) VALUES (2, 'other', 'Other')")
+            .execute(&db)
+            .await
+            .unwrap();
         auth::add_project_member(&db, pid, 2, auth::ROLE_MEMBER).await.unwrap();
-        let task = dispatch(&db, "create_task", &j!({
-            "input": { "project_id": pid, "title": "Old title", "status": "To Do", "priority": "Low" }
-        })).await.unwrap();
+        let task = dispatch(
+            &db,
+            "create_task",
+            &j!({
+                "input": { "project_id": pid, "title": "Old title", "status": "To Do", "priority": "Low" }
+            }),
+        )
+        .await
+        .unwrap();
         let tid = task["id"].as_i64().unwrap();
 
-        let upd = tools::prepare_write(&db, 1, pid, "update_task", &j!({ "task_id": tid, "title": "New title" })).await.unwrap();
+        let upd = tools::prepare_write(&db, 1, pid, "update_task", &j!({ "task_id": tid, "title": "New title" }))
+            .await
+            .unwrap();
         // The diff snapshots only the touched fields: before from the live row.
         assert_eq!(upd.details["before"]["title"], "Old title");
         assert_eq!(upd.details["after"]["title"], "New title");
-        ganban_core::proposals::register(&db, pid, 1, None, 10, upd.command, &upd.args, &upd.summary, &upd.details, None).await.unwrap();
+        ganban_core::proposals::register(
+            &db,
+            pid,
+            1,
+            None,
+            10,
+            upd.command,
+            &upd.args,
+            &upd.summary,
+            &upd.details,
+            None,
+        )
+        .await
+        .unwrap();
         let other = tools::prepare_write(&db, 2, pid, "create_task", &j!({ "title": "Someone else's" })).await.unwrap();
-        ganban_core::proposals::register(&db, pid, 2, None, 11, other.command, &other.args, &other.summary, &other.details, None).await.unwrap();
+        ganban_core::proposals::register(
+            &db,
+            pid,
+            2,
+            None,
+            11,
+            other.command,
+            &other.args,
+            &other.summary,
+            &other.details,
+            None,
+        )
+        .await
+        .unwrap();
 
         let mine = ganban_core::proposals::list_for_user(&db, 1, false).await.unwrap();
         assert_eq!(mine.len(), 1, "the inbox never shows another member's proposals");
@@ -6557,15 +7001,37 @@ mod inbox_tests {
     #[tokio::test]
     async fn ledger_lists_per_project_and_globally_newest_first() {
         let db = test_db("ledger_list").await;
-        let a = dispatch(&db, "create_project", &j!({ "input": { "name": "A" } })).await.unwrap()["id"].as_i64().unwrap();
-        let b = dispatch(&db, "create_project", &j!({ "input": { "name": "B" } })).await.unwrap()["id"].as_i64().unwrap();
+        let a =
+            dispatch(&db, "create_project", &j!({ "input": { "name": "A" } })).await.unwrap()["id"].as_i64().unwrap();
+        let b =
+            dispatch(&db, "create_project", &j!({ "input": { "name": "B" } })).await.unwrap()["id"].as_i64().unwrap();
         for (pid, tool) in [(a, "create_task"), (b, "create_task"), (a, "delete_task")] {
-            ops::record_agent_action(&db, ops::NewAgentAction {
-                status: "applied", user_id: 1, profile_id: None, project_id: Some(pid), chat_id: None,
-                routine_id: None, tool, summary: "s", args_json: "{}", result_json: None,
-                model: None, prompt_tokens: None, completion_tokens: None, duration_ms: None,
-                protocol_slug: None, protocol_version: None, content_hash: None, parent_action_id: None, approver_id: None,
-            }).await.unwrap();
+            ops::record_agent_action(
+                &db,
+                ops::NewAgentAction {
+                    status: "applied",
+                    user_id: 1,
+                    profile_id: None,
+                    project_id: Some(pid),
+                    chat_id: None,
+                    routine_id: None,
+                    tool,
+                    summary: "s",
+                    args_json: "{}",
+                    result_json: None,
+                    model: None,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    duration_ms: None,
+                    protocol_slug: None,
+                    protocol_version: None,
+                    content_hash: None,
+                    parent_action_id: None,
+                    approver_id: None,
+                },
+            )
+            .await
+            .unwrap();
         }
         let on_a = ops::list_agent_actions(&db, Some(a), 100).await.unwrap();
         assert_eq!(on_a.len(), 2);
@@ -6603,8 +7069,16 @@ mod protocol_resolution_tests {
         // Legacy setting says ollama; the table says pi. The table must win.
         ops::set_app_setting(&db, "ai_routing", r#"{"structure_toc": {"runner":"ollama"}}"#).await.unwrap();
         let (_, v, hash) = ganban_core::protocols::upsert_protocol_version(
-            &db, "structure_toc", "ToC", &manual_fm("structure_toc", "pi", Some("claude-haiku-4-5")), "briefing", None, true,
-        ).await.unwrap();
+            &db,
+            "structure_toc",
+            "ToC",
+            &manual_fm("structure_toc", "pi", Some("claude-haiku-4-5")),
+            "briefing",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
 
         let p = resolve_protocol(&db, "structure_toc").await;
         assert!(matches!(p.runner, Runner::Pi), "the table is authoritative");
@@ -6624,13 +7098,9 @@ mod protocol_resolution_tests {
     #[tokio::test]
     async fn routing_migration_is_one_time_and_preserves_both_shapes() {
         let db = test_db("migration").await;
-        ops::set_app_setting(
-            &db,
-            "ai_routing",
-            r#"{"tools": 3, "structure_toc": {"runner":"pi","model":"glm-5.2"}}"#,
-        )
-        .await
-        .unwrap();
+        ops::set_app_setting(&db, "ai_routing", r#"{"tools": 3, "structure_toc": {"runner":"pi","model":"glm-5.2"}}"#)
+            .await
+            .unwrap();
         // Profile 3 doesn't exist in this fixture — the migration copies the
         // pointer as-is (resolution treats a stale pointer as unrouted, same
         // as the legacy path did).
@@ -6748,9 +7218,17 @@ mod invoke_wiring_tests {
 
         /// Enrol a device for a new member of `project`; returns its bearer token.
         async fn member_device(&self, project: i64, name: &str) -> String {
-            let invite = auth::create_enrollment_token(&self.db, "invite", None, Some(project), Some("member"), Some(name), auth::INVITE_TTL_SECS)
-                .await
-                .unwrap();
+            let invite = auth::create_enrollment_token(
+                &self.db,
+                "invite",
+                None,
+                Some(project),
+                Some("member"),
+                Some(name),
+                auth::INVITE_TTL_SECS,
+            )
+            .await
+            .unwrap();
             auth::enroll(&self.db, &invite, Some("phone"), Some(name)).await.unwrap().device_token
         }
     }
@@ -6831,7 +7309,9 @@ mod invoke_wiring_tests {
         host.invoke(Who::Loopback, "create_comment", comment(open)).await;
 
         let bo_sees = |status: StatusCode| status == StatusCode::OK;
-        assert!(bo_sees(route(&host, Who::Device(&bo), "GET", &format!("/files/{}", on_open["id"]), Body::empty()).await.0));
+        assert!(bo_sees(
+            route(&host, Who::Device(&bo), "GET", &format!("/files/{}", on_open["id"]), Body::empty()).await.0
+        ));
         for (method, path, body) in [
             ("GET", format!("/files/{}", on_secret["id"]), Body::empty()),
             ("DELETE", format!("/files/{}", on_secret["id"]), Body::empty()),
@@ -6842,28 +7322,40 @@ mod invoke_wiring_tests {
             let (status, body) = route(&host, Who::Device(&bo), method, &path, body).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path} on a hidden task looks absent: {body}");
         }
-        let (_, listed) = route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
+        let (_, listed) =
+            route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
         let listed: Vec<i64> = listed.as_array().unwrap().iter().map(|a| a["task_id"].as_i64().unwrap()).collect();
         assert_eq!(listed, vec![open], "the project's file list leaves out the hidden task's files");
 
         // Files stored only on the attaching device (is_shared = 0) list too, under the same rule.
         for t in [open, secret] {
-            let local = json!({ "input": { "task_id": t, "file_path": "/Users/me/notes.md", "file_name": "notes.md" } });
+            let local =
+                json!({ "input": { "task_id": t, "file_path": "/Users/me/notes.md", "file_name": "notes.md" } });
             host.invoke(Who::Loopback, "create_file_attachment", local).await;
         }
         let local_on = |rows: &Value| -> Vec<i64> {
             let rows = rows.as_array().unwrap().iter().filter(|a| a["is_shared"] == false);
             rows.map(|a| a["task_id"].as_i64().unwrap()).collect()
         };
-        let (_, owner_rows) = route(&host, Who::Loopback, "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
+        let (_, owner_rows) =
+            route(&host, Who::Loopback, "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
         let mut both = local_on(&owner_rows);
         both.sort();
         assert_eq!(both, vec![open.min(secret), open.max(secret)], "the owner (local mode) gets both local files");
-        let (_, bo_rows) = route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
+        let (_, bo_rows) =
+            route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/attachments"), Body::empty()).await;
         assert_eq!(local_on(&bo_rows), vec![open], "a local file on a hidden task stays absent");
 
-        route(&host, Who::Loopback, "POST", &format!("/comments/{}/react", c_secret["id"]), Body::from(r#"{"emoji":"👍"}"#)).await;
-        let (_, tallies) = route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/reactions"), Body::empty()).await;
+        route(
+            &host,
+            Who::Loopback,
+            "POST",
+            &format!("/comments/{}/react", c_secret["id"]),
+            Body::from(r#"{"emoji":"👍"}"#),
+        )
+        .await;
+        let (_, tallies) =
+            route(&host, Who::Device(&bo), "GET", &format!("/projects/{pid}/reactions"), Body::empty()).await;
         assert!(tallies.as_array().unwrap().is_empty(), "no tallies for hidden comments: {tallies}");
 
         // The project's agent ledger: an action on the hidden task (its summary quotes it).
@@ -6876,7 +7368,8 @@ mod invoke_wiring_tests {
                 .await
                 .unwrap();
         }
-        let (_, ledger) = route(&host, Who::Device(&bo), "GET", &format!("/agent/actions?project_id={pid}"), Body::empty()).await;
+        let (_, ledger) =
+            route(&host, Who::Device(&bo), "GET", &format!("/agent/actions?project_id={pid}"), Body::empty()).await;
         let summaries: Vec<&str> = ledger.as_array().unwrap().iter().map(|a| a["summary"].as_str().unwrap()).collect();
         assert_eq!(summaries, vec!["Retitled 'Open'"], "the ledger leaves out actions on hidden tasks");
     }
@@ -6887,18 +7380,27 @@ mod invoke_wiring_tests {
         let (_, project, _) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "P" } })).await;
         let pid = project["id"].as_i64().unwrap();
         let (_, other, _) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "Q" } })).await;
-        let event = |title: &str, project: i64| {
-            json!({ "projectId": project, "input": { "title": title, "event_date": "2026-10-13T09:00:00Z", "all_day": true, "notification_enabled": false } })
-        };
+        let event = |title: &str, project: i64| json!({ "projectId": project, "input": { "title": title, "event_date": "2026-10-13T09:00:00Z", "all_day": true, "notification_enabled": false } });
         let (_, ev, _) = host.invoke(Who::Loopback, "create_event", event("Launch", pid)).await;
-        let (_, hidden, _) = host.invoke(Who::Loopback, "create_event", event("Elsewhere", other["id"].as_i64().unwrap())).await;
+        let (_, hidden, _) =
+            host.invoke(Who::Loopback, "create_event", event("Elsewhere", other["id"].as_i64().unwrap())).await;
         let (ev, hidden) = (ev["id"].as_i64().unwrap(), hidden["id"].as_i64().unwrap());
         let mia = host.member_device(pid, "Mia").await;
-        let invite = auth::create_enrollment_token(&host.db, "invite", None, Some(pid), Some("admin"), Some("Ana"), auth::INVITE_TTL_SECS)
-            .await
-            .unwrap();
+        let invite = auth::create_enrollment_token(
+            &host.db,
+            "invite",
+            None,
+            Some(pid),
+            Some("admin"),
+            Some("Ana"),
+            auth::INVITE_TTL_SECS,
+        )
+        .await
+        .unwrap();
         let ana = auth::enroll(&host.db, &invite, Some("phone"), Some("Ana")).await.unwrap().device_token;
-        let up = |e: i64, rel: &str| format!("/event-files/upload?event_id={e}&file_name=a.txt&file_type=text/plain&rel_path={rel}");
+        let up = |e: i64, rel: &str| {
+            format!("/event-files/upload?event_id={e}&file_name=a.txt&file_type=text/plain&rel_path={rel}")
+        };
 
         let (status, _) = route(&host, Who::Device(&mia), "POST", &up(ev, "Brief/a.txt"), Body::from("bytes")).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "a member reads an event's files, an admin adds them");
@@ -6958,19 +7460,25 @@ mod invoke_wiring_tests {
         };
         assert_eq!(get(Who::Stranger).await.unwrap().status(), StatusCode::UNAUTHORIZED);
         assert_eq!(get(Who::Device(&token)).await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(get(Who::Loopback).await.unwrap().status(), StatusCode::NOT_FOUND, "the owner gets 'unknown agent task'");
+        assert_eq!(
+            get(Who::Loopback).await.unwrap().status(),
+            StatusCode::NOT_FOUND,
+            "the owner gets 'unknown agent task'"
+        );
     }
 
     #[tokio::test]
     async fn a_members_uploads_are_logged_with_who_where_and_how_they_ended() {
         let (_guard, logs) = capture_logs();
         let host = Host::new("upload_log").await;
-        let (_, project, _) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "Brief" } })).await;
+        let (_, project, _) =
+            host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "Brief" } })).await;
         let pid = project["id"].as_i64().unwrap();
         let token = host.member_device(pid, "Mia").await;
         let path = format!("/projects/{pid}/files/upload?file_name=brief.pdf");
 
-        let stored = host.app().oneshot(host.upload_request(Who::Device(&token), &path, 3, Body::from("abc"))).await.unwrap();
+        let stored =
+            host.app().oneshot(host.upload_request(Who::Device(&token), &path, 3, Body::from("abc"))).await.unwrap();
         assert_eq!(stored.status(), StatusCode::OK);
         let too_big = host.upload_request(Who::Device(&token), &path, 1 << 40, Body::from("abc"));
         assert_eq!(host.app().oneshot(too_big).await.unwrap().status(), StatusCode::BAD_REQUEST);
@@ -6986,7 +7494,14 @@ mod invoke_wiring_tests {
         let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         let lines: Vec<&str> = text.lines().filter(|l| l.contains("upload ")).collect();
         let who = format!("→ project {pid}, 'brief.pdf'");
-        assert!(lines.iter().filter(|l| l.contains("upload started: user") && l.contains("(device ") && l.contains(&who)).count() == 3, "{text}");
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l.contains("upload started: user") && l.contains("(device ") && l.contains(&who))
+                .count()
+                == 3,
+            "{text}"
+        );
         assert!(lines.iter().any(|l| l.contains("upload stored:") && l.contains("— 3 B in")), "{text}");
         assert!(lines.iter().any(|l| l.contains("upload refused:") && l.contains("remaining storage")), "{text}");
         assert!(lines.iter().any(|l| l.contains("upload dropped:") && l.contains("disconnected")), "{text}");
@@ -6996,7 +7511,8 @@ mod invoke_wiring_tests {
     async fn invoke_runs_table_commands_for_the_owner_and_pulses_writes() {
         let host = Host::new("owner").await;
         let mut pulses = host.hub.subscribe();
-        let (status, project, label) = host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "Wired" } })).await;
+        let (status, project, label) =
+            host.invoke(Who::Loopback, "create_project", json!({ "input": { "name": "Wired" } })).await;
         assert_eq!(status, StatusCode::OK, "{project}");
         assert_eq!(label.as_deref(), Some("create_project"), "the traffic window names the command");
         assert_eq!(pulses.try_recv().unwrap().1, "projects", "a write pulses its coarse kind");
@@ -7037,14 +7553,25 @@ mod invoke_wiring_tests {
         let (status, space, _) = host.invoke(Who::Device(&token), "ensure_personal_space", json!({})).await;
         assert_eq!(status, StatusCode::OK);
         let personal = space["projectId"].as_i64().unwrap();
-        let mia: i64 = sqlx::query_scalar("SELECT personal_user_id FROM projects WHERE id = ?").bind(personal).fetch_one(&host.db).await.unwrap();
+        let mia: i64 = sqlx::query_scalar("SELECT personal_user_id FROM projects WHERE id = ?")
+            .bind(personal)
+            .fetch_one(&host.db)
+            .await
+            .unwrap();
         let chat = ops::create_chat(&host.db, personal, Some(mia), None, Some("Money")).await.unwrap().id;
-        ops::append_message(&host.db, chat, "user", "how much did I spend?", None, None, None, None, None, None).await.unwrap();
+        ops::append_message(&host.db, chat, "user", "how much did I spend?", None, None, None, None, None, None)
+            .await
+            .unwrap();
 
-        let (status, listed) = route(&host, Who::Device(&token), "GET", &format!("/chats?project_id={personal}"), Body::empty()).await;
+        let (status, listed) =
+            route(&host, Who::Device(&token), "GET", &format!("/chats?project_id={personal}"), Body::empty()).await;
         assert_eq!((status, listed.as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
         // The owner's project bypass stops at someone else's Personal lane.
-        for path in [format!("/chats?project_id={personal}"), format!("/chats/{chat}/messages"), format!("/chats/binned?project_id={personal}")] {
+        for path in [
+            format!("/chats?project_id={personal}"),
+            format!("/chats/{chat}/messages"),
+            format!("/chats/binned?project_id={personal}"),
+        ] {
             let (status, _) = route(&host, Who::Loopback, "GET", &path, Body::empty()).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
@@ -7073,10 +7600,14 @@ mod invoke_wiring_tests {
 
         let (status, _, _) = host.invoke(Who::Device(&token), "get_areas", json!({ "projectId": b })).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "a project she isn't in looks absent");
-        let (status, body, _) = host.invoke(Who::Device(&token), "create_project", json!({ "input": { "name": "C" } })).await;
+        let (status, body, _) =
+            host.invoke(Who::Device(&token), "create_project", json!({ "input": { "name": "C" } })).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         let (status, body, _) = host.invoke(Who::Device(&token), "frobnicate", json!({})).await;
-        assert_eq!((status, body["error"].as_str()), (StatusCode::NOT_FOUND, Some("Not found: unknown command 'frobnicate'")));
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::NOT_FOUND, Some("Not found: unknown command 'frobnicate'"))
+        );
     }
 
     #[tokio::test]

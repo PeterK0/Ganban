@@ -85,7 +85,16 @@ struct Stats {
 }
 
 fn line(kind: &str, label: String, date: Option<String>, amount: i64, low: i64, high: i64) -> ForecastLine {
-    ForecastLine { kind: kind.into(), label, date, amount_minor: amount, low_minor: low, high_minor: high, ledger_account_id: None, ref_id: None }
+    ForecastLine {
+        kind: kind.into(),
+        label,
+        date,
+        amount_minor: amount,
+        low_minor: low,
+        high_minor: high,
+        ledger_account_id: None,
+        ref_id: None,
+    }
 }
 
 /// Keep a projection on its side of zero: an outflow category can't project an inflow.
@@ -111,15 +120,18 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
     let today = check_date(today)?;
     let current = today[..7].to_string();
     let mut conn = db.acquire().await?;
-    let chart: Vec<LedgerAccount> =
-        sqlx::query_as("SELECT * FROM fin_ledger_accounts WHERE entity_id = ?").bind(ent.id).fetch_all(&mut *conn).await?;
+    let chart: Vec<LedgerAccount> = sqlx::query_as("SELECT * FROM fin_ledger_accounts WHERE entity_id = ?")
+        .bind(ent.id)
+        .fetch_all(&mut *conn)
+        .await?;
     let chart: HashMap<i64, LedgerAccount> = chart.into_iter().map(|a| (a.id, a)).collect();
     let budgets = targets_in(&mut conn, ent, &month).await?;
 
     // A month that's over: what happened.
     if month < current {
         let start = (super::month_start(&month) - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
-        let (opening, end) = (cash_at(&mut conn, ent, &start).await?, cash_at(&mut conn, ent, &month_end(&month)).await?);
+        let (opening, end) =
+            (cash_at(&mut conn, ent, &start).await?, cash_at(&mut conn, ent, &month_end(&month)).await?);
         let recognised = recognised_in(&mut conn, ent, &month, &month).await?;
         let mut categories = Vec::new();
         for (&id, &f) in &recognised {
@@ -151,7 +163,8 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
     .bind(ent.id)
     .fetch_one(&mut *conn)
     .await?;
-    let hist_from = add_months(&current, -MAX_HISTORY).max(first.as_deref().map(|d| d[..7].to_string()).unwrap_or_else(|| current.clone()));
+    let hist_from = add_months(&current, -MAX_HISTORY)
+        .max(first.as_deref().map(|d| d[..7].to_string()).unwrap_or_else(|| current.clone()));
     let mut months = Vec::new();
     let mut m = hist_from.clone();
     while m < current {
@@ -177,11 +190,14 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
     if months.len() >= MIN_HISTORY {
         for (account, by_month) in &per_month {
             let values: Vec<i64> = months.iter().map(|m| by_month.get(m).copied().unwrap_or(0)).collect();
-            stats.insert(*account, Stats {
-                median: median_of(&values),
-                low: values.iter().copied().min().unwrap_or(0),
-                high: values.iter().copied().max().unwrap_or(0),
-            });
+            stats.insert(
+                *account,
+                Stats {
+                    median: median_of(&values),
+                    low: values.iter().copied().min().unwrap_or(0),
+                    high: values.iter().copied().max().unwrap_or(0),
+                },
+            );
         }
     }
 
@@ -191,7 +207,11 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
     let planned = list_planned_in(&mut conn, ent, None, None).await?;
     let mut m = current.clone();
     loop {
-        let after = if m == current { today.clone() } else { (super::month_start(&m) - chrono::Duration::days(1)).format("%Y-%m-%d").to_string() };
+        let after = if m == current {
+            today.clone()
+        } else {
+            (super::month_start(&m) - chrono::Duration::days(1)).format("%Y-%m-%d").to_string()
+        };
         let end = month_end(&m);
         let mut lines = vec![if m == current {
             line("opening", "Balance today".into(), Some(today.clone()), opening, lo, hi)
@@ -207,7 +227,14 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
                     break;
                 }
                 if d > after {
-                    let mut l = line("recurring", r.label.clone(), Some(d), r.amount_minor, r.amount_low_minor, r.amount_high_minor);
+                    let mut l = line(
+                        "recurring",
+                        r.label.clone(),
+                        Some(d),
+                        r.amount_minor,
+                        r.amount_low_minor,
+                        r.amount_high_minor,
+                    );
                     l.ledger_account_id = r.ledger_account_id;
                     l.ref_id = Some(r.id);
                     if let Some(c) = r.ledger_account_id {
@@ -218,7 +245,14 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
             }
         }
         for p in planned.iter().filter(|p| p.date > after && p.date <= end) {
-            let mut l = line("planned", p.description.clone(), Some(p.date.clone()), p.amount_minor, p.amount_minor, p.amount_minor);
+            let mut l = line(
+                "planned",
+                p.description.clone(),
+                Some(p.date.clone()),
+                p.amount_minor,
+                p.amount_minor,
+                p.amount_minor,
+            );
             l.ledger_account_id = p.ledger_account_id;
             l.ref_id = Some(p.id);
             if let Some(c) = p.ledger_account_id {
@@ -230,7 +264,8 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
             let Some(la) = chart.get(&account) else { continue };
             let outflow = s.median <= 0;
             let done = if m == current { so_far.get(&account).copied().unwrap_or(0) } else { 0 };
-            let (amount, low, high) = (clip(s.median - done, outflow), clip(s.low - done, outflow), clip(s.high - done, outflow));
+            let (amount, low, high) =
+                (clip(s.median - done, outflow), clip(s.low - done, outflow), clip(s.high - done, outflow));
             if amount == 0 && low == 0 && high == 0 {
                 continue;
             }
@@ -240,10 +275,17 @@ pub async fn forecast(db: &Db, ent: &Entity, month: &str, today: &str) -> Result
             lines.push(l);
         }
         let sum = |f: fn(&ForecastLine) -> i64| lines.iter().skip(1).map(f).sum::<i64>();
-        let (end_mid, end_lo, end_hi) = (opening + sum(|l| l.amount_minor), lo + sum(|l| l.low_minor), hi + sum(|l| l.high_minor));
+        let (end_mid, end_lo, end_hi) =
+            (opening + sum(|l| l.amount_minor), lo + sum(|l| l.low_minor), hi + sum(|l| l.high_minor));
         if m == month {
             let recognised = if m == current { recognised_in(&mut conn, ent, &m, &m).await? } else { HashMap::new() };
-            let mut ids: Vec<i64> = stats.keys().chain(by_category.keys()).chain(budgets.keys()).chain(recognised.keys()).copied().collect();
+            let mut ids: Vec<i64> = stats
+                .keys()
+                .chain(by_category.keys())
+                .chain(budgets.keys())
+                .chain(recognised.keys())
+                .copied()
+                .collect();
             ids.sort_unstable();
             ids.dedup();
             let mut categories = Vec::new();
@@ -299,5 +341,15 @@ fn finish(
             })
         })
         .collect();
-    Forecast { month, as_of: today, opening_minor: opening, end_minor: end, low_minor: low.min(end), high_minor: high.max(end), lines, categories, warnings }
+    Forecast {
+        month,
+        as_of: today,
+        opening_minor: opening,
+        end_minor: end,
+        low_minor: low.min(end),
+        high_minor: high.max(end),
+        lines,
+        categories,
+        warnings,
+    }
 }

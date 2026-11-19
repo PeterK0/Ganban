@@ -257,12 +257,9 @@ async fn start_daemon(app: &AppHandle, port: Option<u16>, loopback: bool) -> Res
 pub fn autostart(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let pool = app.state::<Db>();
-        let was_hosting = ganban_core::ops::get_app_setting(pool.inner(), "daemon_hosting")
-            .await
-            .ok()
-            .flatten()
-            .as_deref()
-            == Some("1");
+        let was_hosting =
+            ganban_core::ops::get_app_setting(pool.inner(), "daemon_hosting").await.ok().flatten().as_deref()
+                == Some("1");
         if was_hosting {
             println!("Resuming host mode (this machine was hosting last session)");
         }
@@ -288,7 +285,8 @@ pub async fn daemon_start(app: AppHandle, port: Option<u16>, loopback: Option<bo
     // loopback request can still end up — and stay — hosting). The autostart
     // path calls start_daemon directly, so it never overwrites this.
     let pool = app.state::<Db>();
-    let _ = ganban_core::ops::set_app_setting(pool.inner(), "daemon_hosting", if status.loopback { "0" } else { "1" }).await;
+    let _ = ganban_core::ops::set_app_setting(pool.inner(), "daemon_hosting", if status.loopback { "0" } else { "1" })
+        .await;
     Ok(status)
 }
 
@@ -296,18 +294,14 @@ pub async fn daemon_start(app: AppHandle, port: Option<u16>, loopback: Option<bo
 /// Local mode = the host itself, so the caller IS the owner.
 #[tauri::command]
 pub async fn pair_member_device(pool: State<'_, Db>, user_id: i64) -> Result<String, String> {
-    ganban_core::auth::create_member_device_enrollment(pool.inner(), user_id)
-        .await
-        .map_err(|e| e.to_string())
+    ganban_core::auth::create_member_device_enrollment(pool.inner(), user_id).await.map_err(|e| e.to_string())
 }
 
 /// Owner mints a one-time token to enroll their own (owner) phone. Returns the
 /// raw enrollment token; the UI embeds it + the daemon URL in a QR.
 #[tauri::command]
 pub async fn pair_owner_device(pool: State<'_, Db>) -> Result<String, String> {
-    let owner_id = ganban_core::auth::ensure_owner(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    let owner_id = ganban_core::auth::ensure_owner(pool.inner()).await.map_err(|e| e.to_string())?;
     ganban_core::auth::create_enrollment_token(
         pool.inner(),
         "new_device",
@@ -420,7 +414,9 @@ pub async fn daemon_stop(state: State<'_, DaemonState>, pool: State<'_, Db>) -> 
 /// Delegates to `ganban_server::builds` so the local command and the daemon's
 /// `/invoke discover_builds` surface (remote admins) share one implementation.
 #[tauri::command]
-pub async fn daemon_discover_builds(base: Option<String>) -> Result<Vec<ganban_server::builds::DiscoveredBuild>, String> {
+pub async fn daemon_discover_builds(
+    base: Option<String>,
+) -> Result<Vec<ganban_server::builds::DiscoveredBuild>, String> {
     Ok(ganban_server::builds::discover(base))
 }
 
@@ -466,13 +462,6 @@ mod tests {
     #[test]
     fn no_fqdn_is_unchanged_ranking() {
         let urls = rank_urls(&[PUB, LAN, TS], 8765, None);
-        assert_eq!(
-            urls,
-            vec![
-                "http://100.101.102.103:8765",
-                "http://192.168.1.50:8765",
-                "http://203.0.113.7:8765",
-            ]
-        );
+        assert_eq!(urls, vec!["http://100.101.102.103:8765", "http://192.168.1.50:8765", "http://203.0.113.7:8765",]);
     }
 }

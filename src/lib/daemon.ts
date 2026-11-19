@@ -192,11 +192,14 @@ export class DaemonError extends Error {
   status?: number;
   /** Machine-readable cause, e.g. "ENDPOINT_MISSING" (host on an older build). */
   code?: string;
-  constructor(message: string, status?: number, code?: string) {
+  /** A conflict's row as it is now (409, e.g. TASK_CHANGED). */
+  current?: unknown;
+  constructor(message: string, status?: number, code?: string, current?: unknown) {
     super(message);
     this.name = "DaemonError";
     this.status = status;
     this.code = code;
+    this.current = current;
   }
 }
 
@@ -591,10 +594,12 @@ export async function daemonFetch<T>(
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     let code: string | undefined;
+    let current: unknown;
     try {
       const body = await res.json();
       if (body && typeof body.error === "string") msg = body.error;
       if (body && typeof body.code === "string") code = body.code;
+      if (body && body.current !== undefined) current = body.current;
     } catch {
       /* non-JSON error body */
     }
@@ -602,7 +607,7 @@ export async function daemonFetch<T>(
     if (res.status === 401) {
       handleUnauthorized();
     }
-    throw new DaemonError(msg, res.status, code);
+    throw new DaemonError(msg, res.status, code, current);
   }
 
   if (res.status === 204) return undefined as T;
@@ -2973,7 +2978,7 @@ export async function revealStorageFolder(): Promise<void> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   const paths = await invoke<{ data_dir: string }>("get_storage_paths");
-  const { openPath } = await import("@tauri-apps/plugin-opener");
+  const { openPathHere: openPath } = await import("./systemOpen");
   // pf/ appears with the first stored file — fall back up the tree until
   // something exists.
   try {
@@ -3128,6 +3133,7 @@ async function deliverDownload(urlPath: string, fileName: string): Promise<void>
       let opened = false;
       if (isTauri()) {
         try {
+          // The phone app: the plugin is right here (the desktop opens through lib/systemOpen).
           const { openUrl } = await import("@tauri-apps/plugin-opener");
           await openUrl(url);
           opened = true;
@@ -3208,8 +3214,8 @@ export type { EnrollPayload } from "./invite.pure";
 export async function openExternal(url: string): Promise<void> {
   if (isTauri()) {
     try {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(url);
+      const { openLinkHere } = await import("./systemOpen");
+      await openLinkHere(url);
       return;
     } catch {
       /* opener unavailable — fall through to a plain navigation */

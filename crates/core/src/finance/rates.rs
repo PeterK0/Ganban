@@ -73,7 +73,7 @@ pub fn parse_ecb_xml(xml: &str) -> Vec<Observation> {
 
 /// Cache observations (an existing day is overwritten). Returns how many were written.
 pub async fn store_rates(db: &Db, rows: &[Observation], source: &str) -> Result<usize> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let n = store_rates_in(&mut tx, rows, source).await?;
     tx.commit().await?;
     Ok(n)
@@ -95,7 +95,9 @@ pub async fn store_rates_in(conn: &mut Conn, rows: &[Observation], source: &str)
 
 /// Reads a feed URL's body. The host registers one ([`set_fetcher`]); tests scope their
 /// own ([`with_fetcher`]). The error text is for the host's log, never shown.
-pub type Fetcher = Arc<dyn Fn(&'static str) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send>> + Send + Sync>;
+pub type Fetcher = Arc<
+    dyn Fn(&'static str) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send>> + Send + Sync,
+>;
 
 /// How long a fetched feed is reused instead of fetched again.
 const REUSE: Duration = Duration::from_secs(10 * 60);
@@ -238,7 +240,9 @@ pub async fn rate_on_in(conn: &mut Conn, currency: &str, date: &str) -> Result<R
         return Ok(r);
     }
     fetch_on_demand(conn, &cur, &date).await?;
-    lookup(conn, &cur, &date).await?.ok_or_else(|| AppError::InvalidInput(format!("no ECB rate for {cur} on or before {date}")))
+    lookup(conn, &cur, &date)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(format!("no ECB rate for {cur} on or before {date}")))
 }
 
 async fn lookup(conn: &mut Conn, cur: &str, date: &str) -> Result<Option<Rate>> {
@@ -328,7 +332,11 @@ mod tests {
             calls.lock().unwrap().push(url);
             Box::pin(async move {
                 tokio::time::sleep(Duration::from_millis(20)).await; // let a second caller queue up
-                if ok { Ok(FIXTURE.to_string()) } else { Err("offline".into()) }
+                if ok {
+                    Ok(FIXTURE.to_string())
+                } else {
+                    Err("offline".into())
+                }
             })
         })
     }
@@ -357,11 +365,20 @@ mod tests {
     async fn an_unreachable_feed_says_so() {
         let db = test_db("unreachable").await;
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let err = with_fetcher(fixture_fetcher(calls.clone(), false), translate(&db, 100, "GBP", "EUR", "2026-11-02")).await.unwrap_err();
-        assert_eq!(err.to_string(), "Invalid input: no exchange rate for GBP on 2026-11-02: the ECB feed couldn't be reached");
+        let err = with_fetcher(fixture_fetcher(calls.clone(), false), translate(&db, 100, "GBP", "EUR", "2026-11-02"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid input: no exchange rate for GBP on 2026-11-02: the ECB feed couldn't be reached"
+        );
         assert_eq!(calls.lock().unwrap().len(), 1);
         // No fetcher at all (a test, or a host before it registered one): the same answer.
-        assert!(translate(&db, 100, "GBP", "EUR", "2026-11-02").await.unwrap_err().to_string().contains("couldn't be reached"));
+        assert!(translate(&db, 100, "GBP", "EUR", "2026-11-02")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("couldn't be reached"));
     }
 
     #[test]

@@ -180,6 +180,11 @@ export function ShareBuildsPanel() {
         Installed apps update themselves, from GitHub Releases or the host's builds.
         Ambiguous files (a Windows .zip, the server build) ask you to pick the platform first.
       </p>
+      <p className="text-xs text-subtext-0">
+        The desktop app the host builds isn't listed here: it's an update for apps already installed, not an
+        installer. Install the desktop app once from GitHub Releases, then choose "Updates from: This server" on the
+        This app card at the top of this page.
+      </p>
 
       {!online && (
         <div className="flex items-center gap-2 text-xs">

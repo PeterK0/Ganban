@@ -16,7 +16,9 @@ So after Tauri builds it, the Linux job runs `scripts/appimage-system-graphics.s
 2. **Strip:** remove the graphics driver stack's client libraries: `libwayland-*`, `libEGL*`, `libGL.so*`, `libGLX*`,
    `libGLdispatch*`, `libOpenGL*`, `libgbm*`, `libdrm*`, `libglapi*`. Tauri's AppImage carries only the four
    `libwayland-{client,cursor,egl,server}`; the rest are listed in case a future linuxdeploy adds them. Then delete
-   the hook's `export GDK_BACKEND=…` line. WebKitGTK, GTK and everything else stay bundled.
+   the hook's `export GDK_BACKEND=…` line. Also remove the build machine's `usr/bin/xdg-open` and `xdg-mime`, which
+   Tauri's bundler (CLI before 2.12) copies in first on the AppImage's `PATH` (see below). WebKitGTK, GTK and
+   everything else stay bundled.
 3. **Verify:** none of those libraries is left, no hook sets `GDK_BACKEND`, and `ldd` on `usr/bin/*` and WebKit's
    processes shows every graphics library resolving from the system. It prints what stays bundled.
 4. **Repack** with appimagetool, pinned by version and checksum in the workflow, and the AppImage's own runtime
@@ -27,6 +29,37 @@ The workflow then extracts the new AppImage and verifies it again, re-signs it f
 `desktop-linux` artifact holds the repacked AppImage.
 
 `npm run test:appimage` tests strip and verify on a fake AppDir.
+
+## Opening folders, files and links
+
+On Linux the desktop app doesn't open things through `tauri-plugin-opener` (`src-tauri/src/system_open.rs`). The
+plugin runs the first `xdg-open` on `PATH`, and in the AppImage that was the bundled xdg-utils 1.1.3, which opens
+nothing on Plasma 6. Whatever it starts also inherits the AppImage's `LD_LIBRARY_PATH`, `XDG_DATA_DIRS`, `GTK_*`
+and the rest. So the app:
+
+- runs the system's opener (`xdg-open`, then `gio open`, then `kde-open`), never one inside the AppImage, with the
+  environment from before the AppImage changed it. The AI engines it starts get that environment too.
+- shows a file in the user's default file manager: the `inode/directory` default in a `mimeapps.list`, else the
+  desktop's own (Dolphin on KDE, Nautilus on GNOME). Dolphin and Nautilus select the file; any other opens its
+  folder.
+- opens links clicked in the page the same way (the plugin's link handler is off on Linux).
+- writes each open to the log, `~/.local/share/com.scs.gansty/logs/ganban-server.<date>.log`, under
+  `ganban::open`: which program ran, from which default, and why one failed.
+- asks GTK for the desktop's own file pickers through the portal on KDE (`GTK_USE_PORTAL=1`; GTK falls back to its
+  own dialog without a portal), and turns WebKit's DMA-BUF renderer off on NVIDIA's driver.
+
+macOS and Windows use the plugin.
+
+## Testing a branch on a Linux PC
+
+`.github/workflows/linux-shell.yml` checks and tests the shell on Linux whenever `src-tauri/` changes. To try a
+branch's bundles, run the release workflow for Linux alone; it publishes nothing:
+
+```sh
+gh workflow run release.yml -R <owner>/<repo> --ref <branch> -f only=linux
+gh run list -R <owner>/<repo> --workflow release.yml --branch <branch>   # wait for it, then:
+gh run download <run-id> -R <owner>/<repo> -n desktop-linux               # the AppImage, .deb and .rpm
+```
 
 ## The Arch package
 

@@ -25,11 +25,8 @@ async fn pin_set_verify_clear_roundtrip() {
     assert!(ops::verify_user_pin(&db, uid, "4711").await.unwrap());
     assert!(!ops::verify_user_pin(&db, uid, "1234").await.unwrap());
     assert!(ops::get_user(&db, uid).await.unwrap().has_pin);
-    let stored: String = sqlx::query_scalar("SELECT pin_hash FROM users WHERE id = ?")
-        .bind(uid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let stored: String =
+        sqlx::query_scalar("SELECT pin_hash FROM users WHERE id = ?").bind(uid).fetch_one(&db).await.unwrap();
     assert!(stored.contains('$') && !stored.contains("4711"));
 
     // Re-set: new pin replaces the old (fresh salt each time).
@@ -70,9 +67,7 @@ async fn deactivated_user_loses_device_access() {
     .unwrap();
 
     // Enroll a device for them the way the daemon does.
-    let raw = auth::create_enrollment_token(&db, "new_device", Some(user.id), None, None, None, 3600)
-        .await
-        .unwrap();
+    let raw = auth::create_enrollment_token(&db, "new_device", Some(user.id), None, None, None, 3600).await.unwrap();
     let enrolled = auth::enroll(&db, &raw, Some("phone"), None).await.unwrap();
     assert!(auth::validate_device_token(&db, &enrolled.device_token).await.unwrap().is_some());
 

@@ -1,6 +1,6 @@
 [package]
 name = "ganban-server"
-version = "1.0.11"
+version = "1.0.13"
 license = "AGPL-3.0-only"
 edition = "2021"
 description = "Headless HTTP daemon exposing the Ganban core over the trusted tailnet"
@@ -58,6 +58,8 @@ crc32fast = "1"
 include_dir = { version = "0.7", optional = true }
 
 [dev-dependencies]
+# The import engine's tests use its made-up built-in format.
+ganban-core = { workspace = true, features = ["sample-format"] }
 # In-process HTTP tests: drive `router()` with `ServiceExt::oneshot` (no socket).
 tower = { version = "0.5", features = ["util"] }
 # Reads the share door's zips back in tests.

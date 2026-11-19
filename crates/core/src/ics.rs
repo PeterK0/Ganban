@@ -74,11 +74,8 @@ impl RawEvent {
         // real timezone (UTC-11..+13) — midnight UTC would shift all-day events
         // a day early for users west of UTC.
         let event_date = Utc.from_utc_datetime(&date.and_hms_opt(12, 0, 0)?);
-        let title = self
-            .summary
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "(untitled)".into());
+        let title =
+            self.summary.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "(untitled)".into());
         let end_time = self.dtend.and_then(|(_, t, _)| t);
         // Stable dedup key: prefer the feed's UID, else synthesize from
         // title+date+start (include the time so same-title same-day sessions —

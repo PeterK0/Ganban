@@ -13,7 +13,12 @@ const MAYBE_PROJECT: Target = Target::optional("projectId", |_, id| Box::pin(asy
 
 /// The invite named by `id`, and the project it joins (a device-pairing token joins none).
 const INVITE: Target = Target::arg("id", |db, id| {
-    Box::pin(async move { Ok(auth::get_invite_token(db, id).await?.ok_or_else(|| AppError::NotFound("invite not found".into()))?.project_id) })
+    Box::pin(async move {
+        Ok(auth::get_invite_token(db, id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("invite not found".into()))?
+            .project_id)
+    })
 });
 
 /// A raw invite or pairing token.
@@ -112,7 +117,9 @@ pub(super) const COMMANDS: &[Command] = &[
     // "new_device" token that resolves to their existing account. The owner is the host's
     // perimeter, which is why this is theirs alone.
     command("create_member_device_enrollment").access(Access::Owner).run(|cx, a| {
-        Box::pin(async move { Ok(json!({ "token": auth::create_member_device_enrollment(cx.db, a.req_i64(TARGET_USER)?).await? })) })
+        Box::pin(async move {
+            Ok(json!({ "token": auth::create_member_device_enrollment(cx.db, a.req_i64(TARGET_USER)?).await? }))
+        })
     }),
     command("list_devices")
         .access(Access::Owner)
@@ -168,7 +175,8 @@ pub(super) const COMMANDS: &[Command] = &[
         Box::pin(async move {
             let shares = cx.shares()?;
             let kind = a.opt_str("kind").ok_or_else(|| AppError::InvalidInput("kind required".into()))?;
-            let slot = shares.slot(&kind).ok_or_else(|| AppError::InvalidInput(format!("unknown build kind: {kind}")))?;
+            let slot =
+                shares.slot(&kind).ok_or_else(|| AppError::InvalidInput(format!("unknown build kind: {kind}")))?;
             crate::set_share_slot(slot, a.opt_str("path")).map_err(AppError::InvalidInput)?;
             Ok(crate::shared_builds_json(shares))
         })
@@ -188,6 +196,10 @@ pub(super) const COMMANDS: &[Command] = &[
     command("start_host_update")
         .access(Access::Owner)
         .run(|cx, _| Box::pin(async move { crate::updates::start_host_update(&cx.update_paths()).await })),
+    // What "Update the server" would bring: fetches, never pulls (the confirm shows it).
+    command("preview_host_update")
+        .access(Access::Owner)
+        .run(|cx, _| Box::pin(async move { Ok(crate::updates::preview_host_update(&cx.update_paths()).await) })),
     command("get_host_update_status")
         .access(Access::Owner)
         .run(|cx, _| Box::pin(async move { Ok(crate::updates::host_update_status(&cx.update_paths()).await) })),
@@ -220,8 +232,14 @@ mod tests {
         let token = http(&db, ana, "create_invite", invite).await.unwrap()["token"].as_str().unwrap().to_string();
         assert_eq!(http(&db, ana, "invite_status", json!({ "token": token })).await.unwrap()["state"], "pending");
         assert!(http(&db, mia, "invite_status", json!({ "token": token })).await.unwrap_err().is_forbidden());
-        assert_eq!(http(&db, ana, "list_invites", json!({ "projectId": a })).await.unwrap().as_array().unwrap().len(), 1);
-        assert!(http(&db, ana, "list_invites", json!({})).await.unwrap_err().is_forbidden(), "all invites are the owner's");
+        assert_eq!(
+            http(&db, ana, "list_invites", json!({ "projectId": a })).await.unwrap().as_array().unwrap().len(),
+            1
+        );
+        assert!(
+            http(&db, ana, "list_invites", json!({})).await.unwrap_err().is_forbidden(),
+            "all invites are the owner's"
+        );
 
         assert!(http(&db, mia, "list_members", json!({ "projectId": a })).await.unwrap_err().is_forbidden());
         let promote = json!({ "projectId": a, "userId": 7, "role": "admin" });
@@ -230,7 +248,10 @@ mod tests {
         assert!(http(&db, ana, "set_member_role", crown).await.unwrap_err().is_invalid_input());
         let demote_owner = json!({ "projectId": a, "userId": owner.id, "role": "member" });
         assert!(http(&db, ana, "set_member_role", demote_owner).await.unwrap_err().is_forbidden());
-        assert!(http(&db, ana, "remove_member", json!({ "projectId": a, "userId": owner.id })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, ana, "remove_member", json!({ "projectId": a, "userId": owner.id }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
         http(&db, ana, "remove_member", json!({ "projectId": a, "userId": 7 })).await.unwrap();
     }
 
@@ -252,6 +273,7 @@ mod tests {
             ("shared_builds", json!({})),
             ("start_host_update", json!({})),
             ("get_host_update_status", json!({})),
+            ("preview_host_update", json!({})),
         ] {
             assert!(http(&db, ana, cmd, args).await.unwrap_err().is_forbidden(), "{cmd}");
         }
@@ -261,7 +283,10 @@ mod tests {
         let invites = http(&db, owner, "list_invites", json!({})).await.unwrap();
         let id = invites.as_array().unwrap().iter().find(|i| i["kind"] == "new_device").unwrap()["id"].clone();
         assert!(http(&db, ana, "revoke_invite", json!({ "id": id })).await.unwrap_err().is_forbidden());
-        assert!(http(&db, ana, "invite_status", json!({ "token": pairing["token"] })).await.unwrap_err().is_forbidden());
+        assert!(http(&db, ana, "invite_status", json!({ "token": pairing["token"] }))
+            .await
+            .unwrap_err()
+            .is_forbidden());
         http(&db, owner, "revoke_invite", json!({ "id": id })).await.unwrap();
     }
 

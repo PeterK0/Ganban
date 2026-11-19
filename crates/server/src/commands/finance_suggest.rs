@@ -66,12 +66,16 @@ mod tests {
         }}))
         .await
         .unwrap();
-        let entries = http(&db, mia, "fin_list_entries", json!({ "filter": { "accountId": account["id"] } })).await.unwrap();
+        let entries =
+            http(&db, mia, "fin_list_entries", json!({ "filter": { "accountId": account["id"] } })).await.unwrap();
         let entry = entries["entries"][0]["id"].as_i64().unwrap();
         // Ana names Mia's entry: absent, checked before any model is asked.
         let err = http(&db, ana, "fin_suggest_categories", json!({ "entryIds": [entry] })).await.unwrap_err();
         assert!(err.is_not_found(), "{err}");
         let too_many: Vec<i64> = (0..100).collect();
-        assert!(http(&db, mia, "fin_suggest_categories", json!({ "entryIds": too_many })).await.unwrap_err().is_invalid_input());
+        assert!(http(&db, mia, "fin_suggest_categories", json!({ "entryIds": too_many }))
+            .await
+            .unwrap_err()
+            .is_invalid_input());
     }
 }

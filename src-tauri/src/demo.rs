@@ -417,7 +417,13 @@ fn spawn_title_poll(app: AppHandle, label: &'static str, generation: u64, event_
     });
 }
 
-fn open_demo_window(app: &AppHandle, label: &'static str, url: &str, mode: &str, event_name: &'static str) -> Result<(), String> {
+fn open_demo_window(
+    app: &AppHandle,
+    label: &'static str,
+    url: &str,
+    mode: &str,
+    event_name: &'static str,
+) -> Result<(), String> {
     let parsed: tauri::Url = url.parse().map_err(|e| format!("bad URL: {e}"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("only http(s) URLs can be demonstrated".into());

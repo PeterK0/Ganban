@@ -72,7 +72,7 @@ async fn get_in(conn: &mut Conn, ent: &Entity, id: i64) -> Result<Budget> {
 }
 
 pub async fn create_budget(db: &Db, ent: &Entity, input: BudgetInput) -> Result<Budget> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let la = get_ledger_account_in(&mut tx, ent, input.ledger_account_id).await?;
     if la.class != "expense" {
         return Err(AppError::InvalidInput("a budget is for an expense category".into()));
@@ -105,7 +105,7 @@ pub async fn create_budget(db: &Db, ent: &Entity, input: BudgetInput) -> Result<
 }
 
 pub async fn update_budget(db: &Db, ent: &Entity, id: i64, patch: BudgetPatch) -> Result<Budget> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_in(&mut tx, ent, id).await?;
     check_amount(patch.amount_minor)?;
     sqlx::query("UPDATE fin_budgets SET amount_minor = ?, updated_at = ? WHERE id = ?")
@@ -115,13 +115,22 @@ pub async fn update_budget(db: &Db, ent: &Entity, id: i64, patch: BudgetPatch) -
         .execute(&mut *tx)
         .await?;
     let after = get_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "update", "budget", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?)).await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "budget",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
 
 pub async fn delete_budget(db: &Db, ent: &Entity, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_in(&mut tx, ent, id).await?;
     sqlx::query("DELETE FROM fin_budgets WHERE id = ?").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, ent, "delete", "budget", Some(id), Some(&serde_json::to_value(&before)?), None).await?;
@@ -173,14 +182,17 @@ pub async fn budget_progress(db: &Db, ent: &Entity, month: &str) -> Result<Vec<B
     for (account, b) in targets {
         let la = get_ledger_account_in(&mut conn, ent, account).await?;
         let spent = actual.get(&account).copied().unwrap_or(0);
-        out.push((la.code.clone(), BudgetProgress {
-            ledger_account_id: account,
-            name: la.name,
-            budget_id: b.id,
-            target_minor: b.amount_minor,
-            actual_minor: spent,
-            remaining_minor: b.amount_minor - spent,
-        }));
+        out.push((
+            la.code.clone(),
+            BudgetProgress {
+                ledger_account_id: account,
+                name: la.name,
+                budget_id: b.id,
+                target_minor: b.amount_minor,
+                actual_minor: spent,
+                remaining_minor: b.amount_minor - spent,
+            },
+        ));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out.into_iter().map(|(_, p)| p).collect())

@@ -1,296 +1,40 @@
-//! End-to-end parsing tests on synthetic files (made-up payees and amounts).
+//! End-to-end parsing tests on synthetic files (made-up payees and amounts): the
+//! mapping wizard, and the registry of built-in formats on the tests' made-up one.
 
 use super::*;
-use rust_xlsxwriter::{Format as XFormat, Workbook};
-
-/// A value written into a test spreadsheet.
-enum V<'a> {
-    S(&'a str),
-    N(f64),
-    /// A serial date with a date-time number format.
-    D(f64),
-    E,
-}
-use V::*;
-
-fn xlsx(rows: &[Vec<V>]) -> Vec<u8> {
-    let mut book = Workbook::new();
-    let sheet = book.add_worksheet();
-    let date = XFormat::new().set_num_format("yyyy-mm-dd hh:mm:ss");
-    for (r, row) in rows.iter().enumerate() {
-        for (c, v) in row.iter().enumerate() {
-            let (r, c) = (r as u32, c as u16);
-            match v {
-                S(s) => {
-                    sheet.write_string(r, c, *s).unwrap();
-                }
-                N(n) => {
-                    sheet.write_number(r, c, *n).unwrap();
-                }
-                D(n) => {
-                    sheet.write_number_with_format(r, c, *n, &date).unwrap();
-                }
-                E => {}
-            }
-        }
-    }
-    book.save_to_buffer().unwrap()
-}
+use chrono::NaiveDate;
 
 fn d(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
 }
 
-const REVOLUT_HEADER: [&str; 10] =
-    ["Type", "Product", "Started Date", "Completed Date", "Description", "Amount", "Fee", "Currency", "State", "Balance"];
-
-fn revolut_row<'a>(
-    typ: &'a str,
-    product: &'a str,
-    started: f64,
-    completed: Option<f64>,
-    desc: &'a str,
-    amount: f64,
-    fee: f64,
-    cur: &'a str,
-    state: &'a str,
-) -> Vec<V<'a>> {
-    vec![
-        S(typ),
-        S(product),
-        D(started),
-        completed.map(D).unwrap_or(E),
-        S(desc),
-        N(amount),
-        N(fee),
-        S(cur),
-        S(state),
-        N(100.0),
-    ]
-}
-
-/// 46296 is 2026-10-01.
-fn revolut_file() -> Vec<u8> {
-    let mut rows = vec![REVOLUT_HEADER.iter().map(|h| S(h)).collect::<Vec<_>>()];
-    rows.extend([
-        // UTF-8 "WOΛT" that went through cp1252.
-        revolut_row("Card Payment", "Current", 46295.8, Some(46296.5), "WOÎ›T", -14.76, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Card Payment", "Current", 46296.1, None, "Corner Shop", -3.0, 0.0, "EUR", "PENDING"),
-        revolut_row("Card Payment", "Current", 46296.2, Some(46296.3), "Corner Shop", -3.0, 0.0, "EUR", "REVERTED"),
-        revolut_row("Transfer", "Current", 46296.8, Some(46296.8), "From EUR ðŸ’¸ Bills", 30.0, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Transfer", "Current", 46297.0, Some(46297.0), "To EUR Holiday", -50.0, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Exchange", "Current", 46297.25, Some(46297.25), "Exchanged to GBP", -10.0, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Exchange", "Current", 46297.25, Some(46297.25), "Exchanged to GBP", 8.61, 0.0, "GBP", "COMPLETED"),
-        revolut_row("Card Payment", "Current", 46297.4, Some(46297.5), "Faraway Store", -20.0, 0.5, "EUR", "COMPLETED"),
-        revolut_row("Fee", "Current", 46297.6, Some(46297.6), "Plan fee", -7.99, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Reward", "Savings", 46298.5, Some(46298.5), "Savings: interest", 0.42, 0.0, "EUR", "COMPLETED"),
-        revolut_row("Transfer", "Current", 46298.6, Some(46298.6), "To Alex Example", -12.0, 0.0, "EUR", "COMPLETED"),
-    ]);
-    xlsx(&rows)
-}
+const SAMPLE: &str = "Kind,Account,Time,Booked,Text,Amount,Fee,Currency,Balance,Other,Fx\n\
+    card,Current,2026-10-01 09:00:00,2026-10-01 10:00:00,Green  Market,-14.76,0.00,EUR,985.24,,\n\
+    transfer,Current,2026-10-02 09:00:00,2026-10-02 09:00:00,To Holiday,-50.00,0.00,EUR,935.24,Holiday,\n\
+    exchange,Current,,2026-10-03,Exchanged to GBP,-10.00,0.10,EUR,,,GBP\n\
+    card,Current,,2026-10-04,Broken,not money,0.00,EUR,,,\n";
 
 #[test]
-fn revolut_xlsx_named_csv_is_sniffed_by_content() {
-    let r = parse(&revolut_file(), None).unwrap();
-    assert_eq!(r.format, Format::Xlsx);
-    assert_eq!(r.profile_key.as_deref(), Some("revolut"));
-    assert!(r.confidence > 0.9);
-    assert_eq!(r.header[0], "Type");
-}
-
-#[test]
-fn revolut_rows() {
-    let r = parse(&revolut_file(), None).unwrap();
-    // COMPLETED only: the PENDING and REVERTED rows are skipped with a warning.
-    assert_eq!(r.rows.len(), 9);
-    assert!(r.warnings.iter().any(|w| w.contains("2 rows skipped as not completed")));
-    assert!(r.warnings.iter().all(|w| !w.contains("Corner")), "warnings never quote the file");
-
+fn a_built_in_format_is_detected_and_read() {
+    let r = parse(SAMPLE.as_bytes(), None).unwrap();
+    assert_eq!((r.profile_key.as_deref(), r.format), (Some("sample"), Format::Csv));
+    assert!(r.confidence > 0.5);
+    assert_eq!(r.rows.len(), 3);
+    assert_eq!(r.warnings, ["row 5 skipped: no readable date, amount or currency"]);
     let card = &r.rows[0];
-    assert_eq!(card.line, 2);
-    assert_eq!(card.description, "WOΛT", "mojibake repaired");
-    assert_eq!(card.payee.as_deref(), Some("WOΛT"));
-    assert_eq!(card.amount_minor, -1476);
-    assert_eq!(card.booked_date, d("2026-10-01"), "booked on Completed");
-    assert_eq!(card.value_date, Some(d("2026-09-30")), "value date is Started");
-    assert_eq!(card.booked_at.unwrap().format("%H:%M").to_string(), "12:00");
-    assert_eq!(card.kind_hint, Some(KindHint::Card));
-    assert_eq!(card.account_guess, "revolut:current:EUR");
-    assert_eq!(card.balance_minor, Some(10_000));
-    assert_eq!(card.raw["Description"], "WOΛT");
-
-    // Pocket moves name the pocket as the counterpart, created as a savings guess.
-    let from = &r.rows[1];
-    assert_eq!(from.description, "From EUR 💸 Bills");
-    assert_eq!(from.kind_hint, Some(KindHint::Transfer));
-    assert_eq!(from.counterpart_guess.as_deref(), Some("revolut:pocket:💸 bills:EUR"));
-    assert_eq!(from.payee, None);
-    let to = &r.rows[2];
-    assert_eq!(to.amount_minor, -5000);
-    assert_eq!(to.counterpart_guess.as_deref(), Some("revolut:pocket:holiday:EUR"));
-    let pocket = r.accounts.iter().find(|a| a.guess_key == "revolut:pocket:holiday:EUR").unwrap();
-    assert_eq!((pocket.name.as_str(), pocket.kind.as_str()), ("Holiday", "savings"));
-
-    // "Exchanged to" legs: the EUR leg names GBP; the GBP leg sits in a GBP account.
-    let eur_leg = &r.rows[3];
-    assert_eq!(eur_leg.kind_hint, Some(KindHint::Exchange));
-    assert_eq!(eur_leg.fx_currency.as_deref(), Some("GBP"));
-    let gbp_leg = &r.rows[4];
-    assert_eq!(gbp_leg.currency, "GBP");
-    assert_eq!(gbp_leg.amount_minor, 861);
-    assert_eq!(gbp_leg.fx_currency, None);
-    assert_eq!(gbp_leg.account_guess, "revolut:current:GBP");
-    assert_eq!(eur_leg.booked_at, gbp_leg.booked_at);
-
-    // Fee column, a Fee row, and a Reward.
-    assert_eq!(r.rows[5].fee_minor, 50);
-    assert_eq!(r.rows[5].amount_minor, -2000);
-    assert_eq!(r.rows[6].kind_hint, Some(KindHint::Fee));
-    let reward = &r.rows[7];
-    assert_eq!(reward.kind_hint, Some(KindHint::Interest));
-    assert_eq!(reward.account_guess, "revolut:savings:EUR");
-
-    // A transfer to a person is not a pocket move.
-    let p2p = &r.rows[8];
-    assert_eq!(p2p.counterpart_guess, None);
-    assert_eq!(p2p.payee.as_deref(), Some("Alex Example"));
-
+    assert_eq!((card.booked_date, card.amount_minor, card.balance_minor), (d("2026-10-01"), -1476, Some(98_524)));
+    assert_eq!(card.occurred_at.map(|t| t.to_string()).as_deref(), Some("2026-10-01 09:00:00"));
+    assert_eq!((card.description.as_str(), card.payee.as_deref()), ("Green Market", Some("Green Market")));
+    let pocket = &r.rows[1];
+    assert_eq!(pocket.kind_hint, Some(KindHint::Transfer));
+    assert_eq!(pocket.counterpart_guess.as_deref(), Some("sample:holiday:EUR"));
+    let fx = &r.rows[2];
+    assert_eq!((fx.fee_minor, fx.fx_currency.as_deref(), fx.occurred_at), (10, Some("GBP"), None));
     let keys: Vec<&str> = r.accounts.iter().map(|a| a.guess_key.as_str()).collect();
-    assert_eq!(
-        keys,
-        [
-            "revolut:current:EUR",
-            "revolut:pocket:💸 bills:EUR",
-            "revolut:pocket:holiday:EUR",
-            "revolut:current:GBP",
-            "revolut:savings:EUR"
-        ]
-    );
-    let savings = r.accounts.iter().find(|a| a.guess_key == "revolut:savings:EUR").unwrap();
-    assert_eq!(savings.kind, "savings");
-}
-
-#[test]
-fn revolut_csv_text_dates() {
-    let csv = "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\r\n\
-               Card Payment,Current,2026-10-01 09:15:00,2026-10-02 10:00:00,Tiny Café,-4.50,0.00,EUR,COMPLETED,95.50\r\n\
-               Card Payment,Current,2026-10-03 09:15:00,,Tiny Café,-1.00,0.00,EUR,PENDING,\r\n";
-    let r = parse(csv.as_bytes(), None).unwrap();
-    assert_eq!(r.format, Format::Csv);
-    assert_eq!(r.profile_key.as_deref(), Some("revolut"));
-    assert_eq!(r.rows.len(), 1);
-    let row = &r.rows[0];
-    assert_eq!(row.booked_date, d("2026-10-02"));
-    assert_eq!(row.value_date, Some(d("2026-10-01")));
-    assert_eq!(row.description, "Tiny Café");
-    assert_eq!(row.amount_minor, -450);
-    assert_eq!(row.balance_minor, Some(9550));
-}
-
-#[test]
-fn revolut_unreadable_amount_is_skipped_by_line() {
-    let rows = vec![
-        REVOLUT_HEADER.iter().map(|h| S(h)).collect::<Vec<_>>(),
-        vec![S("Reward"), S("Current"), D(46297.5), D(46297.5), S("Interest"), S("xx.xx"), N(0.0), S("EUR"), S("COMPLETED"), S("xx.xx")],
-    ];
-    let r = parse(&xlsx(&rows), None).unwrap();
-    assert!(r.rows.is_empty());
-    assert_eq!(r.warnings, vec!["row 2 skipped: no readable date, amount or currency"]);
-}
-
-fn piraeus_file() -> Vec<u8> {
-    xlsx(&[
-        vec![S("Piraeus Bank")],
-        vec![S("Account Transactions")],
-        vec![],
-        vec![S("BASIC SAVINGS ACC R:  GR16 0110 1250 0000 0001 2300 695")],
-        vec![S("Selected Period: 01/11/2026 - 04/11/2026")],
-        vec![],
-        vec![
-            S("Category"),
-            S("Transaction Details"),
-            S("Transaction Date"),
-            S("Transaction Comments / Reference Code"),
-            S("Amount"),
-            S("Currency"),
-            S("Progressive Ledger Balance"),
-            S("Currency"),
-        ],
-        vec![
-            S("Obligations / Bank fees\u{a0}"),
-            S("COMMISSION                    "),
-            S("02/11/2026"),
-            S("ΑΝΑΝΕΩΣΗ ΧΡΕΩΣΤΙΚΗΣ ΚΑΡΤΑΣ\nREF 0001 / FE0001"),
-            N(-6.0),
-            S("EUR"),
-            S("1.234,56"),
-            S("EUR"),
-        ],
-        vec![
-            S("Income / Transfers"),
-            S("ΜΕΤΑΦΟΡΑ ΑΠΟ ΛΟΓΑΡΙΑΣΜΟ"),
-            S("03/11/2026"),
-            E,
-            S("1.500,00"),
-            S("EUR"),
-            S("2.734,56"),
-            S("EUR"),
-        ],
-        vec![],
-        vec![],
-        vec![S("Update Date:"), S("04/11/2026 12:10:32")],
-    ])
-}
-
-#[test]
-fn piraeus_preamble_greek_and_decimal_commas() {
-    let r = parse(&piraeus_file(), None).unwrap();
-    assert_eq!(r.profile_key.as_deref(), Some("piraeus"));
-    assert!(r.confidence > 0.95, "the preamble names the bank");
-    assert_eq!(r.rows.len(), 2, "the footer is not a row");
-    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
-
-    let fee = &r.rows[0];
-    assert_eq!(fee.line, 8);
-    assert_eq!(fee.booked_date, d("2026-11-02"));
-    assert_eq!(fee.amount_minor, -600);
-    assert_eq!(fee.balance_minor, Some(123_456));
-    assert_eq!(fee.description, "COMMISSION — ΑΝΑΝΕΩΣΗ ΧΡΕΩΣΤΙΚΗΣ ΚΑΡΤΑΣ", "Greek kept as it is");
-    assert_eq!(fee.bank_category.as_deref(), Some("Obligations / Bank fees"));
-    assert_eq!(fee.kind_hint, Some(KindHint::Fee));
-    assert_eq!(fee.raw["Currency 2"], "EUR");
-
-    let transfer = &r.rows[1];
-    assert_eq!(transfer.amount_minor, 150_000);
-    assert_eq!(transfer.kind_hint, Some(KindHint::Transfer));
-    assert_eq!(transfer.description, "ΜΕΤΑΦΟΡΑ ΑΠΟ ΛΟΓΑΡΙΑΣΜΟ");
-
-    assert_eq!(r.accounts.len(), 1);
-    let a = &r.accounts[0];
-    assert_eq!(a.guess_key, "piraeus:0695:EUR");
-    assert_eq!(a.name, "BASIC SAVINGS ACC");
-    assert_eq!(a.kind, "savings");
-    assert_eq!(a.iban_mask.as_deref(), Some("GR•• … 0695"));
-    assert_eq!(a.institution.as_deref(), Some("Piraeus Bank"));
-}
-
-#[test]
-fn piraeus_csv_in_greek_code_page() {
-    // cp1253, semicolons, decimal commas.
-    let mut bytes = b"Piraeus Bank\r\nACC: GR16 0110 1250 0000 0001 2300 695\r\n\r\n".to_vec();
-    bytes.extend_from_slice(
-        b"Category;Transaction Details;Transaction Date;Transaction Comments / Reference Code;Amount;Currency;Progressive Ledger Balance;Currency\r\n",
-    );
-    // "ΑΓΟΡΑ" (purchase) in cp1253.
-    bytes.extend_from_slice(b"Shopping;\xc1\xc3\xcf\xd1\xc1;01/11/2026;;-12,30;EUR;987,70;EUR\r\n");
-    let r = parse(&bytes, None).unwrap();
-    assert_eq!(r.profile_key.as_deref(), Some("piraeus"));
-    let row = &r.rows[0];
-    assert_eq!(row.description, "ΑΓΟΡΑ");
-    assert_eq!(row.amount_minor, -1230);
-    assert_eq!(row.balance_minor, Some(98_770));
-    assert_eq!(row.kind_hint, Some(KindHint::Card));
-    assert_eq!(r.accounts[0].kind, "current");
+    // The exchange leg's other side: the same account in the other currency.
+    assert_eq!(keys, ["sample:current:EUR", "sample:holiday:EUR", "sample:current:GBP"]);
+    assert_eq!(fx.counterpart_guess.as_deref(), Some("sample:current:GBP"));
+    assert_eq!((r.accounts[1].kind.as_str(), r.accounts[2].kind.as_str()), ("savings", "current"));
 }
 
 #[test]
@@ -365,12 +109,6 @@ fn mapping_validation() {
 }
 
 #[test]
-fn chosen_profile_must_match_the_file() {
-    let err = parse(&piraeus_file(), Some(&ProfileSpec::Revolut)).unwrap_err();
-    assert!(err.is_invalid_input());
-}
-
-#[test]
 fn oversized_and_broken_files_are_refused() {
     assert!(read_grid(&vec![b'a'; MAX_FILE_BYTES + 1]).unwrap_err().is_invalid_input());
     assert!(read_grid(b"PK\x03\x04 not really a zip").unwrap_err().is_invalid_input());
@@ -378,23 +116,60 @@ fn oversized_and_broken_files_are_refused() {
 
 #[test]
 fn outputs_are_snake_case() {
-    let r = parse(&revolut_file(), None).unwrap();
+    let r = parse(SAMPLE.as_bytes(), None).unwrap();
     let v = serde_json::to_value(&r).unwrap();
-    assert_eq!(v["profile_key"], "revolut");
-    assert_eq!(v["format"], "xlsx");
+    assert_eq!((v["profile_key"].as_str(), v["format"].as_str()), (Some("sample"), Some("csv")));
     let row = &v["rows"][0];
     assert_eq!(row["booked_date"], "2026-10-01");
     assert_eq!(row["amount_minor"], -1476);
     assert_eq!(row["kind_hint"], "card");
-    assert_eq!(row["account_guess"], "revolut:current:EUR");
-    assert_eq!(v["accounts"][0]["guess_key"], "revolut:current:EUR");
+    assert_eq!(row["account_guess"], "sample:current:EUR");
+    assert_eq!(v["accounts"][0]["guess_key"], "sample:current:EUR");
     assert!(v["accounts"][0].get("matched_account_id").is_none());
 }
 
 #[test]
-fn builtin_profiles_are_listed() {
+fn the_registry_lists_and_finds_built_in_formats() {
     let keys: Vec<&str> = builtin_profiles().iter().map(|p| p.key).collect();
-    assert_eq!(keys, ["revolut", "piraeus"]);
-    assert_eq!(ProfileSpec::builtin("piraeus"), Some(ProfileSpec::Piraeus));
+    assert!(keys.contains(&"sample"), "{keys:?}");
+    assert_eq!(ProfileSpec::builtin("sample"), Some(ProfileSpec::Builtin(&profiles::sample::FORMAT)));
     assert_eq!(ProfileSpec::builtin("nope"), None);
+    // A chosen built-in format must match the file.
+    let other = "date,what,amount\n2026-10-01,Tea,-2.00\n";
+    assert!(parse(other.as_bytes(), ProfileSpec::builtin("sample").as_ref()).unwrap_err().is_invalid_input());
+}
+
+#[test]
+fn a_profile_key_this_build_doesnt_have_is_not_built_in() {
+    // Lines and accounts imported by a build with a format this one lacks keep its key;
+    // here the key just isn't built in, and the file goes to the wizard.
+    assert_eq!(ProfileSpec::builtin("some-bank-format"), None);
+    let r = parse(b"Posted,Memo,Value\n2026-10-01,Tea,-2.00\n", None).unwrap();
+    assert_eq!((r.profile_key, r.rows.len()), (None, 0));
+    assert_eq!(r.sample[0], ["Posted", "Memo", "Value"]);
+}
+
+#[test]
+fn the_wizard_guesses_the_columns_from_their_names() {
+    let csv = "My Bank export\n\nBooking date,Details,Counterparty,Money out,Money in,Balance,Currency\n\
+               2026-10-01,Card,Corner Bakery,3.20,,96.80,EUR\n";
+    let r = parse(csv.as_bytes(), None).unwrap();
+    let m = r.suggested_mapping.expect("a guess");
+    let name = |c: &Option<profiles::mapping::ColRef>| match c {
+        Some(profiles::mapping::ColRef::Name(n)) => n.clone(),
+        _ => String::new(),
+    };
+    assert_eq!(name(&m.booked_date), "Booking date");
+    assert_eq!(m.description.len(), 1);
+    assert_eq!(
+        (name(&m.payee), name(&m.balance), name(&m.currency)),
+        ("Counterparty".into(), "Balance".into(), "Currency".into())
+    );
+    assert_eq!((name(&m.debit), name(&m.credit), m.amount.is_none()), ("Money out".into(), "Money in".into(), true));
+    // A signed amount column: no debit/credit pair.
+    let r = parse("Date,Text,Amount\n2026-10-01,Bakery,-3.20\n".as_bytes(), None).unwrap();
+    let m = r.suggested_mapping.unwrap();
+    assert_eq!((name(&m.amount), m.debit.is_none()), ("Amount".into(), true));
+    // Nothing date- or amount-like: no guess.
+    assert!(parse("a,b\n1,2\n".as_bytes(), None).unwrap().suggested_mapping.is_none());
 }

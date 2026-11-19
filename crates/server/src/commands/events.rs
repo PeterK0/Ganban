@@ -127,7 +127,9 @@ pub(super) const COMMANDS: &[Command] = &[
         })
     }),
     command("delete_event_file").access(Access::Custom(manages_file_event)).run(|cx, a| {
-        Box::pin(async move { reply(storage::delete_event_file(cx.db, cx.storage_root()?, a.req_i64("fileId")?).await?) })
+        Box::pin(
+            async move { reply(storage::delete_event_file(cx.db, cx.storage_root()?, a.req_i64("fileId")?).await?) },
+        )
     }),
     // ----- Links to tasks -----
     command("link_event_to_task").access(Access::Member(TASK)).run(|cx, a| {
@@ -144,28 +146,28 @@ pub(super) const COMMANDS: &[Command] = &[
         .filter(ResultFilter::Tasks)
         .run(|cx, a| Box::pin(async move { reply(ops::get_event_tasks(cx.db, a.req_i64("eventId")?).await?) })),
     // A filter mask (which events have a task); trimmed so it never reveals other projects'.
-    command("get_task_linked_event_ids")
-        .access(Access::AnyMember)
-        .filter(ResultFilter::EventIds)
-        .run(|cx, _| {
-            Box::pin(async move {
-                // "Has a task" means a task the caller can see.
-                let Some(seen) = cx.visible_tasks(None).await? else {
-                    return reply(ops::get_task_linked_event_ids(cx.db).await?);
-                };
-                let links: Vec<(i64, i64)> = sqlx::query_as("SELECT event_id, task_id FROM event_tasks").fetch_all(cx.db).await?;
-                let mut ids: Vec<i64> = links.into_iter().filter(|(_, t)| seen.contains(t)).map(|(e, _)| e).collect();
-                ids.sort_unstable();
-                ids.dedup();
-                reply(ids)
-            })
-        }),
+    command("get_task_linked_event_ids").access(Access::AnyMember).filter(ResultFilter::EventIds).run(|cx, _| {
+        Box::pin(async move {
+            // "Has a task" means a task the caller can see.
+            let Some(seen) = cx.visible_tasks(None).await? else {
+                return reply(ops::get_task_linked_event_ids(cx.db).await?);
+            };
+            let links: Vec<(i64, i64)> =
+                sqlx::query_as("SELECT event_id, task_id FROM event_tasks").fetch_all(cx.db).await?;
+            let mut ids: Vec<i64> = links.into_iter().filter(|(_, t)| seen.contains(t)).map(|(e, _)| e).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            reply(ids)
+        })
+    }),
     // ----- Links to projects -----
     command("link_event_to_project").access(Access::Admin(PROJECT)).run(|cx, a| {
         Box::pin(async move { reply(ops::link_event_to_project(cx.db, a.req_i64("eventId")?, a.id(PROJECT)?).await?) })
     }),
     command("unlink_event_from_project").access(Access::Admin(PROJECT)).run(|cx, a| {
-        Box::pin(async move { reply(ops::unlink_event_from_project(cx.db, a.req_i64("eventId")?, a.id(PROJECT)?).await?) })
+        Box::pin(
+            async move { reply(ops::unlink_event_from_project(cx.db, a.req_i64("eventId")?, a.id(PROJECT)?).await?) },
+        )
     }),
     command("get_event_projects")
         .access(Access::AnyMember)
@@ -193,7 +195,8 @@ mod tests {
         owner(db).await;
         let a = seed(db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
         let b = seed(db, "create_project", json!({ "input": { "name": "B" } })).await["id"].as_i64().unwrap();
-        let task = |pid: i64| json!({ "input": { "project_id": pid, "title": "t", "status": "To Do", "priority": "Low" } });
+        let task =
+            |pid: i64| json!({ "input": { "project_id": pid, "title": "t", "status": "To Do", "priority": "Low" } });
         let ta = seed(db, "create_task", task(a)).await["id"].as_i64().unwrap();
         let tb = seed(db, "create_task", task(b)).await["id"].as_i64().unwrap();
         let linked = |pid: i64, tid: i64, title: &'static str| {
@@ -219,7 +222,10 @@ mod tests {
         assert_eq!(http(&db, mia, "get_event", json!({ "eventId": eb })).await.unwrap(), Value::Null);
         assert_eq!(http(&db, mia, "get_event", json!({ "eventId": loose })).await.unwrap(), Value::Null);
         assert_eq!(http(&db, mia, "get_task_linked_event_ids", json!({})).await.unwrap(), json!([ea]));
-        assert_eq!(ids(&http(&db, mia, "get_event_projects", json!({ "eventId": eb })).await.unwrap()), Vec::<i64>::new());
+        assert_eq!(
+            ids(&http(&db, mia, "get_event_projects", json!({ "eventId": eb })).await.unwrap()),
+            Vec::<i64>::new()
+        );
         assert_eq!(ids(&http(&db, mia, "get_event_tasks", json!({ "eventId": ea })).await.unwrap()), vec![ta]);
         assert_eq!(ids(&http(&db, mia, "get_event_tasks", json!({ "eventId": eb })).await.unwrap()), Vec::<i64>::new());
 
@@ -251,7 +257,11 @@ mod tests {
     async fn a_new_events_links_follow_the_link_commands_rules() {
         let db = test_db("events_create_links").await;
         let (a, ta, _, _, _) = world(&db).await;
-        let b = seed(&db, "get_projects", json!({})).await.as_array().unwrap().iter().find(|p| p["name"] == "B").unwrap()["id"].as_i64().unwrap();
+        let b =
+            seed(&db, "get_projects", json!({})).await.as_array().unwrap().iter().find(|p| p["name"] == "B").unwrap()
+                ["id"]
+                .as_i64()
+                .unwrap();
         let tb = seed(&db, "get_tasks", json!({ "projectId": b })).await[0]["id"].as_i64().unwrap();
         let ana = member(&db, 8, &[(a, "admin")]).await;
         let linked = |key: &str, id: i64| {
@@ -283,7 +293,10 @@ mod tests {
 
         let undone = http(&db, ana, "set_event_done", json!({ "eventId": ea, "done": false })).await.unwrap();
         assert!(undone["done_at"].is_null());
-        assert!(http(&db, ana, "set_event_done", json!({ "eventId": 9999, "done": true })).await.unwrap_err().is_not_found());
+        assert!(http(&db, ana, "set_event_done", json!({ "eventId": 9999, "done": true }))
+            .await
+            .unwrap_err()
+            .is_not_found());
     }
 
     #[tokio::test]
@@ -318,7 +331,13 @@ mod tests {
         let db = test_db("events_series_bin").await;
         let (_, _, ea, _, _) = world(&db).await;
         let cx = Ctx::in_process(&db);
-        run(&cx, "update_event", json!({ "eventId": ea, "input": { "rrule": "FREQ=DAILY", "exdates": "2026-10-14,2026-10-15" } })).await.unwrap();
+        run(
+            &cx,
+            "update_event",
+            json!({ "eventId": ea, "input": { "rrule": "FREQ=DAILY", "exdates": "2026-10-14,2026-10-15" } }),
+        )
+        .await
+        .unwrap();
         let copy = |title: &str| {
             let mut c = event(title);
             c["input"]["series_id"] = json!(ea);
@@ -329,7 +348,13 @@ mod tests {
         let other = run(&cx, "create_event", event("Unrelated")).await.unwrap()["id"].as_i64().unwrap();
         let archived = |id: i64| {
             let db = db.clone();
-            async move { sqlx::query_scalar::<_, bool>("SELECT archived FROM events WHERE id = ?").bind(id).fetch_one(&db).await.unwrap() }
+            async move {
+                sqlx::query_scalar::<_, bool>("SELECT archived FROM events WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
         };
 
         run(&cx, "delete_event", json!({ "eventId": alone })).await.unwrap();
@@ -379,7 +404,10 @@ mod tests {
 
         let as_ = |user| Ctx::http(&db, user).with_storage_root(&root);
         assert!(run(&as_(mia), "delete_event_file", json!({ "fileId": f })).await.unwrap_err().is_forbidden());
-        assert!(run(&as_(ana), "delete_event_file", json!({ "fileId": fb })).await.unwrap_err().is_not_found(), "B's event is out of Ana's sight");
+        assert!(
+            run(&as_(ana), "delete_event_file", json!({ "fileId": fb })).await.unwrap_err().is_not_found(),
+            "B's event is out of Ana's sight"
+        );
         run(&as_(ana), "delete_event_file", json!({ "fileId": f })).await.unwrap();
         assert!(!ganban_core::storage::event_blob_path(&root, f).exists());
         assert!(ganban_core::storage::event_blob_path(&root, fb).exists());

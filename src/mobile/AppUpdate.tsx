@@ -19,6 +19,8 @@ import { GITHUB_REPO, setGithubChecksOn, useGithubChecksOn, useUpdateSource } fr
 import type { SourceStatus, UpdateSource } from "../lib/updateSource.pure";
 import { currentDaemonUrl } from "../lib/daemon";
 import { Button, SectionHeader, Toggle } from "./ui";
+import { PatchNotesDialog, WhatsNewNotice, offeredNotes } from "../components/PatchNotes";
+import { BUNDLED_NOTES, THIS_RELEASE } from "../lib/patchNotes";
 
 /** Progress for a download: a gold bar, and "12 / 48 MB · 25%". */
 function Progress({ s }: { s: Extract<ApkUpdateState, { kind: "downloading" }> }) {
@@ -103,17 +105,27 @@ export function UpdateBanner() {
   const s = useApkUpdate();
   // "Later" hides this build's banner for the session; a newer build shows again.
   const [dismissed, setDismissed] = useState<number | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
   if (!apkUpdateSupported() || !bannerVisible(s, dismissed)) return null;
   const d = describe(s);
+  const later = () => {
+    setNotesOpen(false);
+    setDismissed(s.kind === "available" || s.kind === "failed" ? s.build?.versionCode ?? null : null);
+  };
   return (
     <div className="pl-4 pr-2 py-2 bg-crust border-t border-gilt-a text-text space-y-2" role="status">
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <div className={`text-sm font-medium ${d.tone === "error" ? "text-error" : ""}`}>{d.title}</div>
           {d.sub && <div className="text-xs gm-mut break-words">{d.sub}</div>}
+          {s.kind === "available" && (
+            <button onClick={() => setNotesOpen(true)} className="g-lnk text-xs min-h-[32px]">
+              See what changed
+            </button>
+          )}
         </div>
         {(s.kind === "available" || s.kind === "failed") && (
-          <button onClick={() => setDismissed(s.build?.versionCode ?? null)} className="g-lnk text-sm min-h-[44px] px-2 shrink-0">
+          <button onClick={later} className="g-lnk text-sm min-h-[44px] px-2 shrink-0">
             Later
           </button>
         )}
@@ -122,7 +134,65 @@ export function UpdateBanner() {
         </div>
       </div>
       {s.kind === "downloading" && <div className="pr-2"><Progress s={s} /></div>}
+      {notesOpen && s.kind === "available" && (
+        <PatchNotesDialog
+          title={`Ganban ${s.build.version} is available`}
+          lead="Nothing is downloaded until you tap Update."
+          releases={offeredNotes(s.build.notes, s.build.version)}
+          onClose={() => setNotesOpen(false)}
+          actions={
+            <>
+              <button className="g-btn g-btn-ghost g-btn-sm" onClick={later} autoFocus>
+                Later
+              </button>
+              <button
+                className="g-btn g-btn-pri g-btn-sm"
+                onClick={() => {
+                  setNotesOpen(false);
+                  void startApkUpdate();
+                }}
+              >
+                Update
+              </button>
+            </>
+          }
+        />
+      )}
     </div>
+  );
+}
+
+/** Once after an update (any phone: the app or the browser): "What's new", above the tab bar. */
+export function WhatsNewBanner() {
+  return <WhatsNewNotice className="flex items-center justify-center gap-4 px-4 min-h-[44px] bg-crust border-t border-gilt-a text-sm" />;
+}
+
+/** Settings → Patch notes: the whole history this build carries, its own release marked. */
+export function PatchNotesSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <SectionHeader>Patch notes</SectionHeader>
+      <div className="px-4">
+        <button className="g-card w-full px-4 py-3 text-left min-h-[44px]" onClick={() => setOpen(true)}>
+          <div className="font-medium">Patch notes</div>
+          <div className="text-sm gm-mut">What each version fixed and added{THIS_RELEASE?.version && THIS_RELEASE.version !== "Unreleased" ? ` · this is ${THIS_RELEASE.version}` : ""}</div>
+        </button>
+      </div>
+      {open && (
+        <PatchNotesDialog
+          title="Patch notes"
+          releases={BUNDLED_NOTES}
+          current={THIS_RELEASE}
+          onClose={() => setOpen(false)}
+          actions={
+            <button className="g-btn g-btn-pri g-btn-sm" onClick={() => setOpen(false)}>
+              Done
+            </button>
+          }
+        />
+      )}
+    </>
   );
 }
 

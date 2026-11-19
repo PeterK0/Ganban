@@ -47,6 +47,7 @@ pub(crate) mod events;
 mod files;
 mod finance;
 mod finance_import;
+mod finance_payees;
 mod finance_reports;
 mod finance_suggest;
 mod models;
@@ -78,6 +79,7 @@ const TABLE: &[&[Command]] = &[
     admin::COMMANDS,
     finance::COMMANDS,
     finance_import::COMMANDS,
+    finance_payees::COMMANDS,
     finance_reports::COMMANDS,
     finance_suggest::COMMANDS,
 ];
@@ -279,7 +281,8 @@ pub(crate) const INPUT_PROJECT: Target = Target::input("project_id", |_, id| Box
 pub(crate) const TASK: Target = Target::arg("taskId", |db, id| Box::pin(task_project(db, id))).seen_by(SEES_TASK);
 
 /// The task a new row hangs off, by `input.task_id`.
-pub(crate) const INPUT_TASK: Target = Target::input("task_id", |db, id| Box::pin(task_project(db, id))).seen_by(SEES_TASK);
+pub(crate) const INPUT_TASK: Target =
+    Target::input("task_id", |db, id| Box::pin(task_project(db, id))).seen_by(SEES_TASK);
 
 /// Whether a viewer can see a task.
 pub(crate) const SEES_TASK: Sees = |db, v, id| Box::pin(visibility::can_see_task(db, v, id));
@@ -361,7 +364,9 @@ impl ResultFilter {
                 }
             }
             ResultFilter::OfTasks(field) => {
-                if let (Some(seen), Some(rows)) = (visibility::visible_tasks(db, viewer_of(user), None).await?, v.as_array_mut()) {
+                if let (Some(seen), Some(rows)) =
+                    (visibility::visible_tasks(db, viewer_of(user), None).await?, v.as_array_mut())
+                {
                     rows.retain(|r| r.get(field).and_then(Value::as_i64).is_none_or(|t| seen.contains(&t)));
                 }
             }
@@ -409,7 +414,8 @@ async fn visible_events(db: &Db, user: &AuthUser) -> Result<HashSet<i64>, AppErr
 async fn visible_contacts(db: &Db, user: &AuthUser) -> Result<HashSet<i64>, AppError> {
     let mut contacts: HashSet<i64> = auth::accessible_contact_ids(db, user.id).await?.into_iter().collect();
     if let Some(seen) = visibility::visible_tasks(db, viewer_of(user), None).await? {
-        let linked: Vec<(i64, i64)> = sqlx::query_as("SELECT contact_id, task_id FROM task_contacts").fetch_all(db).await?;
+        let linked: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT contact_id, task_id FROM task_contacts").fetch_all(db).await?;
         let keep: HashSet<i64> = linked.into_iter().filter(|(_, t)| seen.contains(t)).map(|(c, _)| c).collect();
         contacts.retain(|c| keep.contains(c));
     }
@@ -624,7 +630,11 @@ impl Args<'_> {
 
     /// An array of ids (non-integers dropped); missing or not an array → empty.
     pub(crate) fn i64_list(&self, key: &str) -> Vec<i64> {
-        self.json.get(key).and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_i64).collect()).unwrap_or_default()
+        self.json
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|v| v.iter().filter_map(Value::as_i64).collect())
+            .unwrap_or_default()
     }
 
     /// The `input` object, deserialized.
@@ -636,7 +646,9 @@ impl Args<'_> {
     /// The id the target's argument names.
     pub(crate) fn id(&self, target: Target) -> Result<i64, AppError> {
         match target.key {
-            Key::Arg(key) | Key::Optional(key) => self.json.get(key).and_then(Value::as_i64).ok_or_else(|| missing(key)),
+            Key::Arg(key) | Key::Optional(key) => {
+                self.json.get(key).and_then(Value::as_i64).ok_or_else(|| missing(key))
+            }
             Key::Input(key) => {
                 self.json.get("input").and_then(|i| i.get(key)).and_then(Value::as_i64).ok_or_else(|| missing(key))
             }
@@ -701,9 +713,8 @@ pub(crate) async fn run(cx: &Ctx<'_>, name: &str, args: Value) -> Result<Value, 
 }
 
 async fn execute(cx: &Ctx<'_>, command: &Command, args: Value) -> Result<Value, AppError> {
-    let access = command
-        .access
-        .ok_or_else(|| AppError::Forbidden(format!("'{}' declares no access rule", command.name)))?;
+    let access =
+        command.access.ok_or_else(|| AppError::Forbidden(format!("'{}' declares no access rule", command.name)))?;
     let mut args = if args.is_object() { args } else { json!({}) };
     if let (Caller::Http(user), Some(author)) = (cx.caller, command.author) {
         author.stamp(&mut args, user.id);
@@ -815,7 +826,11 @@ mod tests {
             if let Some(generic) = rest.strip_prefix('<') {
                 let mut depth = 1;
                 let end = generic.char_indices().find(|&(_, c)| {
-                    depth += match c { '<' => 1, '>' => -1, _ => 0 };
+                    depth += match c {
+                        '<' => 1,
+                        '>' => -1,
+                        _ => 0,
+                    };
                     depth == 0
                 });
                 let Some((end, _)) = end else { continue };
@@ -884,7 +899,8 @@ mod tests {
         assert!(called.len() > 100, "the scan found only {} names: has a call shape changed?", called.len());
 
         // api.ts calls its desktop-only Tauri commands by name; they are never in the table.
-        let desktop_only = api.split("const DESKTOP_ONLY = new Set([").nth(1).and_then(|s| s.split("]);").next()).unwrap();
+        let desktop_only =
+            api.split("const DESKTOP_ONLY = new Set([").nth(1).and_then(|s| s.split("]);").next()).unwrap();
         let desktop_only: Vec<String> = desktop_only.split(',').filter_map(leading_literal).collect();
         let mut host_side: Vec<&str> = DESKTOP_ONLY.to_vec();
         let mut app_side: Vec<&str> = desktop_only.iter().map(String::as_str).collect();

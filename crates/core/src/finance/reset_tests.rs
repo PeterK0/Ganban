@@ -17,12 +17,25 @@ async fn n(db: &Db, sql: &str, ent: &Entity) -> i64 {
 async fn rows(db: &Db, ent: &Entity) -> Vec<(&'static str, i64)> {
     let mut out = Vec::new();
     for t in [
-        "fin_accounts", "fin_entries", "fin_source_lines", "fin_import_batches", "fin_pairs", "fin_budgets",
-        "fin_planned", "fin_recurring", "fin_schedules", "fin_periods", "fin_group_suggestions",
+        "fin_accounts",
+        "fin_entries",
+        "fin_source_lines",
+        "fin_import_batches",
+        "fin_pairs",
+        "fin_budgets",
+        "fin_planned",
+        "fin_recurring",
+        "fin_schedules",
+        "fin_periods",
+        "fin_group_suggestions",
     ] {
         out.push((t, n(db, &format!("SELECT COUNT(*) FROM {t} WHERE entity_id = ?"), ent).await));
     }
-    out.push(("fin_lines", n(db, "SELECT COUNT(*) FROM fin_lines l JOIN fin_entries e ON e.id = l.entry_id WHERE e.entity_id = ?", ent).await));
+    out.push((
+        "fin_lines",
+        n(db, "SELECT COUNT(*) FROM fin_lines l JOIN fin_entries e ON e.id = l.entry_id WHERE e.entity_id = ?", ent)
+            .await,
+    ));
     out
 }
 
@@ -30,14 +43,15 @@ async fn rows(db: &Db, ent: &Entity) -> Vec<(&'static str, i64)> {
 async fn seed(db: &Db, ent: &Entity, entries: usize) {
     let acc = create_account(db, ent, account("current", "Everyday", "EUR", 10_000)).await.unwrap();
     let groceries = la(db, ent, "Groceries").await;
-    let mut tx = db.begin().await.unwrap();
-    let batch = sqlx::query("INSERT INTO fin_import_batches (entity_id, file_name, imported_at) VALUES (?, 'export.csv', ?)")
-        .bind(ent.id)
-        .bind(now())
-        .execute(&mut *tx)
-        .await
-        .unwrap()
-        .last_insert_rowid();
+    let mut tx = crate::db::begin_write(db).await.unwrap();
+    let batch =
+        sqlx::query("INSERT INTO fin_import_batches (entity_id, file_name, imported_at) VALUES (?, 'export.csv', ?)")
+            .bind(ent.id)
+            .bind(now())
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .last_insert_rowid();
     let mut ids = Vec::new();
     for i in 0..entries {
         let src = sqlx::query(
@@ -112,7 +126,10 @@ async fn a_reset_empties_only_the_callers_books_and_keeps_their_settings() {
     let ana = user(&db, 8).await;
     seed(&db, &mia, 20).await;
     seed(&db, &ana, 20).await;
-    sqlx::query("INSERT OR IGNORE INTO fin_rates (currency, date, rate) VALUES ('USD', '2026-02-10', 1.08)").execute(&db).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO fin_rates (currency, date, rate) VALUES ('USD', '2026-02-10', 1.08)")
+        .execute(&db)
+        .await
+        .unwrap();
     let anas_before = rows(&db, &ana).await;
     let chart_before = list_ledger_accounts(&db, &mia, true).await.unwrap().len();
 
@@ -132,11 +149,13 @@ async fn a_reset_empties_only_the_callers_books_and_keeps_their_settings() {
     assert_eq!(chart.len(), chart_before - 1, "the account's own ledger account went");
     assert!(chart.iter().all(|a| a.currency.is_none()));
     assert_eq!(entity_for_user(&db, 7).await.unwrap().id, mia.id);
-    let s: (i64, String, String) = sqlx::query_as("SELECT reminder_enabled, reminder_weekday, reminder_time FROM fin_settings WHERE entity_id = ?")
-        .bind(mia.id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let s: (i64, String, String) = sqlx::query_as(
+        "SELECT reminder_enabled, reminder_weekday, reminder_time FROM fin_settings WHERE entity_id = ?",
+    )
+    .bind(mia.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert_eq!(s, (0, "Fri".into(), "18:30".into()));
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fin_rates").fetch_one(&db).await.unwrap(), 1);
     // Ana's books are untouched.
@@ -212,7 +231,7 @@ async fn a_reset_waits_for_nothing_it_refuses_while_other_work_runs() {
     let req = crate::finance::import::jobs::ImportRequest {
         file_name: "export.csv".into(),
         bytes: b"not a bank file".to_vec(),
-        profile_key: "revolut".into(),
+        profile_key: "sample".into(),
         account_map: Default::default(),
         post_older_than_days: None,
     };
@@ -236,7 +255,7 @@ async fn a_reset_waits_for_nothing_it_refuses_while_other_work_runs() {
     let req = crate::finance::import::jobs::ImportRequest {
         file_name: "export.csv".into(),
         bytes: vec![],
-        profile_key: "revolut".into(),
+        profile_key: "sample".into(),
         account_map: Default::default(),
         post_older_than_days: None,
     };
@@ -261,8 +280,14 @@ async fn a_large_reset_doesnt_fail_a_concurrent_task_update() {
     let db = test_db("reset_concurrent").await;
     let mia = user(&db, 7).await;
     seed(&db, &mia, 10_000).await;
-    let project = sqlx::query("INSERT INTO projects (name) VALUES ('P')").execute(&db).await.unwrap().last_insert_rowid();
-    let task = sqlx::query("INSERT INTO tasks (project_id, title) VALUES (?, 'T')").bind(project).execute(&db).await.unwrap().last_insert_rowid();
+    let project =
+        sqlx::query("INSERT INTO projects (name) VALUES ('P')").execute(&db).await.unwrap().last_insert_rowid();
+    let task = sqlx::query("INSERT INTO tasks (project_id, title) VALUES (?, 'T')")
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
     let started = std::time::Instant::now();
     let job = {
         let (db, mia) = (db.clone(), mia.clone());
@@ -272,7 +297,8 @@ async fn a_large_reset_doesnt_fail_a_concurrent_task_update() {
     let mut updates = 0;
     while !job.is_finished() {
         let t = std::time::Instant::now();
-        let input = crate::models::UpdateTaskInput { description: Some(format!("touch {updates}")), ..Default::default() };
+        let input =
+            crate::models::UpdateTaskInput { description: Some(format!("touch {updates}")), ..Default::default() };
         crate::ops::update_task(&db, task, input).await.expect("a task update during a reset");
         slowest = slowest.max(t.elapsed());
         updates += 1;

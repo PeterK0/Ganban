@@ -4,7 +4,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-use super::{audit, check_date, currency, get_account_in, get_ledger_account_in, not_found, rates, require_open, system, Conn, Entity};
+use super::{
+    audit, check_date, currency, get_account_in, get_ledger_account_in, not_found, rates, require_open, system, Conn,
+    Entity,
+};
 use crate::error::{AppError, Result};
 use crate::Db;
 
@@ -29,6 +32,19 @@ pub struct Entry {
     /// Tied to a recognition schedule (its source, deferral or a release): its lines and date are
     /// fixed and it can't be deleted, so the screens hide those controls.
     pub scheduled: bool,
+    /// The payee the entry's bank line resolved to (`payees`).
+    #[serde(default)]
+    pub payee_id: Option<i64>,
+    /// Posted as unsorted history: old, uncategorised, out of the inbox.
+    #[serde(default)]
+    pub unsorted: bool,
+    /// A draft's waiting suggestion: the local model's category for its payee group, shown
+    /// pre-filled until the user takes or dismisses it.
+    #[serde(default)]
+    pub suggested_ledger_account_id: Option<i64>,
+    /// The payee's own name (`payee` is the text as the bank wrote it).
+    #[serde(default)]
+    pub payee_name: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -44,6 +60,9 @@ struct EntryRow {
     notes: Option<String>,
     created_at: String,
     updated_at: String,
+    payee_id: Option<i64>,
+    unsorted: bool,
+    group_key: Option<String>,
 }
 
 /// One line: positive `amount_minor` is a debit, negative a credit. `rate` is functional
@@ -148,6 +167,33 @@ pub struct EntryFilter {
     pub search: Option<String>,
     /// One payee group of the inbox (`fin_inbox_groups`' `key`).
     pub group_key: Option<String>,
+    /// One payee's entries.
+    pub payee_id: Option<i64>,
+    /// `true`: only unsorted history; `false`: none of it.
+    pub unsorted: Option<bool>,
+    /// `true`: only transfer and exchange legs paired without asking or confirmed; `false`:
+    /// none of them.
+    pub transfers: Option<bool>,
+    /// Only the lines one import brought (`ImportResult.batch_id`).
+    pub import_batch_id: Option<i64>,
+    /// Only these entries (a selection), at most 5000.
+    pub ids: Option<Vec<i64>>,
+}
+
+impl EntryFilter {
+    /// True when the filter narrows to something a person picked: a payee, a group, a search,
+    /// an account, dates or a selection. Bulk categorising needs one.
+    pub fn narrows(&self) -> bool {
+        let set = |s: &Option<String>| s.as_deref().is_some_and(|s| !s.trim().is_empty());
+        set(&self.from)
+            || set(&self.to)
+            || set(&self.search)
+            || set(&self.group_key)
+            || self.account_id.is_some()
+            || self.payee_id.is_some()
+            || self.import_batch_id.is_some()
+            || self.ids.as_ref().is_some_and(|ids| !ids.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +267,27 @@ async fn assemble(conn: &mut Conn, r: EntryRow) -> Result<Entry> {
     .fetch_optional(&mut *conn)
     .await?;
     let scheduled = super::schedules::has_schedule(&mut *conn, r.id).await?;
+    let suggested_ledger_account_id = match (&r.group_key, r.status.as_str()) {
+        (Some(key), "draft") => sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT ledger_account_id FROM fin_group_suggestions WHERE entity_id = ? AND group_key = ?",
+        )
+        .bind(r.entity_id)
+        .bind(key)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten(),
+        _ => None,
+    };
+    let payee_name = match r.payee_id {
+        Some(p) => {
+            sqlx::query_scalar::<_, String>("SELECT name FROM fin_payees WHERE id = ? AND entity_id = ?")
+                .bind(p)
+                .bind(r.entity_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        None => None,
+    };
     Ok(Entry {
         id: r.id,
         entity_id: r.entity_id,
@@ -236,6 +303,10 @@ async fn assemble(conn: &mut Conn, r: EntryRow) -> Result<Entry> {
         lines,
         pair,
         scheduled,
+        payee_id: r.payee_id,
+        unsorted: r.unsorted,
+        suggested_ledger_account_id,
+        payee_name,
     })
 }
 
@@ -284,6 +355,33 @@ pub(crate) async fn filter_sql(conn: &mut Conn, ent: &Entity, filter: &EntryFilt
     if let Some(key) = &filter.group_key {
         sql.push_str(" AND e.group_key = ?");
         binds.push(Bind::S(key.clone()));
+    }
+    if let Some(p) = filter.payee_id {
+        sql.push_str(" AND e.payee_id = ?");
+        binds.push(Bind::I(p));
+    }
+    match filter.unsorted {
+        Some(true) => sql.push_str(" AND e.unsorted = 1"),
+        Some(false) => sql.push_str(" AND e.unsorted = 0"),
+        None => {}
+    }
+    if let Some(t) = filter.transfers {
+        sql.push_str(if t { " AND EXISTS" } else { " AND NOT EXISTS" });
+        sql.push_str(
+            " (SELECT 1 FROM fin_pairs p WHERE (p.entry_a = e.id OR p.entry_b = e.id) \
+              AND p.status IN ('auto', 'confirmed'))",
+        );
+    }
+    if let Some(batch) = filter.import_batch_id {
+        sql.push_str(" AND EXISTS (SELECT 1 FROM fin_source_lines s WHERE s.id = e.source_line_id AND s.batch_id = ?)");
+        binds.push(Bind::I(batch));
+    }
+    if let Some(ids) = &filter.ids {
+        if ids.len() > 5000 {
+            return Err(AppError::InvalidInput("select at most 5000 entries".into()));
+        }
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(" AND e.id IN ({})", if list.is_empty() { "NULL".into() } else { list }));
     }
     Ok((sql, binds))
 }
@@ -337,7 +435,13 @@ pub(crate) enum Bind {
 /// left by translation (a minor unit per translated line at most) goes to the largest
 /// translated line; anything more is refused, unless `fx_residual` (a manual journal) and the
 /// lines mix currencies, when it posts to realised FX.
-async fn prepare_lines(conn: &mut Conn, ent: &Entity, date: &str, inputs: Vec<LineInput>, fx_residual: bool) -> Result<Vec<NewLine>> {
+async fn prepare_lines(
+    conn: &mut Conn,
+    ent: &Entity,
+    date: &str,
+    inputs: Vec<LineInput>,
+    fx_residual: bool,
+) -> Result<Vec<NewLine>> {
     if inputs.len() < 2 {
         return Err(AppError::InvalidInput("an entry needs at least two lines".into()));
     }
@@ -350,7 +454,11 @@ async fn prepare_lines(conn: &mut Conn, ent: &Entity, date: &str, inputs: Vec<Li
         }
         let cur = currency::normalise(&input.currency)?;
         if la.currency.as_deref().is_some_and(|c| c != cur) {
-            return Err(AppError::InvalidInput(format!("lines on '{}' must be in {}", la.name, la.currency.unwrap_or_default())));
+            return Err(AppError::InvalidInput(format!(
+                "lines on '{}' must be in {}",
+                la.name,
+                la.currency.unwrap_or_default()
+            )));
         }
         let (functional_minor, rate) = match input.functional_minor {
             Some(f) if cur == ent.functional_currency && f != input.amount_minor => {
@@ -358,7 +466,14 @@ async fn prepare_lines(conn: &mut Conn, ent: &Entity, date: &str, inputs: Vec<Li
             }
             Some(f) => {
                 check_functional(f, input.amount_minor)?;
-                (f, if input.amount_minor == 0 { 1.0 } else { rate_of(f, input.amount_minor, &cur, &ent.functional_currency) })
+                (
+                    f,
+                    if input.amount_minor == 0 {
+                        1.0
+                    } else {
+                        rate_of(f, input.amount_minor, &cur, &ent.functional_currency)
+                    },
+                )
             }
             None => {
                 let t = rates::translate_in(conn, input.amount_minor, &cur, &ent.functional_currency, date).await?;
@@ -398,7 +513,8 @@ async fn prepare_lines(conn: &mut Conn, ent: &Entity, date: &str, inputs: Vec<Li
         if diff.unsigned_abs() > translated.len() as u64 {
             return Err(unbalanced());
         }
-        let largest = translated.iter().copied().max_by_key(|&i| lines[i].functional_minor.abs()).ok_or_else(unbalanced)?;
+        let largest =
+            translated.iter().copied().max_by_key(|&i| lines[i].functional_minor.abs()).ok_or_else(unbalanced)?;
         lines[largest].functional_minor -= diff;
     }
     Ok(lines)
@@ -479,7 +595,7 @@ async fn touch(conn: &mut Conn, id: i64) -> Result<()> {
 
 /// A manual journal, posted. It must balance.
 pub async fn create_entry(db: &Db, ent: &Entity, input: EntryInput) -> Result<Entry> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let entry = create_entry_in(&mut tx, ent, input).await?;
     tx.commit().await?;
     Ok(entry)
@@ -498,13 +614,19 @@ pub async fn create_entry_in(conn: &mut Conn, ent: &Entity, input: EntryInput) -
         source_line_id: None,
         reverses_id: None,
     };
-    insert_entry(conn, ent, header, &lines).await
+    let entry = insert_entry(conn, ent, header, &lines).await?;
+    // A manual entry with a payee (a cash expense) resolves it like a bank line.
+    if entry.payee.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+        super::payees::attach_in(conn, ent, entry.id).await?;
+        return get_entry_in(conn, ent, entry.id).await;
+    }
+    Ok(entry)
 }
 
 /// A draft from a bank line: the bank account's ledger account moves by the amount less the
 /// fee, the fee goes to `bank_fees`, and the counter account takes the amount.
 pub async fn create_bank_draft(db: &Db, ent: &Entity, draft: BankDraft) -> Result<Entry> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let entry = create_bank_draft_in(&mut tx, ent, draft).await?;
     tx.commit().await?;
     Ok(entry)
@@ -519,14 +641,19 @@ pub async fn create_bank_draft_in(conn: &mut Conn, ent: &Entity, d: BankDraft) -
         return Err(AppError::InvalidInput("that account is archived".into()));
     }
     if counter.currency.as_deref().is_some_and(|c| c != account.currency) {
-        return Err(AppError::InvalidInput(format!("lines on '{}' must be in {}", counter.name, counter.currency.unwrap_or_default())));
+        return Err(AppError::InvalidInput(format!(
+            "lines on '{}' must be in {}",
+            counter.name,
+            counter.currency.unwrap_or_default()
+        )));
     }
     if let Some(sl) = d.source_line_id {
-        let owner: Option<i64> = sqlx::query_scalar("SELECT account_id FROM fin_source_lines WHERE id = ? AND entity_id = ?")
-            .bind(sl)
-            .bind(ent.id)
-            .fetch_optional(&mut *conn)
-            .await?;
+        let owner: Option<i64> =
+            sqlx::query_scalar("SELECT account_id FROM fin_source_lines WHERE id = ? AND entity_id = ?")
+                .bind(sl)
+                .bind(ent.id)
+                .fetch_optional(&mut *conn)
+                .await?;
         if owner != Some(account.id) {
             return Err(not_found("source line"));
         }
@@ -609,7 +736,7 @@ pub async fn draft_from_source_line_in(
 /// Edit an entry in an open period. New lines must balance; a new date retranslates the
 /// lines in other currencies at that date's rate.
 pub async fn update_entry(db: &Db, ent: &Entity, id: i64, patch: EntryPatch) -> Result<Entry> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_entry_in(&mut tx, ent, id).await?;
     if before.status == "reversed" || before.reverses_id.is_some() {
         return Err(AppError::InvalidInput("a reversed entry or a reversal can't be edited".into()));
@@ -622,9 +749,16 @@ pub async fn update_entry(db: &Db, ent: &Entity, id: i64, patch: EntryPatch) -> 
     require_open(&mut tx, ent, &date).await?;
     let lines = match patch.lines {
         Some(lines) => Some(lines),
-        None if date != before.date && before.lines.iter().any(|l| l.currency != ent.functional_currency) => {
-            Some(before.lines.iter().map(|l| LineInput { memo: l.memo.clone(), ..LineInput::new(l.ledger_account_id, l.amount_minor, &l.currency) }).collect())
-        }
+        None if date != before.date && before.lines.iter().any(|l| l.currency != ent.functional_currency) => Some(
+            before
+                .lines
+                .iter()
+                .map(|l| LineInput {
+                    memo: l.memo.clone(),
+                    ..LineInput::new(l.ledger_account_id, l.amount_minor, &l.currency)
+                })
+                .collect(),
+        ),
         None => None,
     };
     if let Some(lines) = lines {
@@ -632,17 +766,34 @@ pub async fn update_entry(db: &Db, ent: &Entity, id: i64, patch: EntryPatch) -> 
         replace_lines(&mut tx, id, &lines).await?;
     }
     // The payee group is worked out again from the new text when the inbox next groups.
-    sqlx::query("UPDATE fin_entries SET date = ?, description = ?, payee = ?, notes = ?, group_key = NULL WHERE id = ?")
-        .bind(&date)
-        .bind(patch.description.as_deref().map(str::trim).unwrap_or(&before.description))
-        .bind(match patch.payee { Some(p) => trimmed(Some(p)), None => before.payee.clone() })
-        .bind(match patch.notes { Some(n) => trimmed(Some(n)), None => before.notes.clone() })
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE fin_entries SET date = ?, description = ?, payee = ?, notes = ?, group_key = NULL WHERE id = ?",
+    )
+    .bind(&date)
+    .bind(patch.description.as_deref().map(str::trim).unwrap_or(&before.description))
+    .bind(match patch.payee {
+        Some(p) => trimmed(Some(p)),
+        None => before.payee.clone(),
+    })
+    .bind(match patch.notes {
+        Some(n) => trimmed(Some(n)),
+        None => before.notes.clone(),
+    })
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     touch(&mut tx, id).await?;
     let after = get_entry_in(&mut tx, ent, id).await?;
-    audit(&mut tx, ent, "update", "entry", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?)).await?;
+    audit(
+        &mut tx,
+        ent,
+        "update",
+        "entry",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     tx.commit().await?;
     Ok(after)
 }
@@ -652,7 +803,7 @@ pub async fn update_entry(db: &Db, ent: &Entity, id: i64, patch: EntryPatch) -> 
 /// splits are in the bank line's currency and add up to the bank side's amount (signed as
 /// the bank line, or as debits that offset it).
 pub async fn categorise(db: &Db, ent: &Entity, id: i64, splits: Vec<Split>) -> Result<Entry> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let entry = categorise_in(&mut tx, ent, id, splits).await?;
     tx.commit().await?;
     Ok(entry)
@@ -675,11 +826,13 @@ pub async fn categorise_in(conn: &mut Conn, ent: &Entity, id: i64, splits: Vec<S
         .fetch_all(&mut *conn)
         .await?;
     let fee: i64 = match before.source_line_id {
-        Some(sl) => sqlx::query_scalar("SELECT fee_minor FROM fin_source_lines WHERE id = ? AND entity_id = ?")
-            .bind(sl)
-            .bind(ent.id)
-            .fetch_one(&mut *conn)
-            .await?,
+        Some(sl) => {
+            sqlx::query_scalar("SELECT fee_minor FROM fin_source_lines WHERE id = ? AND entity_id = ?")
+                .bind(sl)
+                .bind(ent.id)
+                .fetch_one(&mut *conn)
+                .await?
+        }
         None => 0,
     };
     let fees_account = super::system_account_in(conn, ent, system::BANK_FEES).await?.id;
@@ -730,7 +883,11 @@ pub async fn categorise_in(conn: &mut Conn, ent: &Entity, id: i64, splits: Vec<S
             return Err(AppError::InvalidInput("that ledger account is archived".into()));
         }
         if la.currency.as_deref().is_some_and(|c| c != bank.currency) {
-            return Err(AppError::InvalidInput(format!("lines on '{}' must be in {}", la.name, la.currency.unwrap_or_default())));
+            return Err(AppError::InvalidInput(format!(
+                "lines on '{}' must be in {}",
+                la.name,
+                la.currency.unwrap_or_default()
+            )));
         }
         let functional = if i + 1 == n {
             left
@@ -752,13 +909,22 @@ pub async fn categorise_in(conn: &mut Conn, ent: &Entity, id: i64, splits: Vec<S
     replace_lines(conn, id, &lines).await?;
     touch(conn, id).await?;
     let after = get_entry_in(conn, ent, id).await?;
-    audit(conn, ent, "categorise", "entry", Some(id), Some(&serde_json::to_value(&before)?), Some(&serde_json::to_value(&after)?)).await?;
+    audit(
+        conn,
+        ent,
+        "categorise",
+        "entry",
+        Some(id),
+        Some(&serde_json::to_value(&before)?),
+        Some(&serde_json::to_value(&after)?),
+    )
+    .await?;
     Ok(after)
 }
 
 /// Post drafts. Entries already posted are left as they are. Returns how many were posted.
 pub async fn post_entries(db: &Db, ent: &Entity, ids: &[i64]) -> Result<usize> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let n = post_entries_in(&mut tx, ent, ids).await?;
     tx.commit().await?;
     Ok(n)
@@ -777,8 +943,16 @@ pub async fn post_entries_in(conn: &mut Conn, ent: &Entity, ids: &[i64]) -> Resu
             .bind(id)
             .execute(&mut *conn)
             .await?;
-        audit(conn, ent, "post", "entry", Some(id), Some(&serde_json::json!({"status": "draft"})), Some(&serde_json::json!({"status": "posted"})))
-            .await?;
+        audit(
+            conn,
+            ent,
+            "post",
+            "entry",
+            Some(id),
+            Some(&serde_json::json!({"status": "draft"})),
+            Some(&serde_json::json!({"status": "posted"})),
+        )
+        .await?;
         posted += 1;
     }
     Ok(posted)
@@ -788,7 +962,7 @@ pub async fn post_entries_in(conn: &mut Conn, ent: &Entity, ids: &[i64]) -> Resu
 /// dismissed, so a re-import doesn't bring it back. Deleting a reversal restores the
 /// entry it reversed.
 pub async fn delete_entry(db: &Db, ent: &Entity, id: i64) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let before = get_entry_in(&mut tx, ent, id).await?;
     if before.status == "reversed" {
         return Err(AppError::InvalidInput("delete its reversal first".into()));
@@ -807,7 +981,11 @@ pub async fn delete_entry(db: &Db, ent: &Entity, id: i64) -> Result<()> {
             .await?;
     }
     if let Some(sl) = before.source_line_id {
-        sqlx::query("UPDATE fin_source_lines SET dismissed_at = ? WHERE id = ?").bind(super::now()).bind(sl).execute(&mut *tx).await?;
+        sqlx::query("UPDATE fin_source_lines SET dismissed_at = ? WHERE id = ?")
+            .bind(super::now())
+            .bind(sl)
+            .execute(&mut *tx)
+            .await?;
     }
     // Its pairs go with it (the cascade); the audit log records each.
     let pairs: Vec<(i64, String, i64, i64, String)> = sqlx::query_as(
@@ -832,7 +1010,7 @@ pub async fn delete_entry(db: &Db, ent: &Entity, id: i64) -> Result<()> {
 /// recognition schedule reverses its deferral and posted releases on the same date, and
 /// ends the schedule.
 pub async fn reverse_entry(db: &Db, ent: &Entity, id: i64, date: &str) -> Result<Entry> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let date = check_date(date)?;
     let schedule = super::schedules::schedule_entries(&mut tx, id).await?;
     if schedule.is_none() && super::schedules::has_schedule(&mut tx, id).await? {
@@ -844,7 +1022,16 @@ pub async fn reverse_entry(db: &Db, ent: &Entity, id: i64, date: &str) -> Result
             reverse_in(&mut tx, ent, e, &date).await?;
         }
         sqlx::query("DELETE FROM fin_schedules WHERE id = ?").bind(schedule_id).execute(&mut *tx).await?;
-        audit(&mut tx, ent, "end", "schedule", Some(schedule_id), None, Some(&serde_json::json!({ "reversal_id": reversal.id }))).await?;
+        audit(
+            &mut tx,
+            ent,
+            "end",
+            "schedule",
+            Some(schedule_id),
+            None,
+            Some(&serde_json::json!({ "reversal_id": reversal.id })),
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok(reversal)
@@ -888,8 +1075,16 @@ async fn reverse_in(conn: &mut Conn, ent: &Entity, id: i64, date: &str) -> Resul
         .bind(id)
         .execute(&mut *conn)
         .await?;
-    audit(conn, ent, "reverse", "entry", Some(id), Some(&serde_json::json!({"status": "posted"})), Some(&serde_json::json!({"status": "reversed", "reversal_id": reversal.id})))
-        .await?;
+    audit(
+        conn,
+        ent,
+        "reverse",
+        "entry",
+        Some(id),
+        Some(&serde_json::json!({"status": "posted"})),
+        Some(&serde_json::json!({"status": "reversed", "reversal_id": reversal.id})),
+    )
+    .await?;
     Ok(reversal)
 }
 
@@ -919,14 +1114,24 @@ impl SysLine {
 
 /// Post an entry the app writes itself. The caller has checked the period and the lines,
 /// which must balance in the functional currency.
-pub(crate) async fn post_system_entry_in(conn: &mut Conn, ent: &Entity, date: &str, description: String, lines: Vec<SysLine>) -> Result<Entry> {
+pub(crate) async fn post_system_entry_in(
+    conn: &mut Conn,
+    ent: &Entity,
+    date: &str,
+    description: String,
+    lines: Vec<SysLine>,
+) -> Result<Entry> {
     if lines.iter().map(|l| l.functional_minor).sum::<i64>() != 0 {
         return Err(unbalanced());
     }
     let lines: Vec<NewLine> = lines
         .into_iter()
         .map(|l| NewLine {
-            rate: if l.amount_minor == 0 { 0.0 } else { rate_of(l.functional_minor, l.amount_minor, &l.currency, &ent.functional_currency) },
+            rate: if l.amount_minor == 0 {
+                0.0
+            } else {
+                rate_of(l.functional_minor, l.amount_minor, &l.currency, &ent.functional_currency)
+            },
             ledger_account_id: l.ledger_account_id,
             amount_minor: l.amount_minor,
             currency: l.currency,
@@ -934,7 +1139,15 @@ pub(crate) async fn post_system_entry_in(conn: &mut Conn, ent: &Entity, date: &s
             memo: l.memo,
         })
         .collect();
-    let header = Header { date, description, payee: None, notes: None, status: "posted", source_line_id: None, reverses_id: None };
+    let header = Header {
+        date,
+        description,
+        payee: None,
+        notes: None,
+        status: "posted",
+        source_line_id: None,
+        reverses_id: None,
+    };
     insert_entry(conn, ent, header, &lines).await
 }
 
@@ -946,11 +1159,27 @@ pub(crate) async fn retranslate_drafts(conn: &mut Conn, ent: &Entity) -> Result<
         .await?;
     for id in ids {
         let e = get_entry_in(conn, ent, id).await?;
-        let inputs = e.lines.iter().map(|l| LineInput { memo: l.memo.clone(), ..LineInput::new(l.ledger_account_id, l.amount_minor, &l.currency) }).collect();
+        let inputs = e
+            .lines
+            .iter()
+            .map(|l| LineInput {
+                memo: l.memo.clone(),
+                ..LineInput::new(l.ledger_account_id, l.amount_minor, &l.currency)
+            })
+            .collect();
         let lines = prepare_lines(conn, ent, &e.date, inputs, false).await?;
         replace_lines(conn, id, &lines).await?;
         let after = get_entry_in(conn, ent, id).await?;
-        audit(conn, ent, "retranslate", "entry", Some(id), Some(&serde_json::to_value(&e)?), Some(&serde_json::to_value(&after)?)).await?;
+        audit(
+            conn,
+            ent,
+            "retranslate",
+            "entry",
+            Some(id),
+            Some(&serde_json::to_value(&e)?),
+            Some(&serde_json::to_value(&after)?),
+        )
+        .await?;
     }
     Ok(())
 }

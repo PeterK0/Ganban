@@ -86,15 +86,17 @@ pub(super) const COMMANDS: &[Command] = &[
             reply(share::create(cx.db, cx.storage_root()?, new).await?)
         })
     }),
-    command("list_share_links").access(ADMIN_OF_TASK_OR_PROJECT).filter(ResultFilter::OfTasks("taskId")).run(|cx, a| {
-        Box::pin(async move {
-            let of = match a.opt_id(TASK) {
-                Some(task) => share::Owner::Task(task),
-                None => share::Owner::Project(a.id(PROJECT)?),
-            };
-            reply(share::list(cx.db, of).await?)
-        })
-    }),
+    command("list_share_links").access(ADMIN_OF_TASK_OR_PROJECT).filter(ResultFilter::OfTasks("taskId")).run(
+        |cx, a| {
+            Box::pin(async move {
+                let of = match a.opt_id(TASK) {
+                    Some(task) => share::Owner::Task(task),
+                    None => share::Owner::Project(a.id(PROJECT)?),
+                };
+                reply(share::list(cx.db, of).await?)
+            })
+        },
+    ),
     command("revoke_share_link")
         .access(ADMIN_OF_LINK)
         .run(|cx, a| Box::pin(async move { reply(share::revoke(cx.db, a.id(LINK)?).await?) })),
@@ -122,19 +124,28 @@ mod tests {
     async fn world(db: &ganban_core::Db, root: &std::path::Path) -> (i64, i64, Vec<i64>, i64) {
         owner(db).await;
         let a = seed(db, "create_project", json!({ "input": { "name": "A" } })).await["id"].as_i64().unwrap();
-        let t = seed(db, "create_task", json!({ "input": { "project_id": a, "title": "Roof", "status": "To Do", "priority": "Low" } }))
-            .await["id"]
+        let t = seed(
+            db,
+            "create_task",
+            json!({ "input": { "project_id": a, "title": "Roof", "status": "To Do", "priority": "Low" } }),
+        )
+        .await["id"]
             .as_i64()
             .unwrap();
         let mut shared = Vec::new();
         for (path, body) in [("Survey/plan.pdf", "plan"), ("Survey/photos/1.jpg", "photo")] {
             let name = path.rsplit('/').next().unwrap();
-            let att = ganban_core::storage::store_shared_bytes(db, root, t, name, None, None, body.as_bytes()).await.unwrap();
+            let att =
+                ganban_core::storage::store_shared_bytes(db, root, t, name, None, None, body.as_bytes()).await.unwrap();
             ganban_core::storage::set_rel_path(db, att.id, Some(path)).await.unwrap();
             shared.push(att.id);
         }
-        let local = seed(db, "create_file_attachment", json!({ "input": { "task_id": t, "file_path": "/nowhere/x.pdf", "file_name": "x.pdf" } }))
-            .await["id"]
+        let local = seed(
+            db,
+            "create_file_attachment",
+            json!({ "input": { "task_id": t, "file_path": "/nowhere/x.pdf", "file_name": "x.pdf" } }),
+        )
+        .await["id"]
             .as_i64()
             .unwrap();
         (a, t, shared, local)
@@ -207,9 +218,7 @@ mod tests {
         let root = temp_root("hidden");
         let (a, t, _, _) = world(&db, &root).await;
         let mia = member(&db, 8, &[(a, "member")]).await;
-        let link = run(&Ctx::in_process(&db), "create_share_link", json!({ "taskId": t }))
-            .await
-            .unwrap_err();
+        let link = run(&Ctx::in_process(&db), "create_share_link", json!({ "taskId": t })).await.unwrap_err();
         assert!(link.is_invalid_input(), "no storage root in-process without one: {link}");
         let link = run(&Ctx::in_process(&db).with_storage_root(&root), "create_share_link", json!({ "taskId": t }))
             .await
@@ -241,7 +250,9 @@ mod tests {
         let (a, t, shared, local) = world(&db, &root).await;
         let store = |name: &'static str, path: Option<&'static str>, body: &'static [u8]| {
             let (db, root) = (db.clone(), root.clone());
-            async move { ganban_core::storage::store_project_file(&db, &root, a, name, None, path, None, body).await.unwrap().id }
+            async move {
+                ganban_core::storage::store_project_file(&db, &root, a, name, None, path, None, body).await.unwrap().id
+            }
         };
         let brief = store("brief.pdf", Some("Docs/brief.pdf"), b"brief").await;
         let logo = store("logo.png", None, b"logo").await;
@@ -252,13 +263,17 @@ mod tests {
 
         // From the project, by default: its own files. No common top folder: the project's name.
         let own = run(&as_ana, "create_share_link", json!({ "projectId": a })).await.unwrap();
-        assert_eq!((own["fileCount"].as_i64(), own["totalBytes"].as_i64(), own["label"].as_str()), (Some(2), Some(9), Some("A")));
+        assert_eq!(
+            (own["fileCount"].as_i64(), own["totalBytes"].as_i64(), own["label"].as_str()),
+            (Some(2), Some(9), Some("A"))
+        );
         assert!(own["taskId"].is_null());
         assert_eq!(own["projectId"], a);
         assert_eq!(own["createdBy"], 7);
 
         // One project file: its folder names it.
-        let one = run(&as_ana, "create_share_link", json!({ "projectId": a, "projectFileIds": [brief] })).await.unwrap();
+        let one =
+            run(&as_ana, "create_share_link", json!({ "projectId": a, "projectFileIds": [brief] })).await.unwrap();
         assert_eq!((one["fileCount"].as_i64(), one["label"].as_str()), (Some(1), Some("Docs")));
 
         // A mix: a task's file sits under its task's folder.
@@ -272,7 +287,14 @@ mod tests {
         assert_eq!(mixed["fileCount"], 3);
         let files = snapshot(&db, &mixed).await;
         let s = |k: &str, f: &str, n: &str| (k.to_string(), f.to_string(), n.to_string());
-        assert_eq!(files, vec![s("project", "", "logo.png"), s("project", "Docs", "brief.pdf"), s("attachment", "Roof/Survey", "plan.pdf")]);
+        assert_eq!(
+            files,
+            vec![
+                s("project", "", "logo.png"),
+                s("project", "Docs", "brief.pdf"),
+                s("attachment", "Roof/Survey", "plan.pdf")
+            ]
+        );
 
         // The door serves them all from their own blobs.
         let row = crate::share::link_by_id(&db, mixed["id"].as_i64().unwrap()).await.unwrap();
@@ -288,11 +310,15 @@ mod tests {
         assert_eq!((live.files.len(), live.gone), (2, 1));
 
         // Device-only task files, and files of another project, are refused.
-        let err = run(&as_ana, "create_share_link", json!({ "projectId": a, "attachmentIds": [local] })).await.unwrap_err();
+        let err =
+            run(&as_ana, "create_share_link", json!({ "projectId": a, "attachmentIds": [local] })).await.unwrap_err();
         assert!(err.to_string().contains("only on a member's device"), "{err}");
         let b = seed(&db, "create_project", json!({ "input": { "name": "B" } })).await["id"].as_i64().unwrap();
-        let elsewhere = ganban_core::storage::store_project_file(&db, &root, b, "x.txt", None, None, None, b"x").await.unwrap().id;
-        let err = run(&as_ana, "create_share_link", json!({ "projectId": a, "projectFileIds": [elsewhere] })).await.unwrap_err();
+        let elsewhere =
+            ganban_core::storage::store_project_file(&db, &root, b, "x.txt", None, None, None, b"x").await.unwrap().id;
+        let err = run(&as_ana, "create_share_link", json!({ "projectId": a, "projectFileIds": [elsewhere] }))
+            .await
+            .unwrap_err();
         assert!(err.is_not_found(), "{err}");
 
         // A project's list has every link made from it or from its tasks; a task's, its own.
@@ -300,9 +326,15 @@ mod tests {
         let listed = run(&as_ana, "list_share_links", json!({ "projectId": a })).await.unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 4);
         assert_eq!(ids(&listed)[0], from_task["id"].as_i64().unwrap());
-        assert_eq!(ids(&run(&as_ana, "list_share_links", json!({ "taskId": t })).await.unwrap()), ids(&json!([from_task])));
+        assert_eq!(
+            ids(&run(&as_ana, "list_share_links", json!({ "taskId": t })).await.unwrap()),
+            ids(&json!([from_task]))
+        );
         // A project link revokes like a task's.
-        assert_eq!(run(&as_ana, "revoke_share_link", json!({ "linkId": own["id"] })).await.unwrap()["status"], "revoked");
+        assert_eq!(
+            run(&as_ana, "revoke_share_link", json!({ "linkId": own["id"] })).await.unwrap()["status"],
+            "revoked"
+        );
 
         // Members who aren't admins are refused.
         assert!(run(&as_mia, "create_share_link", json!({ "projectId": a })).await.unwrap_err().is_forbidden());
@@ -334,7 +366,6 @@ mod tests {
         assert!(err.is_not_found(), "{err}");
         sqlx::query("UPDATE tasks SET visibility = 'area' WHERE id = ?").bind(t).execute(&db).await.unwrap();
         assert!(crate::share::create(&db, &root, new(vec![shared[0]])).await.is_ok());
-
     }
 
     #[tokio::test]
@@ -355,8 +386,14 @@ mod tests {
         ] {
             assert!(run(&cx, "create_share_link", args.clone()).await.unwrap_err().is_invalid_input(), "{args}");
         }
-        assert!(run(&cx, "create_share_link", json!({ "taskId": t, "attachmentIds": [999] })).await.unwrap_err().is_not_found());
+        assert!(run(&cx, "create_share_link", json!({ "taskId": t, "attachmentIds": [999] }))
+            .await
+            .unwrap_err()
+            .is_not_found());
         // Without a storage root nothing can be shared.
-        assert!(run(&Ctx::in_process(&db), "create_share_link", json!({ "taskId": t })).await.unwrap_err().is_invalid_input());
+        assert!(run(&Ctx::in_process(&db), "create_share_link", json!({ "taskId": t }))
+            .await
+            .unwrap_err()
+            .is_invalid_input());
     }
 }
